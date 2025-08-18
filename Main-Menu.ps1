@@ -892,18 +892,56 @@ function Test-Prerequisites {
 
 
 
-# Connect to Microsoft 365 Tenant
+# Connect to Microsoft 365 Tenant with Comprehensive Scopes
 function Connect-M365Tenant {
     Write-Host "`n🔐 Connecting to Microsoft 365 Tenant..." -ForegroundColor Cyan
+    Write-Host "💡 Requesting comprehensive permissions to minimize re-authentication..." -ForegroundColor Gray
     
     try {
-        # Basic connection for tenant info
+        # Disconnect any existing connection
         Disconnect-MgGraph -ErrorAction SilentlyContinue
-        Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome
+        
+        # Comprehensive scope set covering all services to minimize re-auth
+        $comprehensiveScopes = @(
+            # Core tenant and organization
+            "Organization.Read.All",
+            "Directory.Read.All",
+            "Directory.ReadWrite.All",
+            "Directory.AccessAsUser.All",
+            
+            # User and Group Management
+            "User.ReadWrite.All",
+            "Group.ReadWrite.All", 
+            "Group.Read.All",
+            
+            # Conditional Access and Policies
+            "Policy.ReadWrite.ConditionalAccess",
+            "Policy.ReadWrite.SecurityDefaults",
+            "RoleManagement.ReadWrite.Directory",
+            
+            # Intune/Device Management
+            "DeviceManagementConfiguration.ReadWrite.All",
+            "DeviceManagementManagedDevices.ReadWrite.All",
+            "DeviceManagementApps.ReadWrite.All",
+            
+            # SharePoint/Sites
+            "Sites.FullControl.All",
+            
+            # Security and Compliance
+            "SecurityActions.ReadWrite.All",
+            "InformationProtectionPolicy.Read.All",
+            "RecordsManagement.ReadWrite.All"
+        )
+        
+        Write-Host "🚀 Authenticating with $(($comprehensiveScopes.Count)) permissions..." -ForegroundColor Yellow
+        
+        # Connect with comprehensive scopes
+        Connect-MgGraph -Scopes $comprehensiveScopes -NoWelcome
         
         $context = Get-MgContext
         $org = Get-MgOrganization | Select-Object -First 1
         
+        # Store connection details
         $Global:TenantConnection = @{
             TenantId = $context.TenantId
             Account = $context.Account
@@ -911,19 +949,50 @@ function Connect-M365Tenant {
             ConnectedTime = Get-Date
         }
         
+        # Store current scopes globally
+        $Global:CurrentScopes = $context.Scopes
+        
         Write-Host "✅ Connected to: $($org.DisplayName)" -ForegroundColor Green
         Write-Host "   Tenant ID: $($context.TenantId)" -ForegroundColor Gray
         Write-Host "   Account: $($context.Account)" -ForegroundColor Gray
+        Write-Host "   Active Scopes: $($context.Scopes.Count)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "🎉 You should now be able to access all services without re-authentication!" -ForegroundColor Green
         
         return $true
     }
     catch {
-        Write-Error "Failed to connect: $($_.Exception.Message)"
-        return $false
+        Write-Host "⚠️ Comprehensive authentication failed. Trying basic connection..." -ForegroundColor Yellow
+        
+        try {
+            # Fallback to basic connection
+            Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome
+            
+            $context = Get-MgContext
+            $org = Get-MgOrganization | Select-Object -First 1
+            
+            $Global:TenantConnection = @{
+                TenantId = $context.TenantId
+                Account = $context.Account
+                OrgName = $org.DisplayName
+                ConnectedTime = Get-Date
+            }
+            
+            $Global:CurrentScopes = $context.Scopes
+            
+            Write-Host "✅ Connected with basic permissions: $($org.DisplayName)" -ForegroundColor Green
+            Write-Host "   (Additional permissions will be requested as needed)" -ForegroundColor Gray
+            
+            return $true
+        }
+        catch {
+            Write-Error "Failed to connect: $($_.Exception.Message)"
+            return $false
+        }
     }
 }
 
-# Set service-specific scopes and connect
+# Enhanced Authentication with Cumulative Scope Expansion
 function Set-ServiceScopes {
     param([string]$Service)
     
@@ -962,36 +1031,91 @@ function Set-ServiceScopes {
     }
     
     if ($ServiceScopes.ContainsKey($Service)) {
-        $newScopes = $ServiceScopes[$Service]
+        $requiredScopes = $ServiceScopes[$Service]
         $currentContext = Get-MgContext
         
-        # Check if we need to reconnect with different scopes
-        if ($currentContext -and (Compare-Object $Global:CurrentScopes $newScopes)) {
-            Write-Host "🔄 Updating $Service permissions..." -ForegroundColor Yellow
-            
-            try {
-                # Reconnect with new scopes using same account
-                Disconnect-MgGraph -ErrorAction SilentlyContinue
-                Connect-MgGraph -Scopes $newScopes -NoWelcome
-                $Global:CurrentScopes = $newScopes
-                Write-Host "✅ $Service permissions updated!" -ForegroundColor Green
-                return $true
-            }
-            catch {
-                Write-Error "Failed to set $Service scopes: $($_.Exception.Message)"
-                return $false
-            }
-        }
-        elseif (!$currentContext) {
+        if (!$currentContext) {
             Write-Host "❌ Not connected to tenant. Please connect first." -ForegroundColor Red
             return $false
         }
+        
+        # Get current scopes from the context
+        $currentScopes = $currentContext.Scopes
+        if (!$currentScopes) {
+            $currentScopes = @()
+        }
+        
+        # Check if we have all required scopes
+        $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
+        
+        if ($missingScopes.Count -gt 0) {
+            Write-Host "🔄 Expanding permissions for $Service..." -ForegroundColor Yellow
+            Write-Host "   Adding: $($missingScopes -join ', ')" -ForegroundColor Gray
+            
+            try {
+                # Create cumulative scope list (existing + new)
+                $allScopes = @($currentScopes) + @($missingScopes) | Sort-Object -Unique
+                
+                # Reconnect with expanded scopes (keeps existing login session)
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ForceRefresh
+                
+                # Update global tracking
+                $Global:CurrentScopes = $allScopes
+                
+                Write-Host "✅ $Service permissions added successfully!" -ForegroundColor Green
+                Write-Host "   Total active scopes: $($allScopes.Count)" -ForegroundColor Gray
+                return $true
+            }
+            catch {
+                Write-Host "⚠️ Scope expansion failed, trying fresh connection..." -ForegroundColor Yellow
+                
+                try {
+                    # Fallback: Disconnect and reconnect with all required scopes
+                    Disconnect-MgGraph -ErrorAction SilentlyContinue
+                    Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+                    $Global:CurrentScopes = $requiredScopes
+                    Write-Host "✅ $Service connected with fresh authentication!" -ForegroundColor Green
+                    return $true
+                }
+                catch {
+                    Write-Error "Failed to set $Service scopes: $($_.Exception.Message)"
+                    return $false
+                }
+            }
+        }
         else {
-            Write-Host "✅ $Service permissions already active!" -ForegroundColor Green
+            Write-Host "✅ $Service permissions already available!" -ForegroundColor Green
             return $true
         }
     }
     return $false
+}
+
+function Show-AuthenticationStatus {
+    Write-Host "🔍 Authentication Status:" -ForegroundColor Cyan
+    Write-Host "─" * 50 -ForegroundColor Gray
+    
+    $context = Get-MgContext
+    if ($context) {
+        Write-Host "✅ Connected to Microsoft Graph" -ForegroundColor Green
+        Write-Host "   Account: $($context.Account)" -ForegroundColor White
+        Write-Host "   Tenant ID: $($context.TenantId)" -ForegroundColor Gray
+        Write-Host "   Active Scopes: $($context.Scopes.Count)" -ForegroundColor White
+        
+        if ($context.Scopes.Count -gt 0) {
+            Write-Host ""
+            Write-Host "🔐 Available Permissions:" -ForegroundColor Yellow
+            $context.Scopes | Sort-Object | ForEach-Object {
+                Write-Host "   • $_" -ForegroundColor Gray
+            }
+        }
+    } else {
+        Write-Host "❌ Not connected to Microsoft Graph" -ForegroundColor Red
+    }
+    
+    Write-Host ""
+    Write-Host "Press any key to continue..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
 
 # Service menus with prerequisite blocking
@@ -1415,10 +1539,26 @@ function Show-MainMenu {
 }
 
 function Show-DebugStatusOverride {
-    Write-Host "🛠️ Debug: Manual Status Override" -ForegroundColor Yellow
+    Write-Host "🛠️ Debug Tools" -ForegroundColor Yellow
     Write-Host "─" * 80 -ForegroundColor Gray
     Write-Host ""
-    Write-Host "Current Status:" -ForegroundColor Cyan
+    Write-Host "1. 📊 Manual Status Override" -ForegroundColor White
+    Write-Host "2. 🔍 Authentication Status" -ForegroundColor White
+    Write-Host "0. ⬅️ Back to Main Menu" -ForegroundColor White
+    Write-Host ""
+    
+    $debugChoice = Read-Host "Select debug option"
+    
+    if ($debugChoice -eq "2") {
+        Show-AuthenticationStatus
+        return
+    }
+    elseif ($debugChoice -ne "1") {
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "📊 Manual Status Override:" -ForegroundColor Cyan
     
     $steps = @{
         "1" = @{ Name = "Security Groups"; Key = "SecurityGroups" }
