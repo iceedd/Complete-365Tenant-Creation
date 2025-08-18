@@ -396,15 +396,27 @@ function Get-MenuSelection {
     param(
         [array]$MenuItems,
         [string]$Title = "Select Option",
-        [int]$InitialSelection = 0
+        [int]$InitialSelection = 0,
+        [scriptblock]$HeaderCallback = $null
     )
     
     $selectedIndex = $InitialSelection
     $maxIndex = $MenuItems.Count - 1
+    $firstRun = $true
     
     do {
-        # Clear screen and show title
-        Clear-Host
+        # Clear screen and redraw everything for consistency
+        if (-not $firstRun) {
+            Clear-Host
+            
+            # Call header callback if provided (for dashboard)
+            if ($HeaderCallback) {
+                & $HeaderCallback
+            }
+        }
+        $firstRun = $false
+        
+        # Show title
         Write-Host $Title -ForegroundColor Cyan
         Write-Host ("─" * $Title.Length) -ForegroundColor Gray
         Write-Host ""
@@ -466,6 +478,16 @@ function Get-MenuSelection {
 }
 
 function Show-InteractiveMainMenu {
+    # Clear screen for main menu
+    Clear-Host
+    
+    # Show dashboard if connected
+    if ($Global:TenantConnection -and $Global:CompletedSteps) {
+        Show-ProgressDashboard -CompletedSteps $Global:CompletedSteps
+        Get-SmartRecommendations -CompletedSteps $Global:CompletedSteps | ForEach-Object { Write-Host $_ }
+        Write-Host ""
+    }
+    
     # Build menu items array
     $menuItems = @()
     
@@ -491,7 +513,54 @@ function Show-InteractiveMainMenu {
     # Filter out separators for navigation
     $navigableItems = $menuItems | Where-Object { $_.Value -notlike "separator*" }
     
-    return Get-MenuSelection -MenuItems $navigableItems -Title "🚀 M365 TENANT AUTOMATION HUB"
+    # Create header callback for dashboard
+    $headerCallback = if ($Global:TenantConnection -and $Global:CompletedSteps) {
+        {
+            Show-ProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Get-SmartRecommendations -CompletedSteps $Global:CompletedSteps | ForEach-Object { Write-Host $_ }
+            Write-Host ""
+        }
+    } else { $null }
+    
+    return Get-MenuSelection -MenuItems $navigableItems -Title "🚀 M365 TENANT AUTOMATION HUB" -HeaderCallback $headerCallback
+}
+
+function Show-CompactProgressDashboard {
+    param([hashtable]$CompletedSteps)
+    
+    $serviceProgress = Get-ServiceProgress -CompletedSteps $CompletedSteps
+    $overallCompleted = ($serviceProgress.Values | Measure-Object -Property Completed -Sum).Sum
+    $overallTotal = ($serviceProgress.Values | Measure-Object -Property Total -Sum).Sum
+    
+    Write-Host "┌─────────────────────────── TENANT PROGRESS ───────────────────────────────┐" -ForegroundColor Cyan
+    Write-Host "│ Overall: $(Get-ProgressBar -Current $overallCompleted -Total $overallTotal -Width 12)" -NoNewline -ForegroundColor Cyan
+    
+    # Show key service status in compact format
+    $entraid = if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts) { "✅" } else { "⏳" }
+    $intune = if ($CompletedSteps.DeviceGroups -and $CompletedSteps.CompliancePolicies) { "✅" } else { "⏳" }
+    $ca = if ($CompletedSteps.ConditionalAccess) { "✅" } else { "⏳" }
+    
+    Write-Host "   EntraID:$entraid Intune:$intune CA:$ca" -NoNewline -ForegroundColor Gray
+    Write-Host " │" -ForegroundColor Cyan
+    Write-Host "└────────────────────────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
+}
+
+function Show-CompactRecommendations {
+    param([hashtable]$CompletedSteps)
+    
+    $recommendations = Get-SmartRecommendations -CompletedSteps $CompletedSteps
+    
+    if ($recommendations.Count -gt 0) {
+        $topRec = $recommendations[0]
+        $priorityColor = switch ($topRec.Priority) {
+            "High" { "Red" }
+            "Medium" { "Yellow" }  
+            "Low" { "Green" }
+        }
+        
+        Write-Host "💡 Next: " -NoNewline -ForegroundColor Yellow
+        Write-Host "$($topRec.Icon) $($topRec.Title)" -ForegroundColor $priorityColor
+    }
 }
 
 function Show-InteractiveSubMenu {
@@ -501,8 +570,25 @@ function Show-InteractiveSubMenu {
         [string]$ServiceIcon = "🔧"
     )
     
+    # Show compact progress at the top initially
+    if ($Global:CompletedSteps) {
+        Clear-Host
+        Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+        Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+        Write-Host ""
+    }
+    
+    # Create header callback for consistent dashboard display
+    $headerCallback = if ($Global:CompletedSteps) {
+        {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+    } else { $null }
+    
     $fullTitle = "$ServiceIcon $Title"
-    return Get-MenuSelection -MenuItems $MenuItems -Title $fullTitle
+    return Get-MenuSelection -MenuItems $MenuItems -Title $fullTitle -HeaderCallback $headerCallback
 }
 
 # === Enhanced UI Functions ===
@@ -1058,73 +1144,54 @@ function Show-EntraMenu {
     Start-Sleep 1
     
     do {
-        # Build dynamic menu items based on prerequisites
-        $menuItems = @()
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor Cyan
+        Write-Host "🏢 ENTRA ID AUTOMATION" -ForegroundColor Cyan
+        Write-Host "=" * 60 -ForegroundColor Cyan
         
         # Security Groups - Always available (foundational)
-        $menuItems += @{ 
-            Display = "👥 Security Groups (Dynamic)"; 
-            Value = "1"
-        }
+        Write-Host "1. 👥 Security Groups (Dynamic)" -ForegroundColor Green
         
         # Conditional Access - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
-            $menuItems += @{ 
-                Display = "🛡️ Conditional Access Policies"; 
-                Value = "2" 
-            }
+            Write-Host "2. 🛡️ Conditional Access Policies" -ForegroundColor Green
         } else {
-            $menuItems += @{ 
-                Display = "🛡️ Conditional Access Policies [REQUIRES: Security Groups]"; 
-                Value = "2-disabled" 
-            }
+            Write-Host "2. 🛡️ Conditional Access Policies [REQUIRES: Security Groups]" -ForegroundColor Red
         }
         
         # Admin Creation - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "AdminCreation") {
-            $menuItems += @{ 
-                Display = "👑 Admin Account Creation"; 
-                Value = "3" 
-            }
+            Write-Host "3. 👑 Admin Account Creation" -ForegroundColor Green
         } else {
-            $menuItems += @{ 
-                Display = "👑 Admin Account Creation [REQUIRES: Security Groups]"; 
-                Value = "3-disabled" 
-            }
+            Write-Host "3. 👑 Admin Account Creation [REQUIRES: Security Groups]" -ForegroundColor Red
         }
         
         # User Creation - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "UserCreation") {
-            $menuItems += @{ 
-                Display = "👤 User Creation & Management"; 
-                Value = "4" 
-            }
+            Write-Host "4. 👤 User Creation & Management" -ForegroundColor Green
         } else {
-            $menuItems += @{ 
-                Display = "👤 User Creation & Management [REQUIRES: Security Groups]"; 
-                Value = "4-disabled" 
-            }
+            Write-Host "4. 👤 User Creation & Management [REQUIRES: Security Groups]" -ForegroundColor Red
         }
         
         # Password Policies - Requires Admin Accounts
         if (Test-Prerequisites -RequiredStep "PasswordPolicies") {
-            $menuItems += @{ 
-                Display = "🔐 Password Policies"; 
-                Value = "5" 
-            }
+            Write-Host "5. 🔐 Password Policies" -ForegroundColor Green
         } else {
-            $menuItems += @{ 
-                Display = "🔐 Password Policies [REQUIRES: Admin Accounts]"; 
-                Value = "5-disabled" 
-            }
+            Write-Host "5. 🔐 Password Policies [REQUIRES: Admin Accounts]" -ForegroundColor Red
         }
         
-        $menuItems += @{ Display = "⬅️ Back to Main Menu"; Value = "0" }
+        Write-Host "0. ⬅️ Back to Main Menu"
+        Write-Host ""
         
-        # Filter out disabled items for navigation
-        $navigableItems = $menuItems | Where-Object { $_.Value -notlike "*-disabled" }
-        
-        $choice = Show-InteractiveSubMenu -MenuItems $navigableItems -Title "ENTRA ID AUTOMATION" -ServiceIcon "🏢"
+        $choice = Read-Host "Select option"
         
         switch ($choice) {
             "1" { 
@@ -1186,7 +1253,16 @@ function Show-IntuneMenu {
     Initialize-CompletedSteps
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor Magenta
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor Magenta
         Write-Host "📱 INTUNE AUTOMATION" -ForegroundColor Magenta
         Write-Host "=" * 60 -ForegroundColor Magenta
         
@@ -1286,7 +1362,16 @@ function Show-ExchangeMenu {
     Initialize-CompletedSteps
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor Blue
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor Blue
         Write-Host "📧 EXCHANGE ONLINE AUTOMATION" -ForegroundColor Blue
         Write-Host "=" * 60 -ForegroundColor Blue
         
@@ -1356,7 +1441,16 @@ function Show-SharePointMenu {
     if (!(Set-ServiceScopes -Service "SharePoint")) { return }
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor Green
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor Green
         Write-Host "🌐 SHAREPOINT ONLINE AUTOMATION" -ForegroundColor Green
         Write-Host "=" * 60 -ForegroundColor Green
         Write-Host "1. 🏢 Site Collection Creation" -ForegroundColor Green
@@ -1381,7 +1475,16 @@ function Show-SecurityMenu {
     if (!(Set-ServiceScopes -Service "Security")) { return }
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor Red
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor Red
         Write-Host "🛡️ SECURITY & DEFENDER AUTOMATION" -ForegroundColor Red
         Write-Host "=" * 60 -ForegroundColor Red
         Write-Host "1. 🌐 Web Content Filtering" -ForegroundColor Green
@@ -1406,7 +1509,16 @@ function Show-PurviewMenu {
     if (!(Set-ServiceScopes -Service "Purview")) { return }
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor DarkCyan
+        Clear-Host
+        
+        # Show compact progress dashboard
+        if ($Global:CompletedSteps) {
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host ""
+        }
+        
+        Write-Host "=" * 60 -ForegroundColor DarkCyan
         Write-Host "🔒 PURVIEW COMPLIANCE AUTOMATION" -ForegroundColor DarkCyan
         Write-Host "=" * 60 -ForegroundColor DarkCyan
         Write-Host "1. 📋 Retention Policies" -ForegroundColor Green
