@@ -152,11 +152,9 @@ function Test-ConfigPoliciesExist {
         # Check if optional policies exist (bonus points but not required)
         $optionalExists = $optionalPolicies | Where-Object { $_ -in $existingPolicies }
         
-        # Consider complete if:
-        # - 80% or more of core policies exist, OR
-        # - All core policies exist, OR  
-        # - All policies (including optional) exist
-        $isComplete = $coreCompletionRate -ge 0.8 -or $coreExists.Count -eq $corePolicies.Count -or ($coreExists.Count + $optionalExists.Count) -eq ($corePolicies.Count + $optionalPolicies.Count)
+        # Consider complete if all core policies exist (regardless of optional ones for now)
+        # This allows progression while still tracking EDR separately
+        $isComplete = $coreExists.Count -eq $corePolicies.Count
         
         if (-not $isComplete) {
             $missingCore = $corePolicies | Where-Object { $_ -notin $existingPolicies }
@@ -174,6 +172,25 @@ function Test-ConfigPoliciesExist {
     }
     catch {
         Write-Host "  ❌ Error checking config policies: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Test-EDRPolicyExists {
+    try {
+        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET |
+            Select-Object -ExpandProperty value | Select-Object -ExpandProperty name
+        
+        $edrExists = "EDR Policy" -in $existingPolicies
+        
+        if (-not $edrExists) {
+            Write-Host "  💡 EDR Policy requires manual setup in Microsoft Defender for Endpoint" -ForegroundColor Gray
+        }
+        
+        return $edrExists
+    }
+    catch {
+        Write-Host "  ❌ Error checking EDR policy: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -830,6 +847,17 @@ function Get-SmartRecommendations {
         }
     }
     
+    # Step 7: EDR Policy (Manual Setup Required)
+    if ($CompletedSteps.ConfigPolicies -and -not $CompletedSteps.EDRPolicy) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "Setup EDR Policy (Manual)"
+            Description = "Configure Endpoint Detection & Response in Microsoft Defender for Endpoint portal"
+            Action = "Manual setup required in Microsoft Defender for Endpoint"
+            Icon = "🛡️"
+        }
+    }
+    
     # Advanced features (only show if core is complete)
     if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and $CompletedSteps.ConditionalAccess) {
         $recommendations += @{
@@ -1022,6 +1050,7 @@ function Initialize-CompletedSteps {
             "Pilot Device Group"
         )
         ConfigPolicies = Test-ConfigPoliciesExist
+        EDRPolicy = Test-EDRPolicyExists
         CompliancePolicies = Test-CompliancePoliciesExist
         ConditionalAccess = Test-ConditionalAccessPoliciesExist
         AdminAccounts = Test-AdminAccountsExist
@@ -1769,6 +1798,7 @@ function Start-AutomationHub {
                 Write-Host "• Conditional Access: $(if ($Global:CompletedSteps.ConditionalAccess) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.ConditionalAccess) { 'Green' } else { 'Red' })
                 Write-Host "• Device Groups: $(if ($Global:CompletedSteps.DeviceGroups) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.DeviceGroups) { 'Green' } else { 'Red' })
                 Write-Host "• Config Policies: $(if ($Global:CompletedSteps.ConfigPolicies) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.ConfigPolicies) { 'Green' } else { 'Red' })
+                Write-Host "• EDR Policy: $(if ($Global:CompletedSteps.EDRPolicy) { '✅ Complete' } else { '❌ Not Complete (Manual Setup)' })" -ForegroundColor $(if ($Global:CompletedSteps.EDRPolicy) { 'Green' } else { 'Yellow' })
                 Write-Host "• Compliance Policies: $(if ($Global:CompletedSteps.CompliancePolicies) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.CompliancePolicies) { 'Green' } else { 'Red' })
                 Write-Host ""
                 Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
