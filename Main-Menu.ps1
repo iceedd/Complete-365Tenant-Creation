@@ -129,6 +129,55 @@ function Test-PoliciesExist {
     }
 }
 
+function Test-ConfigPoliciesExist {
+    try {
+        # Get all existing configuration policies
+        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET |
+            Select-Object -ExpandProperty value | Select-Object -ExpandProperty name
+        
+        # Core policies that can be automatically created
+        $corePolicies = @(
+            "Defender Configuration", "Enable Bitlocker", 
+            "Office Updates Configuration", "OneDrive Configuration",
+            "Outlook Configuration", "Tamper Protection", "Web Sign-in Policy"
+        )
+        
+        # Optional policies that may require manual setup (like EDR)
+        $optionalPolicies = @("EDR Policy")
+        
+        # Check how many core policies exist
+        $coreExists = $corePolicies | Where-Object { $_ -in $existingPolicies }
+        $coreCompletionRate = $coreExists.Count / $corePolicies.Count
+        
+        # Check if optional policies exist (bonus points but not required)
+        $optionalExists = $optionalPolicies | Where-Object { $_ -in $existingPolicies }
+        
+        # Consider complete if:
+        # - 80% or more of core policies exist, OR
+        # - All core policies exist, OR  
+        # - All policies (including optional) exist
+        $isComplete = $coreCompletionRate -ge 0.8 -or $coreExists.Count -eq $corePolicies.Count -or ($coreExists.Count + $optionalExists.Count) -eq ($corePolicies.Count + $optionalPolicies.Count)
+        
+        if (-not $isComplete) {
+            $missingCore = $corePolicies | Where-Object { $_ -notin $existingPolicies }
+            $missingOptional = $optionalPolicies | Where-Object { $_ -notin $existingPolicies }
+            
+            if ($missingCore.Count -gt 0) {
+                Write-Host "  ⚠️ Missing core config policies: $($missingCore -join ', ')" -ForegroundColor Yellow
+            }
+            if ($missingOptional.Count -gt 0) {
+                Write-Host "  💡 Optional policies (may require manual setup): $($missingOptional -join ', ')" -ForegroundColor Gray
+            }
+        }
+        
+        return $isComplete
+    }
+    catch {
+        Write-Host "  ❌ Error checking config policies: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
 function Test-ConditionalAccessPoliciesExist {
     try {
         # Look for custom conditional access policies (not just any policies)
@@ -972,11 +1021,7 @@ function Initialize-CompletedSteps {
             "Android Devices", "Corporate Owned Devices", "Personal Devices",
             "Pilot Device Group"
         )
-        ConfigPolicies = Test-PoliciesExist -PolicyNames @(
-            "Defender Configuration", "Enable Bitlocker", "EDR Policy",
-            "Office Updates Configuration", "OneDrive Configuration",
-            "Outlook Configuration", "Tamper Protection", "Web Sign-in Policy"
-        )
+        ConfigPolicies = Test-ConfigPoliciesExist
         CompliancePolicies = Test-CompliancePoliciesExist
         ConditionalAccess = Test-ConditionalAccessPoliciesExist
         AdminAccounts = Test-AdminAccountsExist
