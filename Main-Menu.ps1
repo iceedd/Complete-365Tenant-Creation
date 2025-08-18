@@ -1003,8 +1003,14 @@ function Connect-M365Tenant {
     Write-Host "`n🔐 Connecting to Microsoft 365 Tenant..." -ForegroundColor Cyan
     
     try {
-        # Disconnect any existing connection
+        # Disconnect any existing connection to force fresh authentication
+        Write-Host "🔄 Clearing any existing connections..." -ForegroundColor Yellow
         Disconnect-MgGraph -ErrorAction SilentlyContinue
+        
+        # Clear any cached tokens by removing context
+        if (Get-MgContext) {
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+        }
         
         # Use a practical set of scopes that cover most common scenarios
         $practicalScopes = @(
@@ -1017,14 +1023,19 @@ function Connect-M365Tenant {
         )
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow
+        Write-Host "   This will open a browser window for authentication..." -ForegroundColor Gray
         
-        # Connect with practical scopes - force fresh authentication
-        Connect-MgGraph -Scopes $practicalScopes -NoWelcome -ForceRefresh
+        # Connect with practical scopes
+        Connect-MgGraph -Scopes $practicalScopes -NoWelcome
+        
+        Write-Host "✅ Authentication completed. Getting tenant info..." -ForegroundColor Green
         
         $context = Get-MgContext
         if (!$context) {
             throw "No authentication context returned"
         }
+        
+        Write-Host "✅ Got authentication context for: $($context.Account)" -ForegroundColor Green
         
         $org = Get-MgOrganization | Select-Object -First 1
         if (!$org) {
@@ -1051,8 +1062,9 @@ function Connect-M365Tenant {
         Write-Host "⚠️ Primary authentication failed. Trying minimal connection..." -ForegroundColor Yellow
         
         try {
-            # Fallback to very basic connection - force fresh authentication
-            Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome -ForceRefresh
+            # Fallback to very basic connection
+            Write-Host "🔄 Trying with minimal permissions..." -ForegroundColor Yellow
+            Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome
             
             $context = Get-MgContext
             $org = Get-MgOrganization | Select-Object -First 1
@@ -1690,11 +1702,18 @@ function Start-AutomationHub {
                 else { Write-Host "Please connect to tenant first!" -ForegroundColor Red; Start-Sleep 2 }
             }
             "8" {
-                if (Connect-M365Tenant) {
+                Write-Host "🔄 Starting connection process..." -ForegroundColor Cyan
+                $connectionResult = Connect-M365Tenant
+                
+                if ($connectionResult) {
                     Write-Host "🔍 Checking tenant prerequisites..." -ForegroundColor Yellow
                     Initialize-CompletedSteps
                     Write-Host "✅ Prerequisites checked! Service menus will auto-refresh status." -ForegroundColor Green
                     Save-SessionState
+                } else {
+                    Write-Host "❌ Connection failed. Please try again." -ForegroundColor Red
+                    Write-Host "Press any key to continue..." -ForegroundColor Gray
+                    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
                 }
             }
             "9" { 
