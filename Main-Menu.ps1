@@ -483,8 +483,15 @@ function Show-InteractiveMainMenu {
     
     # Show dashboard if connected
     if ($Global:TenantConnection -and $Global:CompletedSteps) {
-        Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
-        Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+        Write-Host "✅ Connected to: $($Global:TenantConnection.OrgName)" -ForegroundColor Green
+        Write-Host "   Account: $($Global:TenantConnection.Account)" -ForegroundColor Gray
+        Write-Host ""
+        
+        # Show Enhanced Progress Dashboard
+        Show-EnhancedProgressDashboard -CompletedSteps $Global:CompletedSteps
+        
+        # Show Smart Recommendations
+        Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
         Write-Host ""
     }
     
@@ -516,8 +523,15 @@ function Show-InteractiveMainMenu {
     # Create header callback for dashboard
     $headerCallback = if ($Global:TenantConnection -and $Global:CompletedSteps) {
         {
-            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
-            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
+            Write-Host "✅ Connected to: $($Global:TenantConnection.OrgName)" -ForegroundColor Green
+            Write-Host "   Account: $($Global:TenantConnection.Account)" -ForegroundColor Gray
+            Write-Host ""
+            
+            # Show Enhanced Progress Dashboard
+            Show-EnhancedProgressDashboard -CompletedSteps $Global:CompletedSteps
+            
+            # Show Smart Recommendations
+            Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
             Write-Host ""
         }
     } else { $null }
@@ -1655,7 +1669,7 @@ function Start-AutomationHub {
     }
 
     do {
-        $choice = Show-MainMenu
+        $choice = Show-InteractiveMainMenu
         
         switch ($choice) {
             "1" { 
