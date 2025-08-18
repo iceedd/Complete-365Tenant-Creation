@@ -131,7 +131,16 @@ function Test-PoliciesExist {
 
 function Test-ConditionalAccessPoliciesExist {
     try {
-        $policies = Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue
+        # Look for custom conditional access policies (not just any policies)
+        $policies = Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue | 
+            Where-Object { 
+                $_.State -eq "enabled" -and 
+                ($_.DisplayName -like "*BITS*" -or 
+                 $_.DisplayName -like "*Admin*" -or 
+                 $_.DisplayName -like "*MFA*" -or
+                 $_.CreatedDateTime -gt (Get-Date).AddDays(-30)) # Recently created policies
+            }
+        
         return $policies.Count -gt 0
     }
     catch {
@@ -540,14 +549,44 @@ function Get-SmartRecommendations {
         }
     }
     
-    # Quick wins
-    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts) {
+    # Conditional Access - only if prerequisites met but not completed
+    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and -not $CompletedSteps.ConditionalAccess) {
         $recommendations += @{
-            Priority = "Low"
+            Priority = "Medium"
             Title = "🔐 Setup Conditional Access"
             Description = "Implement conditional access policies for enhanced security"
             Action = "Go to Entra ID → Conditional Access Policies"
-            Icon = "💡"
+            Icon = "🔒"
+        }
+    }
+    
+    # Configuration Policies - if device groups exist but config policies don't
+    if ($CompletedSteps.DeviceGroups -and -not $CompletedSteps.ConfigPolicies) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "⚙️ Configure Device Policies"
+            Description = "Set up device configuration policies for security settings"
+            Action = "Go to Intune → Configuration Policies"
+            Icon = "🛠️"
+        }
+    }
+    
+    # Next service areas
+    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and $CompletedSteps.DeviceGroups) {
+        $recommendations += @{
+            Priority = "Low"
+            Title = "📧 Setup Exchange Online"
+            Description = "Configure email and collaboration features"
+            Action = "Go to Exchange Online → Shared Mailboxes"
+            Icon = "📬"
+        }
+        
+        $recommendations += @{
+            Priority = "Low"
+            Title = "🛡️ Configure Security Policies"
+            Description = "Set up threat protection and security features"
+            Action = "Go to Security & Defender → Safe Attachments"
+            Icon = "🔐"
         }
     }
     
@@ -1242,8 +1281,52 @@ function Show-MainMenu {
     Write-Host "7. 🚀 Quick Start Wizard (Guided Setup)"
     Write-Host "8. 🔐 Connect to Tenant"
     Write-Host "9. 🔄 Refresh Scripts & Status"
+    Write-Host "d. 🛠️ Debug: Manual Status Override"
     Write-Host "0. ❌ Exit Application"
     Write-Host ""
+}
+
+function Show-DebugStatusOverride {
+    Write-Host "🛠️ Debug: Manual Status Override" -ForegroundColor Yellow
+    Write-Host "─" * 80 -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Current Status:" -ForegroundColor Cyan
+    
+    $steps = @{
+        "1" = @{ Name = "Security Groups"; Key = "SecurityGroups" }
+        "2" = @{ Name = "Admin Accounts"; Key = "AdminAccounts" }
+        "3" = @{ Name = "Device Groups"; Key = "DeviceGroups" }
+        "4" = @{ Name = "Configuration Policies"; Key = "ConfigPolicies" }
+        "5" = @{ Name = "Compliance Policies"; Key = "CompliancePolicies" }
+        "6" = @{ Name = "Conditional Access"; Key = "ConditionalAccess" }
+    }
+    
+    foreach ($num in $steps.Keys | Sort-Object) {
+        $step = $steps[$num]
+        $status = if ($Global:CompletedSteps[$step.Key]) { "✅ Complete" } else { "⏳ Pending" }
+        $color = if ($Global:CompletedSteps[$step.Key]) { "Green" } else { "Yellow" }
+        Write-Host "$num. $($step.Name): " -NoNewline -ForegroundColor White
+        Write-Host "$status" -ForegroundColor $color
+    }
+    
+    Write-Host ""
+    Write-Host "Enter number to toggle status (or 'q' to quit):"
+    $choice = Read-Host "Selection"
+    
+    if ($choice -eq 'q') { return }
+    
+    if ($steps.ContainsKey($choice)) {
+        $step = $steps[$choice]
+        $Global:CompletedSteps[$step.Key] = -not $Global:CompletedSteps[$step.Key]
+        $newStatus = if ($Global:CompletedSteps[$step.Key]) { "Complete" } else { "Pending" }
+        Write-Host "✅ $($step.Name) marked as: $newStatus" -ForegroundColor Green
+        Save-SessionState
+        Start-Sleep 1
+    }
+    else {
+        Write-Host "Invalid selection!" -ForegroundColor Red
+        Start-Sleep 1
+    }
 }
 
 # Main execution loop
@@ -1305,6 +1388,7 @@ function Start-AutomationHub {
                 Write-Host "🧹 Session state cleared!" -ForegroundColor Green
                 Clear-SessionState
             }
+            "d" { Show-DebugStatusOverride }
             "0" { 
                 Write-Host "💾 Saving session state..." -ForegroundColor Gray
                 Save-SessionState
