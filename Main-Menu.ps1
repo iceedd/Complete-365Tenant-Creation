@@ -138,6 +138,34 @@ function Test-ConditionalAccessPoliciesExist {
         return $false
     }
 }
+
+function Test-AdminAccountsExist {
+    try {
+        # Check for the core admin accounts created by the Admin-Creation script
+        $adminAccounts = @(
+            "BITS-Admin-Cloud",
+            "BITS-Admin-HD", 
+            "BITS-Admin-BG01",
+            "BITS-Admin-BG02"
+        )
+        
+        $existingUsers = Get-MgUser -Filter "department eq 'BITS Admin'" -ErrorAction SilentlyContinue
+        $existingDisplayNames = $existingUsers | Select-Object -ExpandProperty DisplayName
+        
+        $foundAccounts = 0
+        foreach ($adminAccount in $adminAccounts) {
+            if ($adminAccount -in $existingDisplayNames) {
+                $foundAccounts++
+            }
+        }
+        
+        # Return true if at least 2 admin accounts exist (flexible threshold)
+        return $foundAccounts -ge 2
+    }
+    catch {
+        return $false
+    }
+}
 function Test-CompliancePoliciesExist {
     try {
         $policies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method GET -ErrorAction SilentlyContinue |
@@ -181,7 +209,7 @@ function Initialize-CompletedSteps {
         )
         CompliancePolicies = Test-CompliancePoliciesExist
         ConditionalAccess = Test-ConditionalAccessPoliciesExist
-        AdminAccounts = $false      # Placeholder until Admin script is built
+        AdminAccounts = Test-AdminAccountsExist
     }
 }
 
@@ -691,6 +719,9 @@ function Show-MainMenu {
         
         $statusIcon = if ($Global:CompletedSteps.CompliancePolicies) { "✅" } else { "⏳" }
         Write-Host "   $statusIcon Compliance Policies" -ForegroundColor $(if ($Global:CompletedSteps.CompliancePolicies) { "Green" } else { "Yellow" })
+        
+        $statusIcon = if ($Global:CompletedSteps.AdminAccounts) { "✅" } else { "⏳" }
+        Write-Host "   $statusIcon Admin Accounts" -ForegroundColor $(if ($Global:CompletedSteps.AdminAccounts) { "Green" } else { "Yellow" })
     } else {
         Write-Host "❌ Not connected to tenant" -ForegroundColor Red
     }
