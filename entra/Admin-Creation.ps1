@@ -10,7 +10,7 @@
     Creates Admin Accounts:
     - BITS-Admin-Cloud@DefaultDomain (Cloud Administrator)
     - BITS-Admin-HD@DefaultDomain (Helpdesk Administrator)  
-    - BITS-Admin-BG01@DefaultDomain (Break Glass Account #1 - NoMFA exempt)
+    - BITS-Admin-BG01@DefaultDomain (Break Glass Account #1 - MFA required)
     - BITS-Admin-BG02@DefaultDomain (Break Glass Account #2 - NoMFA exempt)
     
     Groups Created/Managed:
@@ -362,7 +362,8 @@ function Show-AdminAccountSummary {
     Write-Host "Group Memberships:" -ForegroundColor Yellow
     Write-Host "  • Cloud & HD Admins → BITS Admin Users (Dynamic)" -ForegroundColor White
     Write-Host "  • Cloud & HD Admins → Helpdesk Operator Group (Dynamic)" -ForegroundColor White  
-    Write-Host "  • Break Glass Accounts → BITS Admin Users + NoMFA Exclusion Group" -ForegroundColor White
+    Write-Host "  • BG01 → BITS Admin Users (Dynamic)" -ForegroundColor White
+    Write-Host "  • BG02 → BITS Admin Users + NoMFA Exclusion Group" -ForegroundColor White
     
     Write-Host ""
     Write-Host "Generated Passwords:" -ForegroundColor Cyan
@@ -391,7 +392,8 @@ function Show-AdminAccountSummary {
     
     Write-Host ""
     Write-Host "Security Reminders:" -ForegroundColor Red
-    Write-Host "• Break Glass accounts are exempt from MFA - monitor usage closely" -ForegroundColor Yellow
+    Write-Host "• Only BG02 is exempt from MFA - monitor usage closely" -ForegroundColor Yellow
+    Write-Host "• BG01 requires MFA for additional security layer" -ForegroundColor Yellow
     Write-Host "• Consider implementing PIM for just-in-time admin access" -ForegroundColor Yellow
     Write-Host "• Review admin account activity regularly" -ForegroundColor Yellow
     Write-Host "• Implement break-glass procedures for emergency accounts" -ForegroundColor Yellow
@@ -477,18 +479,18 @@ function New-TenantAdminAccounts {
                 Role = "BG01"
                 UPN = "BITS-Admin-BG01@$defaultDomain" 
                 DisplayName = "BITS-Admin-BG01"
-                GivenName = "Break Glass"
-                Surname = "01"
+                GivenName = "BITS Admin"
+                Surname = "BG01"
                 JobTitle = "Emergency Access Account"
                 PasswordLength = 18
-                Groups = @("BITS Admin Users", "NoMFA Exclusion Group")
+                Groups = @("BITS Admin Users")
             },
             @{
                 Role = "BG02"
                 UPN = "BITS-Admin-BG02@$defaultDomain" 
                 DisplayName = "BITS-Admin-BG02"
-                GivenName = "Break Glass"
-                Surname = "02"
+                GivenName = "BITS Admin"
+                Surname = "BG02"
                 JobTitle = "Emergency Access Account (NoMFA Exempt)"
                 PasswordLength = 18
                 Groups = @("BITS Admin Users", "NoMFA Exclusion Group")
