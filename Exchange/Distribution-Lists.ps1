@@ -85,9 +85,25 @@ function Get-GraphAccessToken {
             Write-Host "✅ Using existing Microsoft Graph connection" -ForegroundColor Green
             Write-Host "   Account: $($context.Account)" -ForegroundColor Cyan
             
-            # Get access token
-            $token = [Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance.AuthenticationProvider.GetAuthenticationResultAsync().GetAwaiter().GetResult()
-            return $token.AccessToken
+            # Get access token using a more reliable method
+            try {
+                $token = Get-MgAccessToken -ErrorAction Stop
+                return $token
+            }
+            catch {
+                # Fallback method for older Graph module versions
+                try {
+                    $authProvider = Get-MgContext | Select-Object -ExpandProperty AuthType
+                    if ($authProvider) {
+                        # For scripts that need REST API calls, we can use Invoke-MgGraphRequest instead
+                        Write-Host "✅ Graph context available - using Invoke-MgGraphRequest for API calls" -ForegroundColor Green
+                        return "USE_INVOKE_MGGRAPHREQUEST"
+                    }
+                }
+                catch {
+                    throw "Could not obtain Graph access token or context"
+                }
+            }
         } else {
             throw "No active Microsoft Graph context found"
         }
@@ -116,23 +132,40 @@ function Invoke-GraphAPI {
     )
     
     try {
-        $headers = @{
-            'Authorization' = "Bearer $AccessToken"
-            'Content-Type' = 'application/json'
+        # Check if we should use Invoke-MgGraphRequest instead of direct REST calls
+        if ($AccessToken -eq "USE_INVOKE_MGGRAPHREQUEST") {
+            # Use the built-in Graph cmdlet
+            $params = @{
+                Uri = $Uri
+                Method = $Method
+            }
+            
+            if ($Method -in @('POST', 'PATCH', 'PUT') -and $Body.Count -gt 0) {
+                $params.Body = $Body
+            }
+            
+            return Invoke-MgGraphRequest @params
         }
-        
-        $params = @{
-            Uri = $Uri
-            Method = $Method
-            Headers = $headers
+        else {
+            # Use direct REST API calls with access token
+            $headers = @{
+                'Authorization' = "Bearer $AccessToken"
+                'Content-Type' = 'application/json'
+            }
+            
+            $params = @{
+                Uri = $Uri
+                Method = $Method
+                Headers = $headers
+            }
+            
+            if ($Method -in @('POST', 'PATCH', 'PUT') -and $Body.Count -gt 0) {
+                $params.Body = $Body | ConvertTo-Json -Depth 10
+            }
+            
+            $response = Invoke-RestMethod @params
+            return $response
         }
-        
-        if ($Method -in @('POST', 'PATCH', 'PUT') -and $Body.Count -gt 0) {
-            $params.Body = $Body | ConvertTo-Json -Depth 10
-        }
-        
-        $response = Invoke-RestMethod @params
-        return $response
     }
     catch {
         $errorMessage = $_.Exception.Message
