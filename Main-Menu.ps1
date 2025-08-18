@@ -579,6 +579,7 @@ function Show-InteractiveMainMenu {
         Write-Host "9. 🔄 Refresh Scripts & Status" -ForegroundColor White
         Write-Host "d. 🛠️ Debug: Manual Status Override" -ForegroundColor Gray
         Write-Host "r. 🧠 Test Smart Recommendations" -ForegroundColor Gray
+        Write-Host "a. 🔐 Check Authentication Status" -ForegroundColor Gray
     }
     else {
         Write-Host "8. 🔐 Connect to Tenant (Required First Step)" -ForegroundColor Yellow
@@ -1160,6 +1161,58 @@ function Connect-M365Tenant {
             return $false
         }
     }
+}
+
+# Unified Authentication Helper for Scripts
+function Test-ServiceAuthentication {
+    param(
+        [string]$Service,
+        [switch]$ShowStatus
+    )
+    
+    $authStatus = @{
+        GraphConnected = $false
+        ServiceConnected = $false
+        RequiredAuth = $null
+    }
+    
+    # Check Microsoft Graph connection
+    $graphContext = Get-MgContext
+    if ($graphContext) {
+        $authStatus.GraphConnected = $true
+        if ($ShowStatus) {
+            Write-Host "✅ Microsoft Graph: Connected" -ForegroundColor Green
+        }
+    }
+    
+    # Check service-specific connections based on service type
+    switch ($Service) {
+        "Exchange" {
+            $authStatus.RequiredAuth = "ExchangeOnline"
+            try {
+                $exchangeSession = Get-PSSession | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" }
+                if ($exchangeSession) {
+                    $authStatus.ServiceConnected = $true
+                    if ($ShowStatus) { Write-Host "✅ Exchange Online: Connected" -ForegroundColor Green }
+                } else {
+                    if ($ShowStatus) { Write-Host "⚠️ Exchange Online: Not Connected" -ForegroundColor Yellow }
+                }
+            }
+            catch {
+                if ($ShowStatus) { Write-Host "⚠️ Exchange Online: Not Available" -ForegroundColor Yellow }
+            }
+        }
+        "SharePoint" {
+            $authStatus.RequiredAuth = "SharePointPnP"
+            if ($ShowStatus) { Write-Host "💡 SharePoint: Uses Graph API (when implemented)" -ForegroundColor Gray }
+        }
+        default {
+            # Most services can use Graph
+            $authStatus.ServiceConnected = $authStatus.GraphConnected
+        }
+    }
+    
+    return $authStatus
 }
 
 # Simplified and Robust Authentication System
@@ -1802,6 +1855,32 @@ function Start-AutomationHub {
                 Write-Host "• Compliance Policies: $(if ($Global:CompletedSteps.CompliancePolicies) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.CompliancePolicies) { 'Green' } else { 'Red' })
                 Write-Host ""
                 Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
+                Write-Host ""
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            }
+            "a" {
+                Write-Host "🔐 Checking Authentication Status..." -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Service Authentication Status:" -ForegroundColor Yellow
+                Write-Host "─" * 50 -ForegroundColor Gray
+                
+                $services = @("Entra", "Intune", "Exchange", "SharePoint", "Security", "Purview")
+                foreach ($service in $services) {
+                    Write-Host "$service Service:" -ForegroundColor White
+                    $authStatus = Test-ServiceAuthentication -Service $service -ShowStatus
+                }
+                
+                Write-Host ""
+                Write-Host "Authentication Recommendations:" -ForegroundColor Yellow
+                if (!(Get-MgContext)) {
+                    Write-Host "• Connect to Microsoft Graph first (option 8)" -ForegroundColor Red
+                } else {
+                    Write-Host "• Microsoft Graph connected ✅" -ForegroundColor Green
+                    Write-Host "• Most services will work with Graph authentication" -ForegroundColor Green
+                    Write-Host "• Exchange scripts will auto-connect to Exchange Online when needed" -ForegroundColor Yellow
+                }
+                
                 Write-Host ""
                 Write-Host "Press any key to continue..." -ForegroundColor Gray
                 try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
