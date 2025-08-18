@@ -385,6 +385,115 @@ function Show-SessionInfo {
     }
 }
 
+# === Interactive Navigation System ===
+
+function Get-MenuSelection {
+    param(
+        [array]$MenuItems,
+        [string]$Title = "Select Option",
+        [int]$InitialSelection = 0
+    )
+    
+    $selectedIndex = $InitialSelection
+    $maxIndex = $MenuItems.Count - 1
+    
+    do {
+        # Clear screen and show title
+        Clear-Host
+        Write-Host $Title -ForegroundColor Cyan
+        Write-Host ("─" * $Title.Length) -ForegroundColor Gray
+        Write-Host ""
+        
+        # Display menu items with highlighting
+        for ($i = 0; $i -lt $MenuItems.Count; $i++) {
+            $item = $MenuItems[$i]
+            
+            if ($i -eq $selectedIndex) {
+                # Highlighted selection
+                Write-Host "  ► " -NoNewline -ForegroundColor Yellow
+                Write-Host "$($item.Display)" -ForegroundColor Black -BackgroundColor Yellow
+            }
+            else {
+                # Normal menu item
+                Write-Host "    $($item.Display)" -ForegroundColor White
+            }
+        }
+        
+        Write-Host ""
+        Write-Host "Use ↑↓ arrow keys to navigate, Enter to select, or type number + Enter" -ForegroundColor Gray
+        
+        # Get user input
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        
+        switch ($key.VirtualKeyCode) {
+            38 { # Up arrow
+                $selectedIndex = if ($selectedIndex -eq 0) { $maxIndex } else { $selectedIndex - 1 }
+            }
+            40 { # Down arrow
+                $selectedIndex = if ($selectedIndex -eq $maxIndex) { 0 } else { $selectedIndex + 1 }
+            }
+            13 { # Enter
+                return $MenuItems[$selectedIndex].Value
+            }
+            27 { # Escape
+                return "0" # Exit
+            }
+            default {
+                # Check if it's a number key (fallback to traditional input)
+                if ($key.Character -match '\d' -or $key.Character -eq 'd') {
+                    $numberInput = $key.Character.ToString()
+                    
+                    # Find matching menu item
+                    $matchingItem = $MenuItems | Where-Object { $_.Value -eq $numberInput }
+                    if ($matchingItem) {
+                        return $numberInput
+                    }
+                }
+            }
+        }
+    } while ($true)
+}
+
+function Show-InteractiveMainMenu {
+    # Build menu items array
+    $menuItems = @()
+    
+    if ($Global:TenantConnection) {
+        $menuItems += @{ Display = "🏢 Entra ID (Identity & Access Management)"; Value = "1" }
+        $menuItems += @{ Display = "📱 Intune (Device Management & Compliance)"; Value = "2" }
+        $menuItems += @{ Display = "📧 Exchange Online (Email & Collaboration)"; Value = "3" }
+        $menuItems += @{ Display = "🌐 SharePoint Online (File Sharing & Sites)"; Value = "4" }
+        $menuItems += @{ Display = "🛡️ Security & Defender (Threat Protection)"; Value = "5" }
+        $menuItems += @{ Display = "🔒 Purview (Data Governance & Compliance)"; Value = "6" }
+        $menuItems += @{ Display = "─" * 50; Value = "separator1" }
+        $menuItems += @{ Display = "🚀 Quick Start Wizard (Guided Setup)"; Value = "7" }
+        $menuItems += @{ Display = "🔄 Refresh Scripts & Status"; Value = "9" }
+        $menuItems += @{ Display = "🛠️ Debug: Manual Status Override"; Value = "d" }
+    }
+    else {
+        $menuItems += @{ Display = "🔐 Connect to Tenant (Required First Step)"; Value = "8" }
+    }
+    
+    $menuItems += @{ Display = "─" * 50; Value = "separator2" }
+    $menuItems += @{ Display = "❌ Exit Application"; Value = "0" }
+    
+    # Filter out separators for navigation
+    $navigableItems = $menuItems | Where-Object { $_.Value -notlike "separator*" }
+    
+    return Get-MenuSelection -MenuItems $navigableItems -Title "🚀 M365 TENANT AUTOMATION HUB"
+}
+
+function Show-InteractiveSubMenu {
+    param(
+        [array]$MenuItems,
+        [string]$Title,
+        [string]$ServiceIcon = "🔧"
+    )
+    
+    $fullTitle = "$ServiceIcon $Title"
+    return Get-MenuSelection -MenuItems $MenuItems -Title $fullTitle
+}
+
 # === Enhanced UI Functions ===
 
 function Get-ProgressBar {
@@ -892,47 +1001,76 @@ function Show-EntraMenu {
     # Auto-refresh prerequisites when entering Entra menu
     Write-Host "🔄 Checking current prerequisites..." -ForegroundColor Gray
     Initialize-CompletedSteps
+    Start-Sleep 1
     
     do {
-        Write-Host "`n" + "=" * 60 -ForegroundColor Cyan
-        Write-Host "🏢 ENTRA ID AUTOMATION" -ForegroundColor Cyan
-        Write-Host "=" * 60 -ForegroundColor Cyan
+        # Build dynamic menu items based on prerequisites
+        $menuItems = @()
         
         # Security Groups - Always available (foundational)
-        Write-Host "1. 👥 Security Groups (Dynamic)" -ForegroundColor Green
+        $menuItems += @{ 
+            Display = "👥 Security Groups (Dynamic)"; 
+            Value = "1"
+        }
         
         # Conditional Access - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
-            Write-Host "2. 🛡️ Conditional Access Policies" -ForegroundColor Green
+            $menuItems += @{ 
+                Display = "🛡️ Conditional Access Policies"; 
+                Value = "2" 
+            }
         } else {
-            Write-Host "2. 🛡️ Conditional Access Policies [REQUIRES: Security Groups]" -ForegroundColor Red
+            $menuItems += @{ 
+                Display = "🛡️ Conditional Access Policies [REQUIRES: Security Groups]"; 
+                Value = "2-disabled" 
+            }
         }
         
         # Admin Creation - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "AdminCreation") {
-            Write-Host "3. 👑 Admin Account Creation" -ForegroundColor Green
+            $menuItems += @{ 
+                Display = "👑 Admin Account Creation"; 
+                Value = "3" 
+            }
         } else {
-            Write-Host "3. 👑 Admin Account Creation [REQUIRES: Security Groups]" -ForegroundColor Red
+            $menuItems += @{ 
+                Display = "👑 Admin Account Creation [REQUIRES: Security Groups]"; 
+                Value = "3-disabled" 
+            }
         }
         
         # User Creation - Requires Security Groups
         if (Test-Prerequisites -RequiredStep "UserCreation") {
-            Write-Host "4. 👤 User Creation & Management" -ForegroundColor Green
+            $menuItems += @{ 
+                Display = "👤 User Creation & Management"; 
+                Value = "4" 
+            }
         } else {
-            Write-Host "4. 👤 User Creation & Management [REQUIRES: Security Groups]" -ForegroundColor Red
+            $menuItems += @{ 
+                Display = "👤 User Creation & Management [REQUIRES: Security Groups]"; 
+                Value = "4-disabled" 
+            }
         }
         
         # Password Policies - Requires Admin Accounts
         if (Test-Prerequisites -RequiredStep "PasswordPolicies") {
-            Write-Host "5. 🔐 Password Policies" -ForegroundColor Green
+            $menuItems += @{ 
+                Display = "🔐 Password Policies"; 
+                Value = "5" 
+            }
         } else {
-            Write-Host "5. 🔐 Password Policies [REQUIRES: Admin Accounts]" -ForegroundColor Red
+            $menuItems += @{ 
+                Display = "🔐 Password Policies [REQUIRES: Admin Accounts]"; 
+                Value = "5-disabled" 
+            }
         }
         
-        Write-Host "0. ⬅️ Back to Main Menu"
-        Write-Host ""
+        $menuItems += @{ Display = "⬅️ Back to Main Menu"; Value = "0" }
         
-        $choice = Read-Host "Select option"
+        # Filter out disabled items for navigation
+        $navigableItems = $menuItems | Where-Object { $_.Value -notlike "*-disabled" }
+        
+        $choice = Show-InteractiveSubMenu -MenuItems $navigableItems -Title "ENTRA ID AUTOMATION" -ServiceIcon "🏢"
         
         switch ($choice) {
             "1" { 
@@ -1241,8 +1379,9 @@ function Clear-ScriptCache {
     Write-Host "🔄 Script cache cleared!" -ForegroundColor Green
 }
 
-# Enhanced Main Menu with Progress Dashboard
+# Enhanced Main Menu with Progress Dashboard and Interactive Navigation
 function Show-MainMenu {
+    # First show the progress dashboard
     Clear-Host
     
     if ($Global:TenantConnection) {
@@ -1267,23 +1406,12 @@ function Show-MainMenu {
     }
     
     Write-Host ""
-    Write-Host "🎯 Portal Automation:" -ForegroundColor Yellow
-    Write-Host "─" * 80 -ForegroundColor Gray
-    Write-Host "1. 🏢 Entra ID (Identity & Access Management)"
-    Write-Host "2. 📱 Intune (Device Management & Compliance)"
-    Write-Host "3. 📧 Exchange Online (Email & Collaboration)"
-    Write-Host "4. 🌐 SharePoint Online (File Sharing & Sites)"
-    Write-Host "5. 🛡️ Security & Defender (Threat Protection)"
-    Write-Host "6. 🔒 Purview (Data Governance & Compliance)"
-    Write-Host ""
-    Write-Host "🔧 Quick Actions:" -ForegroundColor Yellow  
-    Write-Host "─" * 80 -ForegroundColor Gray
-    Write-Host "7. 🚀 Quick Start Wizard (Guided Setup)"
-    Write-Host "8. 🔐 Connect to Tenant"
-    Write-Host "9. 🔄 Refresh Scripts & Status"
-    Write-Host "d. 🛠️ Debug: Manual Status Override"
-    Write-Host "0. ❌ Exit Application"
-    Write-Host ""
+    Write-Host "💡 TIP: Use arrow keys for navigation or type numbers!" -ForegroundColor Yellow
+    Write-Host "Press any key to continue to menu..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    
+    # Then switch to interactive menu
+    return Show-InteractiveMainMenu
 }
 
 function Show-DebugStatusOverride {
@@ -1339,8 +1467,7 @@ function Start-AutomationHub {
     }
 
     do {
-        Show-MainMenu
-        $choice = Read-Host "Select option"
+        $choice = Show-MainMenu
         
         switch ($choice) {
             "1" { 
