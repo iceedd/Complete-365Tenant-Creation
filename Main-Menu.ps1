@@ -512,6 +512,7 @@ function Show-InteractiveMainMenu {
         Write-Host "7. 🚀 Quick Start Wizard (Guided Setup)" -ForegroundColor Yellow
         Write-Host "9. 🔄 Refresh Scripts & Status" -ForegroundColor White
         Write-Host "d. 🛠️ Debug: Manual Status Override" -ForegroundColor Gray
+        Write-Host "r. 🧠 Test Smart Recommendations" -ForegroundColor Gray
     }
     else {
         Write-Host "8. 🔐 Connect to Tenant (Required First Step)" -ForegroundColor Yellow
@@ -712,86 +713,90 @@ function Get-SmartRecommendations {
     
     $recommendations = @()
     
-    # Priority 1: Foundation setup
+    # Step 1: Foundation - Security Groups (ALWAYS FIRST)
     if (-not $CompletedSteps.SecurityGroups) {
         $recommendations += @{
             Priority = "High"
-            Title = "🏗️ Start with Security Groups"
+            Title = "Start with Security Groups"
             Description = "Create foundation security groups for user management and licensing"
             Action = "Go to Entra ID → Security Groups"
-            Icon = "🚨"
+            Icon = "🏗️"
         }
+        return $recommendations  # Only show this until completed
     }
-    elseif (-not $CompletedSteps.AdminAccounts) {
+    
+    # Step 2: Admin Accounts (SECOND PRIORITY)
+    if (-not $CompletedSteps.AdminAccounts) {
         $recommendations += @{
             Priority = "High"
-            Title = "👑 Create Admin Accounts"
+            Title = "Create Admin Accounts"
             Description = "Set up administrative accounts with proper break-glass access"
             Action = "Go to Entra ID → Admin Account Creation"
-            Icon = "⚡"
+            Icon = "👑"
         }
+        return $recommendations  # Only show this until completed
     }
     
-    # Priority 2: Device management
-    if ($CompletedSteps.SecurityGroups -and -not $CompletedSteps.DeviceGroups) {
+    # Step 3: Conditional Access (HIGH PRIORITY after admin accounts)
+    if (-not $CompletedSteps.ConditionalAccess) {
         $recommendations += @{
-            Priority = "Medium"
-            Title = "📱 Setup Device Management"
-            Description = "Create device groups for Intune policy assignments"
-            Action = "Go to Intune → Device Groups"
-            Icon = "🎯"
-        }
-    }
-    
-    # Priority 3: Security policies
-    if ($CompletedSteps.DeviceGroups -and -not $CompletedSteps.CompliancePolicies) {
-        $recommendations += @{
-            Priority = "Medium"
-            Title = "✅ Configure Compliance"
-            Description = "Set up device compliance policies for security"
-            Action = "Go to Intune → Compliance Policies"
-            Icon = "🛡️"
-        }
-    }
-    
-    # Conditional Access - only if prerequisites met but not completed
-    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and -not $CompletedSteps.ConditionalAccess) {
-        $recommendations += @{
-            Priority = "Medium"
-            Title = "🔐 Setup Conditional Access"
+            Priority = "High"
+            Title = "Setup Conditional Access"
             Description = "Implement conditional access policies for enhanced security"
             Action = "Go to Entra ID → Conditional Access Policies"
-            Icon = "🔒"
+            Icon = "🔐"
         }
     }
     
-    # Configuration Policies - if device groups exist but config policies don't
+    # Step 4: Device Management
+    if (-not $CompletedSteps.DeviceGroups) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "Setup Device Management"
+            Description = "Create device groups for Intune policy assignments"
+            Action = "Go to Intune → Device Groups"
+            Icon = "📱"
+        }
+    }
+    
+    # Step 5: Device Configuration
     if ($CompletedSteps.DeviceGroups -and -not $CompletedSteps.ConfigPolicies) {
         $recommendations += @{
             Priority = "Medium"
-            Title = "⚙️ Configure Device Policies"
+            Title = "Configure Device Policies"
             Description = "Set up device configuration policies for security settings"
             Action = "Go to Intune → Configuration Policies"
-            Icon = "🛠️"
+            Icon = "⚙️"
         }
     }
     
-    # Next service areas
-    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and $CompletedSteps.DeviceGroups) {
+    # Step 6: Compliance Policies
+    if ($CompletedSteps.DeviceGroups -and -not $CompletedSteps.CompliancePolicies) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "Configure Compliance Policies"
+            Description = "Set up device compliance policies for security"
+            Action = "Go to Intune → Compliance Policies"
+            Icon = "✅"
+        }
+    }
+    
+    # Advanced features (only show if core is complete)
+    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts -and $CompletedSteps.ConditionalAccess) {
         $recommendations += @{
             Priority = "Low"
-            Title = "📧 Setup Exchange Online"
+            Title = "Setup Exchange Online"
             Description = "Configure email and collaboration features"
             Action = "Go to Exchange Online → Shared Mailboxes"
-            Icon = "📬"
+            Icon = "📧"
         }
         
         $recommendations += @{
             Priority = "Low"
-            Title = "🛡️ Configure Security Policies"
+            Title = "Configure Security Policies"
             Description = "Set up threat protection and security features"
             Action = "Go to Security & Defender → Safe Attachments"
-            Icon = "🔐"
+            Icon = "🛡️"
         }
     }
     
@@ -1710,6 +1715,22 @@ function Start-AutomationHub {
                 Clear-SessionState
             }
             "d" { Show-DebugStatusOverride }
+            "r" { 
+                Write-Host "🧠 Testing Smart Recommendations..." -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Current Completion Status:" -ForegroundColor Yellow
+                Write-Host "• Security Groups: $(if ($Global:CompletedSteps.SecurityGroups) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.SecurityGroups) { 'Green' } else { 'Red' })
+                Write-Host "• Admin Accounts: $(if ($Global:CompletedSteps.AdminAccounts) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.AdminAccounts) { 'Green' } else { 'Red' })
+                Write-Host "• Conditional Access: $(if ($Global:CompletedSteps.ConditionalAccess) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.ConditionalAccess) { 'Green' } else { 'Red' })
+                Write-Host "• Device Groups: $(if ($Global:CompletedSteps.DeviceGroups) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.DeviceGroups) { 'Green' } else { 'Red' })
+                Write-Host "• Config Policies: $(if ($Global:CompletedSteps.ConfigPolicies) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.ConfigPolicies) { 'Green' } else { 'Red' })
+                Write-Host "• Compliance Policies: $(if ($Global:CompletedSteps.CompliancePolicies) { '✅ Complete' } else { '❌ Not Complete' })" -ForegroundColor $(if ($Global:CompletedSteps.CompliancePolicies) { 'Green' } else { 'Red' })
+                Write-Host ""
+                Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
+                Write-Host ""
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            }
             "0" { 
                 Write-Host "💾 Saving session state..." -ForegroundColor Gray
                 Save-SessionState
