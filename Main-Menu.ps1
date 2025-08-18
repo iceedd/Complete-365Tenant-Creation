@@ -189,6 +189,517 @@ function Test-CompliancePoliciesExist {
     }
 }
 
+# === Enhanced Error Handling ===
+
+function Show-FriendlyError {
+    param(
+        [string]$ErrorMessage,
+        [string]$Context = "",
+        [string]$SuggestedAction = ""
+    )
+    
+    Write-Host ""
+    Write-Host "╔═══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+    Write-Host "║                                   ⚠️ ERROR                                    ║" -ForegroundColor Red
+    Write-Host "╚═══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+    
+    if ($Context) {
+        Write-Host ""
+        Write-Host "📍 Context: $Context" -ForegroundColor Yellow
+    }
+    
+    Write-Host ""
+    Write-Host "❌ Error Details:" -ForegroundColor Red
+    Write-Host "   $ErrorMessage" -ForegroundColor White
+    
+    if ($SuggestedAction) {
+        Write-Host ""
+        Write-Host "💡 Suggested Solution:" -ForegroundColor Green
+        Write-Host "   $SuggestedAction" -ForegroundColor White
+    }
+    
+    Write-Host ""
+    Write-Host "🔄 Common Solutions:" -ForegroundColor Cyan
+    Write-Host "   • Try refreshing scripts (Option 9)" -ForegroundColor Gray
+    Write-Host "   • Check your Microsoft Graph connection" -ForegroundColor Gray
+    Write-Host "   • Verify you have appropriate permissions" -ForegroundColor Gray
+    Write-Host "   • Ensure prerequisites are met" -ForegroundColor Gray
+    
+    Write-Host ""
+    Write-Host "Press any key to continue..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
+function Test-TenantConnection {
+    try {
+        $context = Get-MgContext -ErrorAction Stop
+        if (-not $context) {
+            return @{
+                Connected = $false
+                Error = "No Microsoft Graph connection found"
+                Solution = "Please connect to your tenant using Option 8"
+            }
+        }
+        
+        # Test actual connectivity
+        $org = Get-MgOrganization -ErrorAction Stop | Select-Object -First 1
+        if (-not $org) {
+            return @{
+                Connected = $false
+                Error = "Unable to retrieve organization information"
+                Solution = "Check your connection and permissions, then try reconnecting"
+            }
+        }
+        
+        return @{
+            Connected = $true
+            Context = $context
+            Organization = $org
+        }
+    }
+    catch {
+        return @{
+            Connected = $false
+            Error = $_.Exception.Message
+            Solution = "Try reconnecting to your tenant (Option 8) or check your permissions"
+        }
+    }
+}
+
+function Invoke-WithErrorHandling {
+    param(
+        [scriptblock]$ScriptBlock,
+        [string]$Context = "Operation",
+        [string]$SuggestedAction = "Try the operation again"
+    )
+    
+    try {
+        return & $ScriptBlock
+    }
+    catch {
+        Show-FriendlyError -ErrorMessage $_.Exception.Message -Context $Context -SuggestedAction $SuggestedAction
+        return $false
+    }
+}
+
+# === Session Persistence ===
+
+$Global:StateFilePath = "$env:TEMP\\M365AutomationState.json"
+
+function Save-SessionState {
+    try {
+        $state = @{
+            LastUpdated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            TenantInfo = if ($Global:TenantConnection) { 
+                @{
+                    TenantId = $Global:TenantConnection.TenantId
+                    OrgName = $Global:TenantConnection.OrgName
+                    Account = $Global:TenantConnection.Account
+                }
+            } else { $null }
+            CompletedSteps = $Global:CompletedSteps
+            LastRunMenus = @{
+                Entra = $false
+                Intune = $false
+                Exchange = $false
+                SharePoint = $false
+                Security = $false
+                Purview = $false
+            }
+        }
+        
+        $jsonState = $state | ConvertTo-Json -Depth 3
+        $jsonState | Out-File -FilePath $Global:StateFilePath -Encoding UTF8
+    }
+    catch {
+        # Silently fail - session persistence is not critical
+    }
+}
+
+function Load-SessionState {
+    try {
+        if (Test-Path $Global:StateFilePath) {
+            $jsonState = Get-Content -Path $Global:StateFilePath -Raw
+            $state = $jsonState | ConvertFrom-Json
+            
+            # Only load if state is recent (within last 24 hours)
+            $lastUpdated = [DateTime]::Parse($state.LastUpdated)
+            if ($lastUpdated.AddHours(24) -gt (Get-Date)) {
+                Write-Host "📋 Loading previous session state..." -ForegroundColor Gray
+                
+                # Convert PSCustomObject back to hashtables
+                if ($state.CompletedSteps) {
+                    $Global:CompletedSteps = @{}
+                    $state.CompletedSteps.PSObject.Properties | ForEach-Object {
+                        $Global:CompletedSteps[$_.Name] = $_.Value
+                    }
+                }
+                
+                return $true
+            }
+        }
+    }
+    catch {
+        # Silently fail - session persistence is not critical
+    }
+    
+    return $false
+}
+
+function Clear-SessionState {
+    try {
+        if (Test-Path $Global:StateFilePath) {
+            Remove-Item -Path $Global:StateFilePath -Force
+        }
+    }
+    catch {
+        # Silently fail
+    }
+}
+
+function Show-SessionInfo {
+    try {
+        if (Test-Path $Global:StateFilePath) {
+            $jsonState = Get-Content -Path $Global:StateFilePath -Raw
+            $state = $jsonState | ConvertFrom-Json
+            
+            Write-Host "💾 Session Information:" -ForegroundColor Cyan
+            Write-Host "   Last Updated: $($state.LastUpdated)" -ForegroundColor Gray
+            if ($state.TenantInfo) {
+                Write-Host "   Previous Tenant: $($state.TenantInfo.OrgName)" -ForegroundColor Gray
+            }
+            Write-Host ""
+        }
+    }
+    catch {
+        # Silently fail
+    }
+}
+
+# === Enhanced UI Functions ===
+
+function Get-ProgressBar {
+    param(
+        [int]$Current,
+        [int]$Total,
+        [int]$Width = 20,
+        [string]$CompletedChar = "█",
+        [string]$RemainingChar = "░"
+    )
+    
+    if ($Total -eq 0) { return "[$($RemainingChar * $Width)]   0%" }
+    
+    $percentage = [math]::Round(($Current / $Total) * 100)
+    $completedWidth = [math]::Round(($Current / $Total) * $Width)
+    $remainingWidth = $Width - $completedWidth
+    
+    $completedSection = $CompletedChar * $completedWidth
+    $remainingSection = $RemainingChar * $remainingWidth
+    
+    return "[$completedSection$remainingSection] $percentage%"
+}
+
+function Get-ServiceProgress {
+    param([hashtable]$CompletedSteps)
+    
+    return @{
+        "Entra ID" = @{
+            Completed = ($CompletedSteps.SecurityGroups + $CompletedSteps.AdminAccounts + $CompletedSteps.ConditionalAccess)
+            Total = 3
+            Items = @("Security Groups", "Admin Accounts", "Conditional Access")
+            NextStep = if (-not $CompletedSteps.SecurityGroups) { "Create Security Groups" } 
+                      elseif (-not $CompletedSteps.AdminAccounts) { "Create Admin Accounts" }
+                      elseif (-not $CompletedSteps.ConditionalAccess) { "Configure Conditional Access" }
+                      else { "Complete ✓" }
+        }
+        "Intune" = @{
+            Completed = ($CompletedSteps.DeviceGroups + $CompletedSteps.ConfigPolicies + $CompletedSteps.CompliancePolicies)
+            Total = 3
+            Items = @("Device Groups", "Configuration Policies", "Compliance Policies")
+            NextStep = if (-not $CompletedSteps.DeviceGroups) { "Create Device Groups" }
+                      elseif (-not $CompletedSteps.ConfigPolicies) { "Configure Device Policies" }
+                      elseif (-not $CompletedSteps.CompliancePolicies) { "Setup Compliance Policies" }
+                      else { "Complete ✓" }
+        }
+        "Exchange" = @{
+            Completed = 0  # Placeholder - will be enhanced later
+            Total = 3
+            Items = @("Shared Mailboxes", "Archive Policies", "Mail Flow Rules")
+            NextStep = "Configure Exchange Online"
+        }
+        "SharePoint" = @{
+            Completed = 0  # Placeholder - will be enhanced later
+            Total = 3
+            Items = @("Site Collections", "Permissions", "External Sharing")
+            NextStep = "Setup SharePoint Online"
+        }
+        "Security" = @{
+            Completed = 0  # Placeholder - will be enhanced later
+            Total = 3
+            Items = @("Safe Attachments", "Anti-Phishing", "Web Filtering")
+            NextStep = "Configure Security Policies"
+        }
+        "Purview" = @{
+            Completed = 0  # Placeholder - will be enhanced later
+            Total = 3
+            Items = @("Retention Policies", "DLP Policies", "Sensitivity Labels")
+            NextStep = "Setup Compliance Features"
+        }
+    }
+}
+
+function Show-EnhancedProgressDashboard {
+    param([hashtable]$CompletedSteps)
+    
+    $serviceProgress = Get-ServiceProgress -CompletedSteps $CompletedSteps
+    $overallCompleted = ($serviceProgress.Values | Measure-Object -Property Completed -Sum).Sum
+    $overallTotal = ($serviceProgress.Values | Measure-Object -Property Total -Sum).Sum
+    $overallPercentage = if ($overallTotal -gt 0) { [math]::Round(($overallCompleted / $overallTotal) * 100) } else { 0 }
+    
+    Write-Host "╔═══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║                          🚀 TENANT SETUP PROGRESS                             ║" -ForegroundColor Cyan
+    Write-Host "╠═══════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║ Overall Progress: $(Get-ProgressBar -Current $overallCompleted -Total $overallTotal)" -NoNewline -ForegroundColor Cyan
+    Write-Host (" " * (45 - (Get-ProgressBar -Current $overallCompleted -Total $overallTotal).Length)) -NoNewline
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "╠═══════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
+    
+    foreach ($service in $serviceProgress.Keys) {
+        $progress = $serviceProgress[$service]
+        $progressBar = Get-ProgressBar -Current $progress.Completed -Total $progress.Total -Width 15
+        $serviceIcon = switch ($service) {
+            "Entra ID" { "🏢" }
+            "Intune" { "📱" }
+            "Exchange" { "📧" }
+            "SharePoint" { "🌐" }
+            "Security" { "🛡️" }
+            "Purview" { "🔒" }
+        }
+        
+        $statusColor = if ($progress.Completed -eq $progress.Total) { "Green" } 
+                      elseif ($progress.Completed -gt 0) { "Yellow" } 
+                      else { "White" }
+        
+        $serviceName = "$serviceIcon $service".PadRight(12)
+        $nextStep = $progress.NextStep.PadRight(30)
+        
+        Write-Host "║ " -NoNewline -ForegroundColor Cyan
+        Write-Host "$serviceName" -NoNewline -ForegroundColor $statusColor
+        Write-Host " $progressBar " -NoNewline -ForegroundColor $statusColor
+        Write-Host "$nextStep" -NoNewline -ForegroundColor Gray
+        Write-Host " ║" -ForegroundColor Cyan
+    }
+    
+    Write-Host "╚═══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+}
+
+function Get-SmartRecommendations {
+    param([hashtable]$CompletedSteps)
+    
+    $recommendations = @()
+    
+    # Priority 1: Foundation setup
+    if (-not $CompletedSteps.SecurityGroups) {
+        $recommendations += @{
+            Priority = "High"
+            Title = "🏗️ Start with Security Groups"
+            Description = "Create foundation security groups for user management and licensing"
+            Action = "Go to Entra ID → Security Groups"
+            Icon = "🚨"
+        }
+    }
+    elseif (-not $CompletedSteps.AdminAccounts) {
+        $recommendations += @{
+            Priority = "High"
+            Title = "👑 Create Admin Accounts"
+            Description = "Set up administrative accounts with proper break-glass access"
+            Action = "Go to Entra ID → Admin Account Creation"
+            Icon = "⚡"
+        }
+    }
+    
+    # Priority 2: Device management
+    if ($CompletedSteps.SecurityGroups -and -not $CompletedSteps.DeviceGroups) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "📱 Setup Device Management"
+            Description = "Create device groups for Intune policy assignments"
+            Action = "Go to Intune → Device Groups"
+            Icon = "🎯"
+        }
+    }
+    
+    # Priority 3: Security policies
+    if ($CompletedSteps.DeviceGroups -and -not $CompletedSteps.CompliancePolicies) {
+        $recommendations += @{
+            Priority = "Medium"
+            Title = "✅ Configure Compliance"
+            Description = "Set up device compliance policies for security"
+            Action = "Go to Intune → Compliance Policies"
+            Icon = "🛡️"
+        }
+    }
+    
+    # Quick wins
+    if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts) {
+        $recommendations += @{
+            Priority = "Low"
+            Title = "🔐 Setup Conditional Access"
+            Description = "Implement conditional access policies for enhanced security"
+            Action = "Go to Entra ID → Conditional Access Policies"
+            Icon = "💡"
+        }
+    }
+    
+    return $recommendations
+}
+
+function Show-SmartRecommendations {
+    param([hashtable]$CompletedSteps)
+    
+    $recommendations = Get-SmartRecommendations -CompletedSteps $CompletedSteps
+    
+    if ($recommendations.Count -eq 0) {
+        Write-Host "🎉 Great work! No immediate recommendations. All core components are configured!" -ForegroundColor Green
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "💡 Smart Recommendations:" -ForegroundColor Yellow
+    Write-Host "─" * 80 -ForegroundColor Gray
+    
+    $i = 1
+    foreach ($rec in $recommendations) {
+        $priorityColor = switch ($rec.Priority) {
+            "High" { "Red" }
+            "Medium" { "Yellow" }
+            "Low" { "Green" }
+        }
+        
+        Write-Host "$i. " -NoNewline -ForegroundColor White
+        Write-Host "$($rec.Icon) $($rec.Title)" -ForegroundColor $priorityColor
+        Write-Host "   $($rec.Description)" -ForegroundColor Gray
+        Write-Host "   → $($rec.Action)" -ForegroundColor Cyan
+        
+        if ($i -lt $recommendations.Count) {
+            Write-Host ""
+        }
+        $i++
+    }
+}
+
+function Show-QuickStartWizard {
+    Write-Host "╔═══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║                            🚀 QUICK START WIZARD                             ║" -ForegroundColor Green
+    Write-Host "╚═══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Welcome to your M365 tenant setup! This wizard will guide you through" -ForegroundColor White
+    Write-Host "the essential configuration steps in the optimal order." -ForegroundColor White
+    Write-Host ""
+    
+    Write-Host "📋 Setup Flow:" -ForegroundColor Yellow
+    Write-Host "  Step 1: 👥 Security Groups        (Foundation for user management)" -ForegroundColor White
+    Write-Host "  Step 2: 👑 Admin Accounts         (Privileged access setup)" -ForegroundColor White
+    Write-Host "  Step 3: 📱 Device Groups          (Intune device management)" -ForegroundColor White
+    Write-Host "  Step 4: ⚙️  Configuration Policies (Device security settings)" -ForegroundColor White
+    Write-Host "  Step 5: ✅ Compliance Policies    (Device compliance rules)" -ForegroundColor White
+    Write-Host "  Step 6: 🔐 Conditional Access     (Identity security policies)" -ForegroundColor White
+    Write-Host ""
+    
+    Write-Host "🕒 Estimated Time: 30-45 minutes" -ForegroundColor Gray
+    Write-Host ""
+    
+    $choice = Read-Host "Ready to start? (y/n)"
+    if ($choice -eq "y" -or $choice -eq "Y") {
+        return $true
+    }
+    return $false
+}
+
+function Start-QuickStartFlow {
+    Write-Host ""
+    Write-Host "🚀 Starting Quick Start Flow..." -ForegroundColor Green
+    Write-Host ""
+    
+    $steps = @(
+        @{ Name = "Security Groups"; Menu = "1"; SubMenu = "1"; Check = "SecurityGroups" },
+        @{ Name = "Admin Accounts"; Menu = "1"; SubMenu = "3"; Check = "AdminAccounts" },
+        @{ Name = "Device Groups"; Menu = "2"; SubMenu = "1"; Check = "DeviceGroups" },
+        @{ Name = "Configuration Policies"; Menu = "2"; SubMenu = "2"; Check = "ConfigPolicies" },
+        @{ Name = "Compliance Policies"; Menu = "2"; SubMenu = "3"; Check = "CompliancePolicies" },
+        @{ Name = "Conditional Access"; Menu = "1"; SubMenu = "2"; Check = "ConditionalAccess" }
+    )
+    
+    $currentStep = 1
+    foreach ($step in $steps) {
+        Write-Host "Step $currentStep of $($steps.Count): " -NoNewline -ForegroundColor White
+        Write-Host "$($step.Name)" -ForegroundColor Yellow
+        
+        # Check if already completed
+        if ($Global:CompletedSteps[$step.Check]) {
+            Write-Host "   ✅ Already completed - Skipping" -ForegroundColor Green
+        }
+        else {
+            Write-Host "   🔄 Starting configuration..." -ForegroundColor Yellow
+            Write-Host "   This will take you to the appropriate menu section." -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "   Press any key to continue or 'q' to quit Quick Start..."
+            
+            $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            if ($key.Character -eq 'q') {
+                Write-Host ""
+                Write-Host "Quick Start cancelled. Returning to main menu..." -ForegroundColor Yellow
+                Start-Sleep 2
+                return
+            }
+            
+            # Navigate to appropriate menu
+            switch ($step.Menu) {
+                "1" { 
+                    Write-Host "   → Opening Entra ID menu..." -ForegroundColor Cyan
+                    Show-EntraMenu 
+                }
+                "2" { 
+                    Write-Host "   → Opening Intune menu..." -ForegroundColor Cyan
+                    Show-IntuneMenu 
+                }
+            }
+            
+            # Refresh status after returning from menu
+            Initialize-CompletedSteps
+            
+            # Check if completed
+            if ($Global:CompletedSteps[$step.Check]) {
+                Write-Host "   ✅ Step completed successfully!" -ForegroundColor Green
+            }
+            else {
+                Write-Host "   ⚠️ Step not completed. You can continue or return later." -ForegroundColor Yellow
+                $continueChoice = Read-Host "Continue with Quick Start? (y/n)"
+                if ($continueChoice -ne "y" -and $continueChoice -ne "Y") {
+                    Write-Host "Quick Start paused. Returning to main menu..." -ForegroundColor Yellow
+                    Start-Sleep 2
+                    return
+                }
+            }
+        }
+        
+        $currentStep++
+        Write-Host ""
+    }
+    
+    Write-Host "🎉 Quick Start Flow Complete!" -ForegroundColor Green
+    Write-Host "Your M365 tenant foundation is now configured." -ForegroundColor White
+    Write-Host ""
+    Write-Host "Next steps you might consider:" -ForegroundColor Yellow
+    Write-Host "• Configure Exchange Online (Option 3)" -ForegroundColor Gray
+    Write-Host "• Setup SharePoint Online (Option 4)" -ForegroundColor Gray
+    Write-Host "• Configure Security Policies (Option 5)" -ForegroundColor Gray
+    Write-Host "• Setup Purview Compliance (Option 6)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Press any key to return to main menu..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
 function Initialize-CompletedSteps {    
     $Global:CompletedSteps = @{
         SecurityGroups = Test-GroupsExist -GroupNames @(
@@ -691,59 +1202,58 @@ function Clear-ScriptCache {
     Write-Host "🔄 Script cache cleared!" -ForegroundColor Green
 }
 
-# Main Menu
+# Enhanced Main Menu with Progress Dashboard
 function Show-MainMenu {
     Clear-Host
-    Write-Host "=" * 80 -ForegroundColor Cyan
-    Write-Host "🚀 M365 TENANT AUTOMATION HUB" -ForegroundColor Cyan
-    Write-Host "=" * 80 -ForegroundColor Cyan
     
     if ($Global:TenantConnection) {
+        Write-Host ""
         Write-Host "✅ Connected to: $($Global:TenantConnection.OrgName)" -ForegroundColor Green
         Write-Host "   Account: $($Global:TenantConnection.Account)" -ForegroundColor Gray
+        Write-Host ""
         
-        # Show completion status
-        Write-Host "`n📋 Prerequisites Status:" -ForegroundColor Yellow
+        # Show Enhanced Progress Dashboard
+        Show-EnhancedProgressDashboard -CompletedSteps $Global:CompletedSteps
         
-        $statusIcon = if ($Global:CompletedSteps.SecurityGroups) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Security Groups" -ForegroundColor $(if ($Global:CompletedSteps.SecurityGroups) { "Green" } else { "Yellow" })
-        
-        $statusIcon = if ($Global:CompletedSteps.DeviceGroups) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Device Groups" -ForegroundColor $(if ($Global:CompletedSteps.DeviceGroups) { "Green" } else { "Yellow" })
-        
-        $statusIcon = if ($Global:CompletedSteps.ConditionalAccess) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Conditional Access" -ForegroundColor $(if ($Global:CompletedSteps.ConditionalAccess) { "Green" } else { "Yellow" })
-        
-        $statusIcon = if ($Global:CompletedSteps.ConfigPolicies) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Configuration Policies" -ForegroundColor $(if ($Global:CompletedSteps.ConfigPolicies) { "Green" } else { "Yellow" })
-        
-        $statusIcon = if ($Global:CompletedSteps.CompliancePolicies) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Compliance Policies" -ForegroundColor $(if ($Global:CompletedSteps.CompliancePolicies) { "Green" } else { "Yellow" })
-        
-        $statusIcon = if ($Global:CompletedSteps.AdminAccounts) { "✅" } else { "⏳" }
-        Write-Host "   $statusIcon Admin Accounts" -ForegroundColor $(if ($Global:CompletedSteps.AdminAccounts) { "Green" } else { "Yellow" })
+        # Show Smart Recommendations
+        Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
     } else {
-        Write-Host "❌ Not connected to tenant" -ForegroundColor Red
+        Write-Host "╔═══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "║                          🚀 M365 TENANT AUTOMATION HUB                       ║" -ForegroundColor Red
+        Write-Host "║                                                                               ║" -ForegroundColor Red
+        Write-Host "║                          ❌ NOT CONNECTED TO TENANT                           ║" -ForegroundColor Red
+        Write-Host "║                     Please connect to get started (Option 8)                  ║" -ForegroundColor Red
+        Write-Host "╚═══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        Write-Host ""
     }
     
-    Write-Host "`nPortal Automation:" -ForegroundColor Yellow
-    Write-Host "1. 🏢 Entra ID (Identity & Access)"
-    Write-Host "2. 📱 Intune (Device Management)"
-    Write-Host "3. 📧 Exchange Online (Email)"
-    Write-Host "4. 🌐 SharePoint Online (Collaboration)"
-    Write-Host "5. 🛡️ Security & Defender"
-    Write-Host "6. 🔒 Purview (Compliance)"
     Write-Host ""
-    Write-Host "Options:" -ForegroundColor Yellow
+    Write-Host "🎯 Portal Automation:" -ForegroundColor Yellow
+    Write-Host "─" * 80 -ForegroundColor Gray
+    Write-Host "1. 🏢 Entra ID (Identity & Access Management)"
+    Write-Host "2. 📱 Intune (Device Management & Compliance)"
+    Write-Host "3. 📧 Exchange Online (Email & Collaboration)"
+    Write-Host "4. 🌐 SharePoint Online (File Sharing & Sites)"
+    Write-Host "5. 🛡️ Security & Defender (Threat Protection)"
+    Write-Host "6. 🔒 Purview (Data Governance & Compliance)"
+    Write-Host ""
+    Write-Host "🔧 Quick Actions:" -ForegroundColor Yellow  
+    Write-Host "─" * 80 -ForegroundColor Gray
+    Write-Host "7. 🚀 Quick Start Wizard (Guided Setup)"
     Write-Host "8. 🔐 Connect to Tenant"
-    Write-Host "9. 🔄 Refresh Scripts"
-    Write-Host "0. ❌ Exit"
+    Write-Host "9. 🔄 Refresh Scripts & Status"
+    Write-Host "0. ❌ Exit Application"
     Write-Host ""
 }
 
 # Main execution loop
 function Start-AutomationHub {
     Initialize-Modules
+    
+    # Try to load previous session state
+    if (Load-SessionState) {
+        Show-SessionInfo
+    }
 
     do {
         Show-MainMenu
@@ -774,15 +1284,30 @@ function Start-AutomationHub {
                 if ($Global:TenantConnection) { Show-PurviewMenu } 
                 else { Write-Host "Please connect to tenant first!" -ForegroundColor Red; Start-Sleep 2 }
             }
+            "7" {
+                if ($Global:TenantConnection) { 
+                    if (Show-QuickStartWizard) {
+                        Start-QuickStartFlow
+                    }
+                } 
+                else { Write-Host "Please connect to tenant first!" -ForegroundColor Red; Start-Sleep 2 }
+            }
             "8" {
                 if (Connect-M365Tenant) {
                     Write-Host "🔍 Checking tenant prerequisites..." -ForegroundColor Yellow
                     Initialize-CompletedSteps
                     Write-Host "✅ Prerequisites checked! Service menus will auto-refresh status." -ForegroundColor Green
+                    Save-SessionState
                 }
             }
-            "9" { Clear-ScriptCache }
+            "9" { 
+                Clear-ScriptCache
+                Write-Host "🧹 Session state cleared!" -ForegroundColor Green
+                Clear-SessionState
+            }
             "0" { 
+                Write-Host "💾 Saving session state..." -ForegroundColor Gray
+                Save-SessionState
                 Write-Host "Goodbye! 👋" -ForegroundColor Cyan
                 if ($Global:TenantConnection) { Disconnect-MgGraph -ErrorAction SilentlyContinue }
                 break 
