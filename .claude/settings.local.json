@@ -4,7 +4,12 @@
       "Bash(mkdir:*)",
       "Bash(powershell:*)",
       "Bash(pwsh:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(rg:*)",
+      "Bash(for file in Exchange/Shared-MB-Creation.ps1 Exchange/Archive-Policies.ps1 Security/Safe-Attachments.ps1)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(wc:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": [],
