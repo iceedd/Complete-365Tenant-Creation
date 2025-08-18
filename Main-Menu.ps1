@@ -483,8 +483,8 @@ function Show-InteractiveMainMenu {
     
     # Show dashboard if connected
     if ($Global:TenantConnection -and $Global:CompletedSteps) {
-        Show-ProgressDashboard -CompletedSteps $Global:CompletedSteps
-        Get-SmartRecommendations -CompletedSteps $Global:CompletedSteps | ForEach-Object { Write-Host $_ }
+        Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+        Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
         Write-Host ""
     }
     
@@ -516,8 +516,8 @@ function Show-InteractiveMainMenu {
     # Create header callback for dashboard
     $headerCallback = if ($Global:TenantConnection -and $Global:CompletedSteps) {
         {
-            Show-ProgressDashboard -CompletedSteps $Global:CompletedSteps
-            Get-SmartRecommendations -CompletedSteps $Global:CompletedSteps | ForEach-Object { Write-Host $_ }
+            Show-CompactProgressDashboard -CompletedSteps $Global:CompletedSteps
+            Show-CompactRecommendations -CompletedSteps $Global:CompletedSteps
             Write-Host ""
         }
     } else { $null }
