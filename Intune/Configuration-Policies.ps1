@@ -104,7 +104,7 @@ function Update-PolicyDynamicValues {
     param(
         [hashtable]$Policy,
         [hashtable]$TenantInfo,
-        [string]$LapsAdminName = "BLadmin"
+        [string]$LapsAdminName = "Localadmin"
     )
     
     # Convert policy to JSON for easier string replacement
@@ -114,7 +114,7 @@ function Update-PolicyDynamicValues {
     $policyJson = $policyJson -replace "https://contoso\.sharepoint\.com/", $TenantInfo.SharePointUrl
     
     # Replace LAPS admin names
-    $policyJson = $policyJson -replace '"BLadmin"', "`"$LapsAdminName`""
+    $policyJson = $policyJson -replace '"Localadmin"', "`"$LapsAdminName`""
     
     # Replace tenant ID placeholders (if any)
     $policyJson = $policyJson -replace 'tenantId=', "tenantId=$($TenantInfo.TenantId)"
@@ -267,9 +267,9 @@ function Start-ConfigurationPolicyCreation {
     Write-Host "   SharePoint URL: $($tenantInfo.SharePointUrl)" -ForegroundColor Gray
     
     # Get LAPS admin name from user
-    $lapsAdminName = Read-Host "Enter LAPS local admin name (default: BLadmin)"
+    $lapsAdminName = Read-Host "Enter LAPS local admin name (default: Localadmin)"
     if ([string]::IsNullOrWhiteSpace($lapsAdminName)) {
-        $lapsAdminName = "BLadmin"
+        $lapsAdminName = "Localadmin"
     }
     
     # Get policy definitions
