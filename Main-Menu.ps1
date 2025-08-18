@@ -495,48 +495,33 @@ function Show-InteractiveMainMenu {
         Write-Host ""
     }
     
-    # Build menu items array
-    $menuItems = @()
+    # Show main menu title
+    Write-Host "🚀 M365 TENANT AUTOMATION HUB" -ForegroundColor Cyan
+    Write-Host ("─" * "🚀 M365 TENANT AUTOMATION HUB".Length) -ForegroundColor Gray
+    Write-Host ""
     
+    # Show menu options
     if ($Global:TenantConnection) {
-        $menuItems += @{ Display = "🏢 Entra ID (Identity & Access Management)"; Value = "1" }
-        $menuItems += @{ Display = "📱 Intune (Device Management & Compliance)"; Value = "2" }
-        $menuItems += @{ Display = "📧 Exchange Online (Email & Collaboration)"; Value = "3" }
-        $menuItems += @{ Display = "🌐 SharePoint Online (File Sharing & Sites)"; Value = "4" }
-        $menuItems += @{ Display = "🛡️ Security & Defender (Threat Protection)"; Value = "5" }
-        $menuItems += @{ Display = "🔒 Purview (Data Governance & Compliance)"; Value = "6" }
-        $menuItems += @{ Display = "─" * 50; Value = "separator1" }
-        $menuItems += @{ Display = "🚀 Quick Start Wizard (Guided Setup)"; Value = "7" }
-        $menuItems += @{ Display = "🔄 Refresh Scripts & Status"; Value = "9" }
-        $menuItems += @{ Display = "🛠️ Debug: Manual Status Override"; Value = "d" }
+        Write-Host "1. 🏢 Entra ID (Identity & Access Management)" -ForegroundColor Green
+        Write-Host "2. 📱 Intune (Device Management & Compliance)" -ForegroundColor Green
+        Write-Host "3. 📧 Exchange Online (Email & Collaboration)" -ForegroundColor Green
+        Write-Host "4. 🌐 SharePoint Online (File Sharing & Sites)" -ForegroundColor Green
+        Write-Host "5. 🛡️ Security & Defender (Threat Protection)" -ForegroundColor Green
+        Write-Host "6. 🔒 Purview (Data Governance & Compliance)" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "7. 🚀 Quick Start Wizard (Guided Setup)" -ForegroundColor Yellow
+        Write-Host "9. 🔄 Refresh Scripts & Status" -ForegroundColor White
+        Write-Host "d. 🛠️ Debug: Manual Status Override" -ForegroundColor Gray
     }
     else {
-        $menuItems += @{ Display = "🔐 Connect to Tenant (Required First Step)"; Value = "8" }
+        Write-Host "8. 🔐 Connect to Tenant (Required First Step)" -ForegroundColor Yellow
     }
     
-    $menuItems += @{ Display = "─" * 50; Value = "separator2" }
-    $menuItems += @{ Display = "❌ Exit Application"; Value = "0" }
+    Write-Host ""
+    Write-Host "0. ❌ Exit Application" -ForegroundColor Red
+    Write-Host ""
     
-    # Filter out separators for navigation
-    $navigableItems = $menuItems | Where-Object { $_.Value -notlike "separator*" }
-    
-    # Create header callback for dashboard
-    $headerCallback = if ($Global:TenantConnection -and $Global:CompletedSteps) {
-        {
-            Write-Host "✅ Connected to: $($Global:TenantConnection.OrgName)" -ForegroundColor Green
-            Write-Host "   Account: $($Global:TenantConnection.Account)" -ForegroundColor Gray
-            Write-Host ""
-            
-            # Show Enhanced Progress Dashboard
-            Show-EnhancedProgressDashboard -CompletedSteps $Global:CompletedSteps
-            
-            # Show Smart Recommendations
-            Show-SmartRecommendations -CompletedSteps $Global:CompletedSteps
-            Write-Host ""
-        }
-    } else { $null }
-    
-    return Get-MenuSelection -MenuItems $navigableItems -Title "🚀 M365 TENANT AUTOMATION HUB" -HeaderCallback $headerCallback
+    return Read-Host "Select option"
 }
 
 function Show-CompactProgressDashboard {
@@ -1033,8 +1018,8 @@ function Connect-M365Tenant {
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow
         
-        # Connect with practical scopes
-        Connect-MgGraph -Scopes $practicalScopes -NoWelcome
+        # Connect with practical scopes - force fresh authentication
+        Connect-MgGraph -Scopes $practicalScopes -NoWelcome -ForceRefresh
         
         $context = Get-MgContext
         if (!$context) {
@@ -1066,8 +1051,8 @@ function Connect-M365Tenant {
         Write-Host "⚠️ Primary authentication failed. Trying minimal connection..." -ForegroundColor Yellow
         
         try {
-            # Fallback to very basic connection
-            Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome
+            # Fallback to very basic connection - force fresh authentication
+            Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome -ForceRefresh
             
             $context = Get-MgContext
             $org = Get-MgOrganization | Select-Object -First 1
