@@ -1004,13 +1004,7 @@ function Connect-M365Tenant {
     
     try {
         # Disconnect any existing connection to force fresh authentication
-        Write-Host "🔄 Clearing any existing connections..." -ForegroundColor Yellow
         Disconnect-MgGraph -ErrorAction SilentlyContinue
-        
-        # Clear any cached tokens by removing context
-        if (Get-MgContext) {
-            Disconnect-MgGraph -ErrorAction SilentlyContinue
-        }
         
         # Use a practical set of scopes that cover most common scenarios
         $practicalScopes = @(
@@ -1023,19 +1017,14 @@ function Connect-M365Tenant {
         )
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow
-        Write-Host "   This will open a browser window for authentication..." -ForegroundColor Gray
         
         # Connect with practical scopes
         Connect-MgGraph -Scopes $practicalScopes -NoWelcome
-        
-        Write-Host "✅ Authentication completed. Getting tenant info..." -ForegroundColor Green
         
         $context = Get-MgContext
         if (!$context) {
             throw "No authentication context returned"
         }
-        
-        Write-Host "✅ Got authentication context for: $($context.Account)" -ForegroundColor Green
         
         $org = Get-MgOrganization | Select-Object -First 1
         if (!$org) {
@@ -1063,7 +1052,6 @@ function Connect-M365Tenant {
         
         try {
             # Fallback to very basic connection
-            Write-Host "🔄 Trying with minimal permissions..." -ForegroundColor Yellow
             Connect-MgGraph -Scopes "Organization.Read.All" -NoWelcome
             
             $context = Get-MgContext
