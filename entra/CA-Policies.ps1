@@ -118,7 +118,7 @@ function Disable-SecurityDefaults {
         
         if ($policy.IsEnabled -eq $true) {
             Write-Host "Security Defaults are enabled. Disabling them now..."
-            Update-MgPolicyIdentitySecurityDefaultEnforcementPolicy -IsEnabled $false
+            Update-MgPolicyIdentitySecurityDefaultEnforcementPolicy -BodyParameter @{ IsEnabled = $false }
             Write-Host "Security Defaults have been disabled."
         } else {
             Write-Host "Security Defaults are already disabled."

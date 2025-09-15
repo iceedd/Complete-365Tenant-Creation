@@ -42,6 +42,111 @@ function Initialize-Modules {
     Write-Host "✅ Modules ready!" -ForegroundColor Green
 }
 
+# License checking function
+function Test-EntraP2License {
+    param(
+        [switch]$ShowDetails
+    )
+    
+    try {
+        # Check for Entra ID P2 licenses
+        $subscribedSkus = Get-MgSubscribedSku -ErrorAction SilentlyContinue
+        
+        if (-not $subscribedSkus) {
+            if ($ShowDetails) {
+                Write-Host "❌ Unable to retrieve license information" -ForegroundColor Red
+            }
+            return $false
+        }
+        
+        # Look for Entra ID P2 SKUs and equivalent licenses
+        $p2Licenses = @(
+            "AAD_PREMIUM_P2",           # Entra ID P2
+            "ENTERPRISEPREMIUM",        # Microsoft 365 E5
+            "ENTERPRISEPACKPLUS_GOV",   # Microsoft 365 E5 Government
+            "SPE_E5",                   # Microsoft 365 E5 (newer SKU)
+            "EMSPREMIUM",              # Enterprise Mobility + Security E5
+            "EMS",                      # Enterprise Mobility + Security E5 (alternate SKU)
+            "OFFICE365_E5",            # Office 365 E5
+            "STANDARDPACK_FACULTY",     # Office 365 A3 for faculty
+            "ENTERPRISEPACK_FACULTY",   # Office 365 A3 for faculty
+            "DEVELOPERPACK_E5",        # Microsoft 365 E5 Developer
+            "M365_E5_SUITE_COMPONENTS", # Microsoft 365 E5 (component)
+            "SPE_F1",                  # Microsoft 365 F3 (has some features)
+            "MICROSOFT_BUSINESS_PREMIUM", # Microsoft 365 Business Premium (some CA features)
+            "O365_BUSINESS_PREMIUM",   # Microsoft 365 Business Premium (legacy)
+            "SPB",                     # Microsoft 365 Business Premium (current)
+            "M365EDU_A5_FACULTY",      # Microsoft 365 A5 for faculty
+            "M365EDU_A5_STUDENT",      # Microsoft 365 A5 for students
+            "ENTERPRISEPREMIUM_NOPSTNCONF", # Microsoft 365 E5 without Audio Conferencing
+            "SPE_E5_NOPSTNCONF"        # Microsoft 365 E5 without PSTN
+        )
+        
+        $hasP2License = $false
+        $availableLicenses = @()
+        
+        foreach ($sku in $subscribedSkus) {
+            $skuPartNumber = $sku.SkuPartNumber
+            $availableLicenses += $skuPartNumber
+            
+            if ($skuPartNumber -in $p2Licenses) {
+                $hasP2License = $true
+                if ($ShowDetails) {
+                    Write-Host "✅ Found P2-compatible license: $skuPartNumber" -ForegroundColor Green
+                    Write-Host "   Available: $($sku.PrepaidUnits.Enabled)" -ForegroundColor Gray
+                    Write-Host "   Consumed: $($sku.ConsumedUnits)" -ForegroundColor Gray
+                }
+            }
+        }
+        
+        # Check for partial P2 support (Business Premium has some CA features)
+        $partialP2Licenses = @("SPB", "O365_BUSINESS_PREMIUM", "MICROSOFT_BUSINESS_PREMIUM")
+        $hasPartialP2 = $subscribedSkus | Where-Object { $_.SkuPartNumber -in $partialP2Licenses }
+        
+        if ($ShowDetails -and -not $hasP2License) {
+            if ($hasPartialP2) {
+                Write-Host "⚠️ Partial P2 features detected (Business Premium)" -ForegroundColor Yellow
+                Write-Host "   ✅ Basic Conditional Access supported" -ForegroundColor Green
+                Write-Host "   ❌ Dynamic groups require full P2" -ForegroundColor Red
+                Write-Host "   ❌ PIM requires full P2" -ForegroundColor Red
+            } else {
+                Write-Host "❌ No Entra ID P2 licenses found" -ForegroundColor Red
+            }
+            
+            Write-Host "Available licenses:" -ForegroundColor Yellow
+            $availableLicenses | ForEach-Object { Write-Host "   • $_" -ForegroundColor Gray }
+            Write-Host ""
+            Write-Host "💡 P2 licenses support:" -ForegroundColor Cyan
+            Write-Host "   • Conditional Access policies" -ForegroundColor Gray
+            Write-Host "   • Dynamic security groups" -ForegroundColor Gray
+            Write-Host "   • Privileged Identity Management (PIM)" -ForegroundColor Gray
+            Write-Host "   • Advanced identity protection" -ForegroundColor Gray
+        }
+        
+        return $hasP2License
+    }
+    catch {
+        if ($ShowDetails) {
+            Write-Host "❌ Error checking licenses: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        return $false
+    }
+}
+
+# Check if a script requires P2 license
+function Test-ScriptP2Requirement {
+    param([string]$ScriptPath)
+    
+    $p2RequiredScripts = @(
+        "entra/CA-Policies.ps1",
+        "entra/Security-Groups.ps1", 
+        "Intune/Device-Groups.ps1",
+        "entra/Admin-Creation.ps1"
+    )
+    
+    return $ScriptPath -in $p2RequiredScripts
+}
+
 # Download script from GitHub
 function Get-GitHubScript {
     param(
@@ -67,6 +172,70 @@ function Invoke-GitHubScript {
         [string]$ScriptPath,
         [hashtable]$Parameters = @{}
     )
+    
+    # Check if script requires P2 license
+    if (Test-ScriptP2Requirement -ScriptPath $ScriptPath) {
+        Write-Host "🔍 Checking Entra ID P2 license requirements..." -ForegroundColor Yellow
+        
+        if (-not (Test-EntraP2License)) {
+            Write-Host ""
+            Write-Host "❌ P2 LICENSE REQUIRED" -ForegroundColor Red
+            Write-Host "━" * 50 -ForegroundColor Red
+            Write-Host "This script requires Entra ID P2 licensing:" -ForegroundColor White
+            Write-Host ""
+            
+            switch ($ScriptPath) {
+                "entra/CA-Policies.ps1" {
+                    Write-Host "• Conditional Access policies require P2" -ForegroundColor Yellow
+                    Write-Host "• Alternative: Use Microsoft 365 Business Premium for basic CA" -ForegroundColor Gray
+                }
+                "entra/Security-Groups.ps1" {
+                    Write-Host "• Dynamic group membership rules require P2" -ForegroundColor Yellow
+                    Write-Host "• Alternative: Script can create static groups instead" -ForegroundColor Gray
+                }
+                "Intune/Device-Groups.ps1" {
+                    Write-Host "• Dynamic device groups require P2" -ForegroundColor Yellow
+                    Write-Host "• Alternative: Use static device groups" -ForegroundColor Gray
+                }
+                "entra/Admin-Creation.ps1" {
+                    Write-Host "• PIM (Privileged Identity Management) features require P2" -ForegroundColor Yellow
+                    Write-Host "• Alternative: Create admin accounts without PIM" -ForegroundColor Gray
+                }
+            }
+            
+            Write-Host ""
+            Write-Host "Options:" -ForegroundColor Cyan
+            Write-Host "1. Purchase Entra ID P2 licenses" -ForegroundColor White
+            Write-Host "2. Run script anyway (some features may fail)" -ForegroundColor Yellow
+            Write-Host "3. Cancel and return to menu" -ForegroundColor White
+            Write-Host ""
+            
+            $choice = Read-Host "Choose option (1/2/3)"
+            
+            switch ($choice) {
+                "1" {
+                    Write-Host "💡 Purchase P2 licenses at: https://admin.microsoft.com/AdminPortal/Home#/catalog" -ForegroundColor Cyan
+                    Write-Host "Press any key to return to menu..." -ForegroundColor Gray
+                    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+                    return $null
+                }
+                "2" {
+                    Write-Host "⚠️ Proceeding without P2 license - some features may fail" -ForegroundColor Yellow
+                    Start-Sleep 2
+                }
+                "3" {
+                    Write-Host "Returning to menu..." -ForegroundColor Gray
+                    return $null
+                }
+                default {
+                    Write-Host "Invalid choice. Returning to menu..." -ForegroundColor Red
+                    return $null
+                }
+            }
+        } else {
+            Write-Host "✅ P2 license detected - proceeding with script" -ForegroundColor Green
+        }
+    }
     
     if ($Global:ScriptCache.ContainsKey($ScriptPath)) {
         $scriptContent = $Global:ScriptCache[$ScriptPath]
@@ -152,9 +321,16 @@ function Test-ConfigPoliciesExist {
         # Check if optional policies exist (bonus points but not required)
         $optionalExists = $optionalPolicies | Where-Object { $_ -in $existingPolicies }
         
-        # Consider complete if all core policies exist (regardless of optional ones for now)
-        # This allows progression while still tracking EDR separately
-        $isComplete = $coreExists.Count -eq $corePolicies.Count
+        # Calculate completion including EDR as important but manual
+        # Core policies = 80% completion, EDR = 20% completion for accurate tracking
+        $coreCompletion = if ($corePolicies.Count -gt 0) { $coreExists.Count / $corePolicies.Count } else { 0 }
+        $edrCompletion = if ($optionalExists.Count -gt 0) { 1 } else { 0 }
+        
+        # Overall completion: 80% for core + 20% for EDR
+        $overallCompletion = ($coreCompletion * 0.8) + ($edrCompletion * 0.2)
+        
+        # Mark as complete only if we have 90%+ completion (allows for rounding)
+        $isComplete = $overallCompletion -ge 0.9
         
         if (-not $isComplete) {
             $missingCore = $corePolicies | Where-Object { $_ -notin $existingPolicies }
@@ -604,7 +780,9 @@ function Show-CompactProgressDashboard {
     
     # Show key service status in compact format
     $entraid = if ($CompletedSteps.SecurityGroups -and $CompletedSteps.AdminAccounts) { "✅" } else { "⏳" }
-    $intune = if ($CompletedSteps.DeviceGroups -and $CompletedSteps.CompliancePolicies) { "✅" } else { "⏳" }
+    $intune = if ($CompletedSteps.DeviceGroups -and $CompletedSteps.CompliancePolicies -and $CompletedSteps.ConfigPolicies) { 
+        if ($CompletedSteps.EDRPolicy) { "✅" } else { "⚠️" }  # Warning if EDR missing
+    } else { "⏳" }
     $ca = if ($CompletedSteps.ConditionalAccess) { "✅" } else { "⏳" }
     
     Write-Host "   EntraID:$entraid Intune:$intune CA:$ca" -NoNewline -ForegroundColor Gray
@@ -623,6 +801,7 @@ function Show-CompactRecommendations {
             "High" { "Red" }
             "Medium" { "Yellow" }  
             "Low" { "Green" }
+            default { "White" }
         }
         
         Write-Host "💡 Next: " -NoNewline -ForegroundColor Yellow
@@ -699,9 +878,15 @@ function Get-ServiceProgress {
             Total = 3
             Items = @("Device Groups", "Configuration Policies", "Compliance Policies")
             NextStep = if (-not $CompletedSteps.DeviceGroups) { "Create Device Groups" }
-                      elseif (-not $CompletedSteps.ConfigPolicies) { "Configure Device Policies" }
+                      elseif (-not $CompletedSteps.ConfigPolicies) { 
+                          if (-not $CompletedSteps.EDRPolicy) { "Config Policies (EDR manual setup needed)" }
+                          else { "Configure Device Policies" }
+                      }
                       elseif (-not $CompletedSteps.CompliancePolicies) { "Setup Compliance Policies" }
-                      else { "Complete ✓" }
+                      else { 
+                          if (-not $CompletedSteps.EDRPolicy) { "EDR Policy manual setup required" }
+                          else { "Complete ✓" }
+                      }
         }
         "Exchange" = @{
             Completed = 0  # Placeholder - will be enhanced later
@@ -1093,7 +1278,14 @@ function Connect-M365Tenant {
             "Directory.ReadWrite.All",
             "User.ReadWrite.All",
             "Group.ReadWrite.All",
-            "Policy.ReadWrite.ConditionalAccess"
+            "Group.Read.All",
+            "Policy.ReadWrite.ConditionalAccess",
+            "Policy.Read.All",
+            "RoleManagement.ReadWrite.Directory",
+            "Policy.ReadWrite.SecurityDefaults",
+            "Directory.AccessAsUser.All",
+            "DeviceManagement.Read.All",
+            "DeviceManagement.ReadWrite.All"
         )
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow
@@ -1288,19 +1480,38 @@ function Show-EntraMenu {
         Write-Host "🏢 ENTRA ID AUTOMATION" -ForegroundColor Cyan
         Write-Host "=" * 60 -ForegroundColor Cyan
         
-        # Security Groups - Always available (foundational)
-        Write-Host "1. 👥 Security Groups (Dynamic)" -ForegroundColor Green
+        # Check P2 license status
+        $hasP2 = Test-EntraP2License
+        if (-not $hasP2) {
+            Write-Host "⚠️ LIMITED FUNCTIONALITY: Some features require Entra ID P2 licenses" -ForegroundColor Yellow
+            Write-Host ""
+        }
         
-        # Conditional Access - Requires Security Groups
+        # Security Groups - Always available (foundational) but dynamic groups need P2
+        if ($hasP2) {
+            Write-Host "1. 👥 Security Groups (Dynamic)" -ForegroundColor Green
+        } else {
+            Write-Host "1. 👥 Security Groups (Static - P2 required for dynamic)" -ForegroundColor Yellow
+        }
+        
+        # Conditional Access - Requires Security Groups and P2
         if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
-            Write-Host "2. 🛡️ Conditional Access Policies" -ForegroundColor Green
+            if ($hasP2) {
+                Write-Host "2. 🛡️ Conditional Access Policies" -ForegroundColor Green
+            } else {
+                Write-Host "2. 🛡️ Conditional Access Policies [REQUIRES: P2 License]" -ForegroundColor Red
+            }
         } else {
             Write-Host "2. 🛡️ Conditional Access Policies [REQUIRES: Security Groups]" -ForegroundColor Red
         }
         
-        # Admin Creation - Requires Security Groups
+        # Admin Creation - Requires Security Groups, P2 for PIM
         if (Test-Prerequisites -RequiredStep "AdminCreation") {
-            Write-Host "3. 👑 Admin Account Creation" -ForegroundColor Green
+            if ($hasP2) {
+                Write-Host "3. 👑 Admin Account Creation (with PIM)" -ForegroundColor Green
+            } else {
+                Write-Host "3. 👑 Admin Account Creation (Basic - P2 required for PIM)" -ForegroundColor Yellow
+            }
         } else {
             Write-Host "3. 👑 Admin Account Creation [REQUIRES: Security Groups]" -ForegroundColor Red
         }
@@ -1397,8 +1608,19 @@ function Show-IntuneMenu {
         Write-Host "📱 INTUNE AUTOMATION" -ForegroundColor Magenta
         Write-Host "=" * 60 -ForegroundColor Magenta
         
-        # Device Groups - Always available (foundational for Intune)
-        Write-Host "1. 📱 Device Groups (OS-based)" -ForegroundColor Green
+        # Check P2 license status
+        $hasP2 = Test-EntraP2License
+        if (-not $hasP2) {
+            Write-Host "⚠️ LIMITED FUNCTIONALITY: Dynamic device groups require Entra ID P2" -ForegroundColor Yellow
+            Write-Host ""
+        }
+        
+        # Device Groups - Always available (foundational for Intune) but dynamic groups need P2
+        if ($hasP2) {
+            Write-Host "1. 📱 Device Groups (Dynamic)" -ForegroundColor Green
+        } else {
+            Write-Host "1. 📱 Device Groups (Static - P2 required for dynamic)" -ForegroundColor Yellow
+        }
         
         # Configuration Policies - Requires Device Groups
         if (Test-Prerequisites -RequiredStep "ConfigPolicies") {
@@ -1723,6 +1945,7 @@ function Show-DebugStatusOverride {
     Write-Host ""
     Write-Host "1. 📊 Manual Status Override" -ForegroundColor White
     Write-Host "2. 🔍 Authentication Status" -ForegroundColor White
+    Write-Host "3. 📋 License Information" -ForegroundColor White
     Write-Host "0. ⬅️ Back to Main Menu" -ForegroundColor White
     Write-Host ""
     
@@ -1730,6 +1953,12 @@ function Show-DebugStatusOverride {
     
     if ($debugChoice -eq "2") {
         Show-AuthenticationStatus
+        return
+    }
+    elseif ($debugChoice -eq "3") {
+        Write-Host "📋 License Information:" -ForegroundColor Cyan
+        Write-Host "─" * 50 -ForegroundColor Gray
+        Test-EntraP2License -ShowDetails
         return
     }
     elseif ($debugChoice -ne "1") {
