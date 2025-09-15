@@ -1285,7 +1285,10 @@ function Connect-M365Tenant {
             "Policy.ReadWrite.SecurityDefaults",
             "Directory.AccessAsUser.All",
             "DeviceManagement.Read.All",
-            "DeviceManagement.ReadWrite.All"
+            "DeviceManagement.ReadWrite.All",
+            "DeviceManagementConfiguration.ReadWrite.All",
+            "DeviceManagementManagedDevices.ReadWrite.All",
+            "DeviceManagementApps.ReadWrite.All"
         )
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow

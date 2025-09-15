@@ -10,7 +10,8 @@
       "Bash(do echo \"=== $file ===\")",
       "Bash(wc:*)",
       "Bash(done)",
-      "WebSearch"
+      "WebSearch",
+      "Read(//c/Users/CallumBrodie/OneDrive - Bespoke IT Solutions Ltd/Pictures/Screenshots/**)"
     ],
     "deny": [],
     "ask": [],
