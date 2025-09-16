@@ -209,12 +209,12 @@ function New-CompliancePolicy {
         # Assign to device groups
         if ($DeviceGroupIds.Count -gt 0) {
             $assignmentBody = @{
-                deviceCompliancePolicyAssignments = @()
+                assignments = @()
             }
             
             foreach ($groupId in $DeviceGroupIds) {
                 if ($groupId) {
-                    $assignmentBody.deviceCompliancePolicyAssignments += @{
+                    $assignmentBody.assignments += @{
                         target = @{
                             "@odata.type" = "#microsoft.graph.groupAssignmentTarget"
                             groupId = $groupId
@@ -223,9 +223,9 @@ function New-CompliancePolicy {
                 }
             }
             
-            if ($assignmentBody.deviceCompliancePolicyAssignments.Count -gt 0) {
+            if ($assignmentBody.assignments.Count -gt 0) {
                 Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
-                Write-Host "   Assigned to $($assignmentBody.deviceCompliancePolicyAssignments.Count) device groups" -ForegroundColor Gray
+                Write-Host "   Assigned to $($assignmentBody.assignments.Count) device groups" -ForegroundColor Gray
             }
         }
         
