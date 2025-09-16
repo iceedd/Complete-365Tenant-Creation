@@ -131,6 +131,8 @@ function Get-PolicyDefinitions {
         # Method 1: Try GitHub download first (most reliable for your hub system)
         try {
             Write-Host "  🌐 Downloading policies from GitHub..." -ForegroundColor Cyan
+            # Ensure TLS 1.2 is used for SSL connections
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/AllPolicies_Complete.json"
             $jsonContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
             

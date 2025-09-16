@@ -11,7 +11,8 @@
       "Bash(wc:*)",
       "Bash(done)",
       "WebSearch",
-      "Read(//c/Users/CallumBrodie/OneDrive - Bespoke IT Solutions Ltd/Pictures/Screenshots/**)"
+      "Read(//c/Users/CallumBrodie/OneDrive - Bespoke IT Solutions Ltd/Pictures/Screenshots/**)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": [],

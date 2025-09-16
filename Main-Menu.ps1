@@ -1273,7 +1273,6 @@ function Connect-M365Tenant {
         
         # Use a practical set of scopes that cover most common scenarios
         $practicalScopes = @(
-            "Organization.Read.All",
             "Directory.Read.All", 
             "Directory.ReadWrite.All",
             "User.ReadWrite.All",
@@ -1283,9 +1282,6 @@ function Connect-M365Tenant {
             "Policy.Read.All",
             "RoleManagement.ReadWrite.Directory",
             "Policy.ReadWrite.SecurityDefaults",
-            "Directory.AccessAsUser.All",
-            "DeviceManagement.Read.All",
-            "DeviceManagement.ReadWrite.All",
             "DeviceManagementConfiguration.ReadWrite.All",
             "DeviceManagementManagedDevices.ReadWrite.All",
             "DeviceManagementApps.ReadWrite.All"

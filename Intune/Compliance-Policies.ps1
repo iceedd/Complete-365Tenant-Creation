@@ -109,6 +109,8 @@ function Get-PolicyDefinitions {
         # Method 1: Try GitHub download first (most reliable for hub system)
         try {
             Write-Host "  🌐 Downloading compliance policies from GitHub..." -ForegroundColor Cyan
+            # Ensure TLS 1.2 is used for SSL connections
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/CompliancePolicies_Complete.json"
             $jsonContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
             
@@ -130,7 +132,9 @@ function Get-PolicyDefinitions {
         $possiblePaths = @(
             ".\CompliancePolicies_Complete.json",
             ".\Intune\CompliancePolicies_Complete.json",
-            "$PWD\CompliancePolicies_Complete.json"
+            "Intune\CompliancePolicies_Complete.json",
+            "$PWD\CompliancePolicies_Complete.json",
+            "$PWD\Intune\CompliancePolicies_Complete.json"
         )
         
         # Only try local paths if we have a valid script path
@@ -141,12 +145,15 @@ function Get-PolicyDefinitions {
             }
         }
         
+        Write-Host "  🔍 Checking local file paths..." -ForegroundColor Gray
         foreach ($path in $possiblePaths) {
             if ($path -and (Test-Path $path -ErrorAction SilentlyContinue)) {
                 Write-Host "  📁 Loading policies from local file: $path" -ForegroundColor Gray
                 $jsonContent = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
                 Write-Host "  ✅ Loaded $($jsonContent.Count) compliance policies from local file" -ForegroundColor Green
                 return $jsonContent
+            } else {
+                Write-Host "  ❌ Not found: $path" -ForegroundColor DarkGray
             }
         }
         
