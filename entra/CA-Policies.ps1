@@ -85,26 +85,40 @@ function Get-GroupId {
     }
 }
 
-# Verify required scopes
+# Verify required scopes and auto-expand if needed
 function Test-RequiredScopes {
     $context = Get-MgContext
     if (!$context) {
         Write-Error "❌ Not connected to Microsoft Graph"
         return $false
     }
-    
+
     $currentScopes = $context.Scopes
     $missingScopes = $RequiredScopes | Where-Object { $_ -notin $currentScopes }
-    
+
     if ($missingScopes) {
-        Write-Host "❌ Missing required scopes:" -ForegroundColor Red
-        foreach ($scope in $missingScopes) {
-            Write-Host "   - $scope" -ForegroundColor Red
+        Write-Host "⚠️ Additional permissions needed for Conditional Access" -ForegroundColor Yellow
+        Write-Host "Missing scopes: $($missingScopes.Count)" -ForegroundColor Gray
+        Write-Host "🔄 Automatically requesting additional permissions..." -ForegroundColor Cyan
+
+        try {
+            # Combine existing and required scopes
+            $allScopes = @($currentScopes) + @($RequiredScopes) | Sort-Object -Unique
+
+            # Reconnect with expanded scopes
+            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+
+            Write-Host "✅ Successfully obtained additional permissions" -ForegroundColor Green
+            return $true
         }
-        Write-Host "`n💡 Reconnect with: Connect-MgGraph -Scopes '$($RequiredScopes -join "', '")'" -ForegroundColor Yellow
-        return $false
+        catch {
+            Write-Host "❌ Failed to obtain additional permissions" -ForegroundColor Red
+            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "`n💡 Manual reconnect: Connect-MgGraph -Scopes '$($RequiredScopes -join "', '")'" -ForegroundColor Yellow
+            return $false
+        }
     }
-    
+
     Write-Host "✅ All required scopes present" -ForegroundColor Green
     return $true
 }

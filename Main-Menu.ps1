@@ -1406,21 +1406,94 @@ function Test-ServiceAuthentication {
     return $authStatus
 }
 
-# Simplified and Robust Authentication System
+# Simplified and Robust Authentication System with Auto-Scope Expansion
 function Set-ServiceScopes {
     param([string]$Service)
-    
+
     # Check if we have any active Graph connection
     $currentContext = Get-MgContext
-    
+
     if (!$currentContext) {
         Write-Host "❌ Not connected to tenant. Please connect first." -ForegroundColor Red
         return $false
     }
-    
-    # Simple approach: If we're already connected, we assume permissions are sufficient
-    # This avoids complex scope management that can cause issues
-    Write-Host "✅ Using existing $Service authentication context" -ForegroundColor Green
+
+    # Define comprehensive scopes for each service
+    $serviceScopes = @{
+        "Entra" = @(
+            "User.ReadWrite.All",
+            "Group.ReadWrite.All",
+            "Directory.ReadWrite.All",
+            "Policy.ReadWrite.ConditionalAccess",
+            "RoleManagement.ReadWrite.Directory",
+            "Policy.ReadWrite.SecurityDefaults",
+            "Directory.AccessAsUser.All"
+        )
+        "Intune" = @(
+            "DeviceManagementConfiguration.ReadWrite.All",
+            "DeviceManagementManagedDevices.ReadWrite.All",
+            "DeviceManagementApps.ReadWrite.All",
+            "Group.ReadWrite.All",
+            "Directory.ReadWrite.All"
+        )
+        "Exchange" = @(
+            "Mail.ReadWrite",
+            "MailboxSettings.ReadWrite",
+            "Group.ReadWrite.All",
+            "Directory.ReadWrite.All"
+        )
+        "Security" = @(
+            "SecurityEvents.ReadWrite.All",
+            "ThreatIndicators.ReadWrite.OwnedBy",
+            "Policy.ReadWrite.ThreatProtection"
+        )
+        "Purview" = @(
+            "InformationProtectionPolicy.Read",
+            "RecordsManagement.ReadWrite.All",
+            "Policy.ReadWrite.CompliancePolicy"
+        )
+        "SharePoint" = @(
+            "Sites.ReadWrite.All",
+            "Group.ReadWrite.All"
+        )
+    }
+
+    # Get required scopes for this service
+    $requiredScopes = $serviceScopes[$Service]
+
+    if (!$requiredScopes) {
+        # Unknown service - use existing context
+        Write-Host "✅ Using existing authentication context for $Service" -ForegroundColor Green
+        return $true
+    }
+
+    # Check if we have all required scopes
+    $currentScopes = $currentContext.Scopes
+    $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
+
+    if ($missingScopes.Count -gt 0) {
+        Write-Host "⚠️ Additional permissions needed for $Service" -ForegroundColor Yellow
+        Write-Host "Missing scopes: $($missingScopes.Count)" -ForegroundColor Gray
+        Write-Host "🔄 Requesting additional permissions..." -ForegroundColor Cyan
+
+        try {
+            # Combine existing and new scopes
+            $allScopes = @($currentScopes) + @($missingScopes) | Sort-Object -Unique
+
+            # Reconnect with expanded scopes
+            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+
+            Write-Host "✅ Successfully obtained additional permissions" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            Write-Host "❌ Failed to obtain additional permissions: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "💡 You may need to consent to additional permissions in your browser" -ForegroundColor Yellow
+            return $false
+        }
+    }
+
+    Write-Host "✅ All required permissions present for $Service" -ForegroundColor Green
     return $true
 }
 
