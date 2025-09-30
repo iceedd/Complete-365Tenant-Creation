@@ -55,6 +55,7 @@ git log --oneline -10             # Recent commits
 4. Follow prerequisite chains (Security Groups → Admin Accounts → Conditional Access)
 
 ## Recent Changes (January 2025)
+- **Auto-Scope Expansion**: Fixed "run twice" issue - scripts now auto-request permissions on first run
 - **Compliance Policies SDK Bug Fix**: Implemented REST API workaround for Microsoft Graph SDK assignment failures
 - **EDR Policy Documentation**: Added detailed manual setup guide with step-by-step instructions
 - **Authentication System**: Multiple fixes for token access and multi-service authentication
@@ -63,11 +64,17 @@ git log --oneline -10             # Recent commits
 
 ## Known Issues & Limitations
 
+### ~~First-Run Scope Issues~~ (FIXED - January 2025)
+- **Previous Issue**: Scripts failed on first run, required running twice
+- **Cause**: Main menu connected with basic scopes, scripts needed additional permissions
+- **Solution**: Implemented auto-scope expansion in Set-ServiceScopes()
+- **Status**: ✅ Fixed - Scripts now auto-request permissions on first run
+
 ### Microsoft Graph SDK Bug (2025)
 - **Issue**: Compliance policy assignments fail with Invoke-MgGraphRequest
 - **Solution**: Implemented REST API workaround using Invoke-RestMethod
 - **Location**: Intune/Compliance-Policies.ps1 lines 227-256
-- **Status**: Fixed with fallback mechanism
+- **Status**: ✅ Fixed with fallback mechanism
 
 ### EDR Policy (Manual Setup Required)
 - **Issue**: EDR policies cannot be automated via Graph API
