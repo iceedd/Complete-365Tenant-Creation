@@ -12,6 +12,9 @@
     1.0
 #>
 
+# Force TLS 1.2 for all HTTPS connections (required for GitHub)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 # Global Variables
 $Global:TenantConnection = $null
 $Global:CurrentScopes = @()
@@ -153,15 +156,26 @@ function Get-GitHubScript {
         [string]$ScriptPath,
         [string]$Branch = $Global:GitHubBranch
     )
-    
+
     $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Branch/$ScriptPath"
-    
+
     try {
-        $response = Invoke-RestMethod -Uri $url -ErrorAction Stop
+        # Force TLS 1.2 for GitHub connectivity (fixes SSL connection issues)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        # Increase timeout for slow connections
+        $response = Invoke-RestMethod -Uri $url -TimeoutSec 30 -ErrorAction Stop
         return $response
     }
     catch {
-        Write-Error "Failed to download $ScriptPath from GitHub: $($_.Exception.Message)"
+        Write-Host "❌ Failed to download $ScriptPath from GitHub" -ForegroundColor Red
+        Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "   URL: $url" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "💡 Troubleshooting:" -ForegroundColor Cyan
+        Write-Host "   • Check your internet connection" -ForegroundColor Gray
+        Write-Host "   • Verify firewall/proxy settings allow GitHub access" -ForegroundColor Gray
+        Write-Host "   • Try: [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12" -ForegroundColor Gray
         return $null
     }
 }
