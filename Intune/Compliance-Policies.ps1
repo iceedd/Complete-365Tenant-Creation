@@ -224,8 +224,36 @@ function New-CompliancePolicy {
             }
             
             if ($assignmentBody.assignments.Count -gt 0) {
-                Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
-                Write-Host "   Assigned to $($assignmentBody.assignments.Count) device groups" -ForegroundColor Gray
+                try {
+                    # Use alternative approach due to Microsoft Graph SDK bugs in 2025
+                    $headers = @{
+                        'Authorization' = "Bearer $((Get-MgContext).Token)"
+                        'Content-Type' = 'application/json'
+                    }
+
+                    $assignmentUri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($newPolicy.id)')/assign"
+                    $assignmentJson = $assignmentBody | ConvertTo-Json -Depth 10
+
+                    # Try direct REST call to bypass SDK bug
+                    $response = Invoke-RestMethod -Uri $assignmentUri -Method POST -Body $assignmentJson -Headers $headers
+                    Write-Host "   ✅ Assigned to $($assignmentBody.assignments.Count) device groups" -ForegroundColor Green
+                }
+                catch {
+                    Write-Host "   ⚠️ Assignment failed (SDK bug): Using fallback method..." -ForegroundColor Yellow
+
+                    # Fallback: Create assignments individually
+                    foreach ($assignment in $assignmentBody.assignments) {
+                        try {
+                            $singleAssignment = @{ assignments = @($assignment) }
+                            $fallbackJson = $singleAssignment | ConvertTo-Json -Depth 10
+                            Invoke-RestMethod -Uri $assignmentUri -Method POST -Body $fallbackJson -Headers $headers
+                            Write-Host "   ✅ Individual assignment succeeded" -ForegroundColor Green
+                        }
+                        catch {
+                            Write-Host "   ❌ Assignment still failed: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                }
             }
         }
         
