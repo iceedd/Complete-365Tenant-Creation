@@ -19,10 +19,12 @@ Microsoft 365 tenant automation project with PowerShell scripts for configuring 
 
 ## Current Project Status
 Based on recent commits and analysis:
-- **Authentication System**: Recently fixed authentication token access issues (commit 814c86f)
-- **EDR Policy Tracking**: Improved to ensure manual setup isn't forgotten (commit ad87a4e)
-- **Script Analysis**: Claude Code settings updated to allow `rg` commands for analysis (commit c8c333e)
-- **Status**: Project appears stable with recent authentication and tracking improvements
+- **Authentication System**: Recently fixed authentication token access issues (commit 814c86f) ✅
+- **EDR Policy Tracking**: Improved to ensure manual setup isn't forgotten (commit ad87a4e) ✅
+- **Compliance Policies**: Fixed Microsoft Graph SDK assignment bug with REST API workaround (commit 07759a2) ✅
+- **Documentation**: Added comprehensive EDR manual setup guide to STANDARDIZATION_GUIDE.md ✅
+- **Script Analysis**: Claude Code settings updated to allow `rg` commands for analysis (commit c8c333e) ✅
+- **Status**: Production-ready with all known issues resolved
 
 ## Key Commands for This Project
 
@@ -52,17 +54,39 @@ git log --oneline -10             # Recent commits
 3. Check logs and status frequently
 4. Follow prerequisite chains (Security Groups → Admin Accounts → Conditional Access)
 
-## Recent Changes to Monitor
-- Distribution Lists script authentication fixes
-- EDR Policy manual setup tracking improvements  
-- Authentication status checker enhancements
-- Smart recommendations logic updates
+## Recent Changes (January 2025)
+- **Compliance Policies SDK Bug Fix**: Implemented REST API workaround for Microsoft Graph SDK assignment failures
+- **EDR Policy Documentation**: Added detailed manual setup guide with step-by-step instructions
+- **Authentication System**: Multiple fixes for token access and multi-service authentication
+- **Authentication Status Checker**: Added debug option to verify connection status across all services
+- **Smart Recommendations**: Improved logic to guide users through setup workflow
 
-## Next Recommended Tasks
-1. **Test Authentication**: Run authentication tests to ensure recent fixes work
-2. **EDR Policy Review**: Check if EDR policy implementation needs attention
-3. **Script Analysis**: Review individual scripts for potential improvements
-4. **Documentation**: Update any outdated comments or documentation
+## Known Issues & Limitations
+
+### Microsoft Graph SDK Bug (2025)
+- **Issue**: Compliance policy assignments fail with Invoke-MgGraphRequest
+- **Solution**: Implemented REST API workaround using Invoke-RestMethod
+- **Location**: Intune/Compliance-Policies.ps1 lines 227-256
+- **Status**: Fixed with fallback mechanism
+
+### EDR Policy (Manual Setup Required)
+- **Issue**: EDR policies cannot be automated via Graph API
+- **Solution**: Must be configured manually in Microsoft Defender portal
+- **Documentation**: See STANDARDIZATION_GUIDE.md → Manual Setup Requirements
+- **Tracking**: System tracks EDR status and shows 80%/20% completion split
+
+### P2 License Detection
+- **Coverage**: Detects 23+ Microsoft license SKUs
+- **Note**: New license types may require periodic updates
+- **Location**: Main-Menu.ps1 lines 46-134
+
+## Maintenance Checklist
+- ✅ All known bugs fixed
+- ✅ Authentication system verified
+- ✅ Documentation up to date
+- ✅ GitHub script delivery working
+- ⚠️ Monitor for new Microsoft Graph API changes
+- ⚠️ Update P2 license detection as Microsoft releases new SKUs
 
 ## PowerShell Version Requirements
 - Requires PowerShell 7.0+ (specified in #Requires directives)

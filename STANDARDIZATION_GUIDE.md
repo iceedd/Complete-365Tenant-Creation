@@ -83,6 +83,7 @@ This guide outlines the process for standardizing existing Microsoft 365 tenants
   - Apply 18 configuration policies to appropriate groups
   - Implement compliance policies per platform
   - Configure Autopilot for new device provisioning
+  - **⚠️ EDR Policy (Manual Setup Required)**: Endpoint Detection & Response policy must be configured manually in the Microsoft Defender for Endpoint portal (https://security.microsoft.com). This cannot be automated via Graph API.
 
 #### Exchange Online Standardization
 - **Email Security**
@@ -148,9 +149,35 @@ This guide outlines the process for standardizing existing Microsoft 365 tenants
 4. **Conditional Access Policies** (`entra/CA-Policies.ps1`) - Pilot First
 5. **Device Configuration Policies** (`Intune/Configuration-Policies.ps1`)
 6. **Compliance Policies** (`Intune/Compliance-Policies.ps1`)
-7. **Exchange Configuration** (`Exchange/*` scripts)
-8. **Security Policies** (`Security/*` scripts)
-9. **SharePoint and Purview** (as business requirements allow)
+7. **EDR Policy Manual Setup** (See Manual Setup Requirements below)
+8. **Exchange Configuration** (`Exchange/*` scripts)
+9. **Security Policies** (`Security/*` scripts)
+10. **SharePoint and Purview** (as business requirements allow)
+
+## Manual Setup Requirements
+
+### EDR Policy Configuration
+The Endpoint Detection & Response (EDR) policy cannot be automated and must be configured manually:
+
+**Steps:**
+1. Navigate to Microsoft Defender for Endpoint portal: https://security.microsoft.com
+2. Go to **Settings** → **Endpoints** → **Configuration management** → **Endpoint detection and response**
+3. Create a new EDR policy with these settings:
+   - **Name**: EDR Policy
+   - **Platform**: Windows 10 and later
+   - **Settings**: Enable Microsoft Defender for Endpoint
+4. **Assign** to the "Windows Devices (Autopilot)" group
+5. **Deploy** and monitor for compliance
+
+**Why Manual?**
+- EDR policies use a specialized API endpoint not available in Microsoft Graph
+- Requires Microsoft Defender for Endpoint P2 licenses
+- Configuration must be done through the Defender Security Center portal
+
+**Tracking:**
+- The automation hub will track EDR policy status
+- Progress dashboard shows 80% completion for core policies, 20% for EDR
+- System marks setup complete when EDR policy is detected
 
 ## Monitoring and Validation
 
