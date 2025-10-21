@@ -1462,8 +1462,7 @@ function Set-ServiceScopes {
         )
         "Purview" = @(
             "InformationProtectionPolicy.Read",
-            "RecordsManagement.ReadWrite.All",
-            "Policy.ReadWrite.CompliancePolicy"
+            "RecordsManagement.ReadWrite.All"
         )
         "SharePoint" = @(
             "Sites.ReadWrite.All",
