@@ -1458,8 +1458,7 @@ function Set-ServiceScopes {
         )
         "Security" = @(
             "SecurityEvents.ReadWrite.All",
-            "ThreatIndicators.ReadWrite.OwnedBy",
-            "Policy.ReadWrite.ThreatProtection"
+            "ThreatIndicators.ReadWrite.OwnedBy"
         )
         "Purview" = @(
             "InformationProtectionPolicy.Read",
