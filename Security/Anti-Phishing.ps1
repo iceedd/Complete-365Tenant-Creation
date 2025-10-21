@@ -104,8 +104,7 @@ function New-AntiPhishingConfiguration {
                 -PhishThresholdLevel 2 `
                 -TargetedUserProtectionAction MoveToJmf `
                 -TargetedDomainProtectionAction MoveToJmf `
-                -AuthenticationFailAction MoveToJmf `
-                -SpoofIntelligenceAction MoveToJmf
+                -AuthenticationFailAction MoveToJmf
 
             Write-Host "✅ Updated anti-phishing policy" -ForegroundColor Green
         }
@@ -126,8 +125,7 @@ function New-AntiPhishingConfiguration {
                 -PhishThresholdLevel 2 `
                 -TargetedUserProtectionAction MoveToJmf `
                 -TargetedDomainProtectionAction MoveToJmf `
-                -AuthenticationFailAction MoveToJmf `
-                -SpoofIntelligenceAction MoveToJmf
+                -AuthenticationFailAction MoveToJmf
 
             Write-Host "✅ Created anti-phishing policy" -ForegroundColor Green
         }
