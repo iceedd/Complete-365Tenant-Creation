@@ -4,400 +4,585 @@
 .SYNOPSIS
     Creates Conditional Access policies for fresh tenant security
 .DESCRIPTION
-    Disables Security Defaults and creates comprehensive CA policies with proper exclusions
+    Disables Security Defaults and creates comprehensive CA policies with proper exclusions.
+    Includes auto-fix for prerequisites like Security Defaults and missing groups.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Standardized UX with preview mode and auto-fix
 #>
 
-# Required Modules
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.Identity.DirectoryManagement',
-    'Microsoft.Graph.Identity.SignIns'
+    'Microsoft.Graph.Identity.SignIns',
+    'Microsoft.Graph.Groups'
 )
 
-# Required scopes for this script
 $RequiredScopes = @(
-    "User.ReadWrite.All",
-            "Group.ReadWrite.All", 
-            "Group.Read.All",
-            "Policy.ReadWrite.ConditionalAccess",
-            "Directory.ReadWrite.All",
-            "RoleManagement.ReadWrite.Directory",
-            "Policy.ReadWrite.SecurityDefaults",
-            "Directory.AccessAsUser.All"
+    "Policy.ReadWrite.ConditionalAccess",
+    "Policy.ReadWrite.SecurityDefaults",
+    "Group.ReadWrite.All",
+    "Directory.ReadWrite.All",
+    "RoleManagement.ReadWrite.Directory"
 )
 
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    foreach ($Module in $RequiredModules) {
-        if (!(Get-Module -ListAvailable -Name $Module)) {
-            Write-Host "Installing $Module..." -ForegroundColor Yellow
-            Install-Module $Module -Force -Scope CurrentUser -AllowClobber
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+function Initialize-ScriptModules {
+    Write-Host "   Checking required modules..." -ForegroundColor Yellow
+
+    try {
+        foreach ($Module in $RequiredModules) {
+            try {
+                if (!(Get-Module -ListAvailable -Name $Module)) {
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
+                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+                }
+                if (!(Get-Module -Name $Module)) {
+                    Import-Module $Module -Force -ErrorAction Stop
+                }
+                Write-Host "   $Module ready" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
+                return $false
+            }
         }
-        if (!(Get-Module -Name $Module)) {
-            Write-Host "Importing $Module..." -ForegroundColor Yellow
-            Import-Module $Module -Force
-        }
+        Write-Host "   All modules ready!" -ForegroundColor Green
+        return $true
     }
-    Write-Host "✅ Modules ready!" -ForegroundColor Green
+    catch {
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
 }
 
-# Get tenant domain for company initials
+# ============================================================================
+# PREREQUISITES WITH AUTO-FIX
+# ============================================================================
+
+function Test-Prerequisites {
+    <#
+    .SYNOPSIS
+        Verify all prerequisites and offer to auto-fix issues
+    #>
+
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    # Check Graph connection
+    Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
+    $context = Get-MgContext
+    if (!$context) {
+        Write-Host "   Not connected to Microsoft Graph" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        return @{ Success = $false }
+    }
+    Write-Host "   Connected as: $($context.Account)" -ForegroundColor Green
+
+    # Check and request scopes
+    Write-Host "   Checking required permissions..." -ForegroundColor Gray
+    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+
+    if ($missingScopes.Count -gt 0) {
+        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+        try {
+            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+            Write-Host "   Permissions updated" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+            return @{ Success = $false }
+        }
+    }
+    else {
+        Write-Host "   All required permissions present" -ForegroundColor Green
+    }
+
+    # Check Security Defaults status
+    Write-Host "   Checking Security Defaults status..." -ForegroundColor Gray
+    $securityDefaultsResult = Test-SecurityDefaults
+
+    if (!$securityDefaultsResult.Success) {
+        return @{ Success = $false }
+    }
+
+    # Check for NoMFA Exclusion Group
+    Write-Host "   Checking for NoMFA Exclusion Group..." -ForegroundColor Gray
+    $noMfaGroupResult = Test-NoMfaGroup
+
+    if (!$noMfaGroupResult.Success) {
+        return @{ Success = $false }
+    }
+
+    Write-Host ""
+    return @{
+        Success = $true
+        NoMfaGroupId = $noMfaGroupResult.GroupId
+        SecurityDefaultsDisabled = $securityDefaultsResult.IsDisabled
+    }
+}
+
+function Test-SecurityDefaults {
+    <#
+    .SYNOPSIS
+        Check Security Defaults and offer to disable if enabled
+    #>
+
+    try {
+        $policy = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction Stop
+
+        if ($policy.IsEnabled -eq $true) {
+            Write-Host "   Security Defaults is ENABLED" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "   Conditional Access policies CANNOT be created while Security Defaults is enabled." -ForegroundColor Yellow
+            Write-Host "   Security Defaults must be disabled first." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "   [Y] Disable Security Defaults now  [N] Cancel" -ForegroundColor Gray
+            $confirm = Read-Host "   Disable Security Defaults? (Y/N)"
+
+            if ($confirm -notlike "Y*") {
+                Write-Host "   Cancelled - Security Defaults remains enabled" -ForegroundColor Yellow
+                return @{ Success = $false; IsDisabled = $false }
+            }
+
+            # Disable Security Defaults
+            Write-Host "   Disabling Security Defaults..." -ForegroundColor Yellow
+            $params = @{ IsEnabled = $false }
+            Update-MgPolicyIdentitySecurityDefaultEnforcementPolicy -BodyParameter $params -ErrorAction Stop
+
+            # Verify
+            Start-Sleep -Seconds 2
+            $verification = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy
+            if ($verification.IsEnabled -eq $false) {
+                Write-Host "   Security Defaults disabled successfully" -ForegroundColor Green
+                return @{ Success = $true; IsDisabled = $true }
+            }
+            else {
+                Write-Host "   Failed to verify Security Defaults was disabled" -ForegroundColor Red
+                return @{ Success = $false; IsDisabled = $false }
+            }
+        }
+        else {
+            Write-Host "   Security Defaults already disabled" -ForegroundColor Green
+            return @{ Success = $true; IsDisabled = $true }
+        }
+    }
+    catch {
+        Write-Host "   Error checking Security Defaults: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Try manual disable: Entra admin center > Identity > Overview > Properties" -ForegroundColor Yellow
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Test-NoMfaGroup {
+    <#
+    .SYNOPSIS
+        Check for NoMFA Exclusion Group and offer to create if missing
+    #>
+
+    try {
+        $group = Get-MgGroup -Filter "displayName eq 'NoMFA Exclusion Group'" -ErrorAction SilentlyContinue
+
+        if ($group) {
+            Write-Host "   NoMFA Exclusion Group found (ID: $($group.Id))" -ForegroundColor Green
+            return @{ Success = $true; GroupId = $group.Id }
+        }
+
+        # Group doesn't exist - offer to create
+        Write-Host "   NoMFA Exclusion Group not found" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "   This group is required to exclude break-glass accounts from MFA policies." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "   [Y] Create NoMFA Exclusion Group now  [N] Cancel" -ForegroundColor Gray
+        $confirm = Read-Host "   Create the group? (Y/N)"
+
+        if ($confirm -notlike "Y*") {
+            Write-Host "   Cancelled - run Security Groups script first" -ForegroundColor Yellow
+            return @{ Success = $false }
+        }
+
+        # Create the group
+        Write-Host "   Creating NoMFA Exclusion Group..." -ForegroundColor Yellow
+
+        $groupParams = @{
+            DisplayName = "NoMFA Exclusion Group"
+            Description = "Members excluded from MFA requirements - USE FOR BREAK-GLASS ACCOUNTS ONLY"
+            MailEnabled = $false
+            MailNickname = "NoMFA-Exclusion"
+            SecurityEnabled = $true
+        }
+
+        $newGroup = New-MgGroup -BodyParameter $groupParams -ErrorAction Stop
+        Write-Host "   Created NoMFA Exclusion Group (ID: $($newGroup.Id))" -ForegroundColor Green
+        Write-Host "   IMPORTANT: Add break-glass accounts to this group!" -ForegroundColor Yellow
+
+        return @{ Success = $true; GroupId = $newGroup.Id; Created = $true }
+    }
+    catch {
+        Write-Host "   Error with NoMFA group: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# ============================================================================
+# DATA FUNCTIONS
+# ============================================================================
+
 function Get-TenantInfo {
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $domain = $org.VerifiedDomains | Where-Object { $_.IsDefault -eq $true } | Select-Object -ExpandProperty Name
         $companyInitials = ($domain -split '\.')[0].ToUpper()
-        
+
         return @{
             Domain = $domain
             CompanyInitials = $companyInitials
             TenantId = $org.Id
+            OrganizationName = $org.DisplayName
         }
     }
     catch {
-        Write-Error "Failed to get tenant info: $($_.Exception.Message)"
+        Write-Host "   Failed to get tenant info: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
 
-# Resolve group name to ID
-function Get-GroupId {
-    param([string]$GroupName)
-    
-    try {
-        $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction Stop
-        if ($group) {
-            return $group.Id
-        } else {
-            Write-Warning "Group '$GroupName' not found"
-            return $null
+function Get-PolicyDefinitions {
+    param([string]$NoMfaGroupId)
+
+    return @(
+        @{
+            displayName = "C001 - Block High Risk Users"
+            state = "enabled"
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("all")
+                userRiskLevels = @("high")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("block")
+                operator = "OR"
+            }
+        },
+        @{
+            displayName = "C002 - MFA Required for All Users"
+            state = "enabled"
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("browser", "mobileAppsAndDesktopClients")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("mfa")
+                operator = "OR"
+            }
+        },
+        @{
+            displayName = "C003 - Block Non Corporate Devices"
+            state = "enabled"
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("all")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                    excludeRoles = @("d29b2b05-8046-44ba-8758-1e26182fcf32")
+                }
+            }
+            grantControls = @{
+                builtInControls = @("mfa", "compliantDevice", "domainJoinedDevice")
+                operator = "OR"
+            }
+        },
+        @{
+            displayName = "C004 - Require Password Change for High Risk Users"
+            state = "enabled"
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("all")
+                userRiskLevels = @("high")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("mfa", "passwordChange")
+                operator = "AND"
+            }
+        },
+        @{
+            displayName = "C005 - Require MFA for Risky Sign-Ins"
+            state = "enabled"
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("all")
+                signInRiskLevels = @("high", "medium")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("mfa")
+                operator = "OR"
+            }
         }
-    }
-    catch {
-        Write-Error "Failed to resolve group '$GroupName': $($_.Exception.Message)"
-        return $null
-    }
+    )
 }
 
-# Verify required scopes and auto-expand if needed
-function Test-RequiredScopes {
-    $context = Get-MgContext
-    if (!$context) {
-        Write-Error "❌ Not connected to Microsoft Graph"
-        return $false
+# ============================================================================
+# PREVIEW MODE
+# ============================================================================
+
+function Show-PolicyPreview {
+    param(
+        [array]$Policies,
+        [string]$NoMfaGroupId
+    )
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  PREVIEW: Conditional Access Policies" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  The following $($Policies.Count) CA policies will be created:" -ForegroundColor White
+    Write-Host ""
+
+    # Header
+    Write-Host "  # | Policy Name                                  | State   | Grant" -ForegroundColor Yellow
+    Write-Host "  --|----------------------------------------------|---------|------------------" -ForegroundColor Gray
+
+    $index = 1
+    foreach ($policy in $Policies) {
+        $name = $policy.displayName
+        if ($name.Length -gt 44) { $name = $name.Substring(0, 41) + "..." }
+
+        $grant = ($policy.grantControls.builtInControls -join "+")
+        if ($grant.Length -gt 16) { $grant = $grant.Substring(0, 13) + "..." }
+
+        Write-Host ("  {0,2} | {1,-44} | {2,-7} | {3}" -f $index, $name, $policy.state, $grant) -ForegroundColor White
+        $index++
     }
 
-    $currentScopes = $context.Scopes
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $currentScopes }
+    Write-Host ""
+    Write-Host "  All policies will:" -ForegroundColor Yellow
+    Write-Host "    - Exclude NoMFA Exclusion Group (break-glass accounts)" -ForegroundColor Gray
+    Write-Host "    - Be ENABLED immediately" -ForegroundColor Gray
+    Write-Host ""
 
-    if ($missingScopes) {
-        Write-Host "⚠️ Additional permissions needed for Conditional Access" -ForegroundColor Yellow
-        Write-Host "Missing scopes: $($missingScopes.Count)" -ForegroundColor Gray
-        Write-Host "🔄 Automatically requesting additional permissions..." -ForegroundColor Cyan
-
-        try {
-            # Combine existing and required scopes
-            $allScopes = @($currentScopes) + @($RequiredScopes) | Sort-Object -Unique
-
-            # Reconnect with expanded scopes
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-
-            Write-Host "✅ Successfully obtained additional permissions" -ForegroundColor Green
-            return $true
-        }
-        catch {
-            Write-Host "❌ Failed to obtain additional permissions" -ForegroundColor Red
-            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "`n💡 Manual reconnect: Connect-MgGraph -Scopes '$($RequiredScopes -join "', '")'" -ForegroundColor Yellow
-            return $false
-        }
-    }
-
-    Write-Host "✅ All required scopes present" -ForegroundColor Green
-    return $true
+    Write-Host "  NoMFA Exclusion Group ID: $NoMfaGroupId" -ForegroundColor Gray
+    Write-Host ""
 }
 
-# Disable Security Defaults
-function Disable-SecurityDefaults {
-    try {
-        Write-Host "Checking Security Defaults..."
-        
-        $policy = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy
-        
-        if ($policy.IsEnabled -eq $true) {
-            Write-Host "Security Defaults are enabled. Disabling them now..."
-            $params = @{ IsEnabled = $false }
-            Update-MgPolicyIdentitySecurityDefaultEnforcementPolicy -BodyParameter $params
-            Write-Host "Security Defaults have been disabled."
-        } else {
-            Write-Host "Security Defaults are already disabled."
-        }
-    }
-    catch {
-        Write-Error "Failed to disable Security Defaults: $($_.Exception.Message)"
-        Write-Host "Try manual disable: Entra admin center → Identity → Override → Properties → Manage security defaults"
-        throw
-    }
-}
+# ============================================================================
+# POLICY CREATION
+# ============================================================================
 
-# Create CA policy function
 function New-ConditionalAccessPolicy {
     param(
         [hashtable]$PolicyConfig,
         [string]$NoMfaGroupId
     )
-    
+
+    $policyName = $PolicyConfig.displayName
+
     try {
         # Check if policy already exists
-        $existingPolicy = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '$($PolicyConfig.DisplayName)'" -ErrorAction SilentlyContinue
-        
+        $existingPolicy = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '$policyName'" -ErrorAction SilentlyContinue
+
         if ($existingPolicy) {
-            Write-Host "⚠️  Policy '$($PolicyConfig.DisplayName)' already exists" -ForegroundColor Yellow
-            return $existingPolicy
+            Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
         }
-        
-        # Add NoMFA group to exclusions for all policies
-        if ($NoMfaGroupId -and $PolicyConfig.Conditions.Users.ExcludeGroups -notcontains $NoMfaGroupId) {
-            $PolicyConfig.Conditions.Users.ExcludeGroups += $NoMfaGroupId
+
+        # Ensure NoMFA group is in exclusions
+        if ($NoMfaGroupId -and $PolicyConfig.conditions.users.excludeGroups -notcontains $NoMfaGroupId) {
+            $PolicyConfig.conditions.users.excludeGroups = @($NoMfaGroupId)
         }
-        
-        # Create the policy
-        $newPolicy = New-MgIdentityConditionalAccessPolicy -BodyParameter $PolicyConfig
-        
-        Write-Host "✅ Created: $($PolicyConfig.DisplayName)" -ForegroundColor Green
-        Write-Host "   Policy ID: $($newPolicy.Id)" -ForegroundColor Gray
-        
-        return $newPolicy
+
+        # Create policy
+        $newPolicy = New-MgIdentityConditionalAccessPolicy -BodyParameter $PolicyConfig -ErrorAction Stop
+
+        Write-Host "     Created successfully (ID: $($newPolicy.Id))" -ForegroundColor Green
+        return @{ Success = $true; Policy = $newPolicy; Skipped = $false }
     }
     catch {
-        Write-Error "❌ Failed to create policy '$($PolicyConfig.DisplayName)': $($_.Exception.Message)"
-        return $null
+        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Policy definitions based on export
-function Get-PolicyDefinitions {
-    param([string]$NoMfaGroupId)
-    
-    return @(
-        @{
-            DisplayName = "C001 - Block High Risk Users"
-            State = "enabled"
-            Conditions = @{
-                Applications = @{
-                    IncludeApplications = @("All")
-                    ExcludeApplications = @()
-                }
-                ClientAppTypes = @("all")
-                UserRiskLevels = @("high")
-                SignInRiskLevels = @()
-                Users = @{
-                    IncludeUsers = @("All")
-                    ExcludeUsers = @()
-                    ExcludeGroups = @($NoMfaGroupId)
-                    ExcludeRoles = @()
-                }
-            }
-            GrantControls = @{
-                BuiltInControls = @("block")
-                Operator = "OR"
-            }
-        },
-        @{
-            DisplayName = "C002 - MFA Required for All Users"
-            State = "enabled"
-            Conditions = @{
-                Applications = @{
-                    IncludeApplications = @("All")
-                    ExcludeApplications = @()
-                }
-                ClientAppTypes = @("browser", "mobileAppsAndDesktopClients")
-                UserRiskLevels = @()
-                SignInRiskLevels = @()
-                Users = @{
-                    IncludeUsers = @("All")
-                    ExcludeUsers = @()
-                    ExcludeGroups = @($NoMfaGroupId)
-                    ExcludeRoles = @()
-                }
-            }
-            GrantControls = @{
-                BuiltInControls = @("mfa")
-                Operator = "OR"
-            }
-        },
-        @{
-            DisplayName = "C003 - Block Non Corporate Devices"
-            State = "enabled"
-            Conditions = @{
-                Applications = @{
-                    IncludeApplications = @("All")
-                    ExcludeApplications = @()
-                }
-                ClientAppTypes = @("all")
-                UserRiskLevels = @()
-                SignInRiskLevels = @()
-                Users = @{
-                    IncludeUsers = @("All")
-                    ExcludeUsers = @()
-                    ExcludeGroups = @($NoMfaGroupId)
-                    ExcludeRoles = @("d29b2b05-8046-44ba-8758-1e26182fcf32") # Directory Synchronization Accounts
-                }
-            }
-            GrantControls = @{
-                BuiltInControls = @("mfa", "compliantDevice", "domainJoinedDevice")
-                Operator = "OR"
-            }
-        },
-        @{
-            DisplayName = "C004 - Require Password Change and MFA for High Risk Users"
-            State = "enabled"
-            Conditions = @{
-                Applications = @{
-                    IncludeApplications = @("All")
-                    ExcludeApplications = @()
-                }
-                ClientAppTypes = @("all")
-                UserRiskLevels = @("high")
-                SignInRiskLevels = @()
-                Users = @{
-                    IncludeUsers = @("All")
-                    ExcludeUsers = @()
-                    ExcludeGroups = @($NoMfaGroupId)
-                    ExcludeRoles = @()
-                }
-            }
-            GrantControls = @{
-                BuiltInControls = @("mfa", "passwordChange")
-                Operator = "AND"
-            }
-        },
-        @{
-            DisplayName = "C005 - Require MFA for Risky Sign-Ins"
-            State = "enabled"
-            Conditions = @{
-                Applications = @{
-                    IncludeApplications = @("All")
-                    ExcludeApplications = @()
-                }
-                ClientAppTypes = @("all")
-                UserRiskLevels = @()
-                SignInRiskLevels = @("high", "medium")
-                Users = @{
-                    IncludeUsers = @("All")
-                    ExcludeUsers = @()
-                    ExcludeGroups = @($NoMfaGroupId)
-                    ExcludeRoles = @()
-                }
-            }
-            GrantControls = @{
-                BuiltInControls = @("mfa")
-                Operator = "OR"
-            }
-        }
-    )
-}
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 
-# Main execution function
 function Start-CAPolicyCreation {
-    Write-Host "`n🚀 Creating Conditional Access Policies..." -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    
-    # Verify scopes first
-    if (!(Test-RequiredScopes)) {
+    # Header
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  CONDITIONAL ACCESS POLICIES" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Creates security policies for identity protection" -ForegroundColor Gray
+    Write-Host ""
+
+    # Step 1: Prerequisites (with auto-fix)
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    $prereqResult = Test-Prerequisites
+
+    if (!$prereqResult.Success) {
+        Write-Host ""
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    # Get tenant info
+
+    $noMfaGroupId = $prereqResult.NoMfaGroupId
+
+    # Step 2: Load data
+    Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
     $tenantInfo = Get-TenantInfo
     if (!$tenantInfo) {
-        Write-Error "❌ Failed to get tenant information"
+        Write-Host "   Failed to get tenant information" -ForegroundColor Red
         return
     }
-    
-    Write-Host "✅ Connected to: $($tenantInfo.Domain)" -ForegroundColor Green
-    Write-Host "   Company: $($tenantInfo.CompanyInitials)" -ForegroundColor Gray
-    
-    # Resolve NoMFA group
-    Write-Host "`n🔍 Resolving security groups..." -ForegroundColor Yellow
-    $noMfaGroupId = Get-GroupId -GroupName "NoMFA Exclusion Group"
-    
-    if (!$noMfaGroupId) {
-        Write-Error "❌ NoMFA Exclusion Group not found. Please create security groups first."
-        return
-    }
-    
-    Write-Host "✅ NoMFA Group ID: $noMfaGroupId" -ForegroundColor Green
-    
-    # Disable Security Defaults
-    Disable-SecurityDefaults
-    
-    # Create policies
-    Write-Host "`n🛡️ Creating CA policies..." -ForegroundColor Yellow
+    Write-Host "   Tenant: $($tenantInfo.OrganizationName)" -ForegroundColor Green
+
     $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId
-    
-    $createdPolicies = @()
-    $failedPolicies = @()
-    
+    Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
+
+    # Step 3: Preview
+    Write-Host ""
+    Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
+    Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId
+
+    # Confirmation
+    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+    Write-Host ""
+    $confirm = Read-Host "  Create these CA policies? (Y/N)"
+
+    if ($confirm -notlike "Y*") {
+        Write-Host ""
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
+    }
+
+    # Step 4: Execute
+    Write-Host ""
+    Write-Host "  STEP 4: Creating Policies" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    $results = @{
+        Created = @()
+        Skipped = @()
+        Failed = @()
+    }
+
     foreach ($policy in $policies) {
-        Write-Host "`n📋 Creating: $($policy.DisplayName)" -ForegroundColor White
-        
+        Write-Host "   $($policy.DisplayName)..." -ForegroundColor White
+
         $result = New-ConditionalAccessPolicy -PolicyConfig $policy -NoMfaGroupId $noMfaGroupId
-        
-        if ($result) {
-            $createdPolicies += $result
-        } else {
-            $failedPolicies += $policy.DisplayName
+
+        if ($result.Success) {
+            if ($result.Skipped) {
+                $results.Skipped += $policy.DisplayName
+            }
+            else {
+                $results.Created += $policy.DisplayName
+            }
         }
-        
-        # Small delay to avoid throttling
+        else {
+            $results.Failed += @{ Name = $policy.DisplayName; Error = $result.Error }
+        }
+
         Start-Sleep -Milliseconds 500
     }
-    
-    # Summary
-    Write-Host "`n" + "=" * 60 -ForegroundColor Cyan
-    Write-Host "📊 SUMMARY" -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host "✅ Successfully created: $($createdPolicies.Count) policies" -ForegroundColor Green
-    
-    if ($failedPolicies.Count -gt 0) {
-        Write-Host "❌ Failed to create: $($failedPolicies.Count) policies" -ForegroundColor Red
-        foreach ($failed in $failedPolicies) {
-            Write-Host "   - $failed" -ForegroundColor Red
+
+    # Step 5: Summary
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Host "  Created: $($results.Created.Count)" -ForegroundColor Green
+    Write-Host "  Skipped (existing): $($results.Skipped.Count)" -ForegroundColor Yellow
+    Write-Host "  Failed: $($results.Failed.Count)" -ForegroundColor $(if ($results.Failed.Count -gt 0) { "Red" } else { "Green" })
+    Write-Host ""
+
+    if ($results.Created.Count -gt 0) {
+        Write-Host "  Created Policies:" -ForegroundColor Green
+        foreach ($name in $results.Created) {
+            Write-Host "    - $name" -ForegroundColor White
         }
+        Write-Host ""
     }
-    
-    Write-Host "`n💡 Next Steps:" -ForegroundColor Yellow
-    Write-Host "   1. Verify policies in Entra admin center" -ForegroundColor Gray
-    Write-Host "   2. Test with pilot users before full deployment" -ForegroundColor Gray
-    Write-Host "   3. Monitor sign-in logs for policy impact" -ForegroundColor Gray
-    Write-Host "   4. Add break-glass accounts to NoMFA Exclusion Group" -ForegroundColor Gray
-    
-    Write-Host "`n⚠️  IMPORTANT:" -ForegroundColor Red
-    Write-Host "   All policies are ENABLED by default" -ForegroundColor Red
-    Write-Host "   Ensure break-glass accounts are excluded!" -ForegroundColor Red
-    
-    return $createdPolicies
+
+    if ($results.Failed.Count -gt 0) {
+        Write-Host "  Failed Policies:" -ForegroundColor Red
+        foreach ($fail in $results.Failed) {
+            Write-Host "    - $($fail.Name): $($fail.Error)" -ForegroundColor Red
+        }
+        Write-Host ""
+    }
+
+    # Important warnings
+    Write-Host "  IMPORTANT:" -ForegroundColor Red
+    Write-Host "    - All policies are ENABLED immediately" -ForegroundColor Yellow
+    Write-Host "    - Add break-glass accounts to NoMFA Exclusion Group NOW" -ForegroundColor Yellow
+    Write-Host "    - Test with pilot users before full deployment" -ForegroundColor Yellow
+    Write-Host ""
+
+    Write-Host "  Next Steps:" -ForegroundColor Yellow
+    Write-Host "    1. Add break-glass accounts to NoMFA Exclusion Group" -ForegroundColor Gray
+    Write-Host "    2. Verify policies in Entra admin center" -ForegroundColor Gray
+    Write-Host "    3. Monitor sign-in logs for policy impact" -ForegroundColor Gray
+    Write-Host "    4. Test with pilot users" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Initialize and run
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
 try {
-    Initialize-Modules
-    $results = Start-CAPolicyCreation
-    
-    if ($results) {
-        Write-Host "`n🎉 Conditional Access policy creation completed!" -ForegroundColor Green
-        Write-Host "🔐 Security Defaults disabled, CA policies active" -ForegroundColor Green
+    if (!(Initialize-ScriptModules)) {
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
+        return
     }
+
+    Start-CAPolicyCreation
 }
 catch {
-    Write-Error "❌ Script execution failed: $($_.Exception.Message)"
+    Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
 }
-
-# ▼ CB & Claude | BITS 365 Automation | v1.0 | "Smarter not Harder"

@@ -2,324 +2,133 @@
 
 <#
 .SYNOPSIS
-    Complete Mailbox Configuration for Exchange Online
+    Configures Exchange Online archive mailboxes and storage quotas
 .DESCRIPTION
-    Comprehensive script that configures Exchange Online mailboxes with:
-    - Archive mailbox enablement and verification
-    - Storage quotas (Warning: 40GB, Prohibit Send: 45GB, Prohibit Send/Receive: 49GB)
-    - Progress tracking and detailed error handling
-    Integrated with Complete-365Tenant-Creation automation hub.
+    Enables archive mailboxes and configures storage quotas for all user mailboxes.
+    Warning: 40GB | Prohibit Send: 45GB | Prohibit Send/Receive: 49GB
 .AUTHOR
-    CB & Claude Partnership - BITS 365 Automation
+    CB & Claude Partnership
 .VERSION
-    1.0
-.NOTES
-    Requires ExchangeOnlineManagement module v3.2.0+
-    Compatible with PowerShell 7.0+
-    Uses REST-backed cmdlets (no WinRM Basic Auth required)
+    2.0 - Standardized UX
 #>
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION & INITIALIZATION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
-# Required modules and roles for this script
-$RequiredModules = @('ExchangeOnlineManagement')
-$RequiredRoles = @("Exchange Administrator", "Global Administrator", "Mail Recipients")
+$RequiredModules = @(
+    'ExchangeOnlineManagement'
+)
 
-# Mailbox quota configuration (easily adjustable)
 $QuotaConfig = @{
-    WarningQuota = 40GB
-    ProhibitSendQuota = 45GB  
+    WarningQuota             = 40GB
+    ProhibitSendQuota        = 45GB
     ProhibitSendReceiveQuota = 49GB
 }
 
-# Global variables for tracking
-$Global:ProcessedMailboxes = 0
-$Global:TotalMailboxes = 0
-$Global:ProcessingErrors = @()
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
+function Initialize-ScriptModules {
+    Write-Host "   Checking required modules..." -ForegroundColor Yellow
 
-function Write-Progress-Custom {
-    <#
-    .SYNOPSIS
-        Enhanced progress display with detailed information
-    #>
-    param(
-        [string]$Activity,
-        [string]$Status,
-        [int]$PercentComplete,
-        [string]$CurrentOperation = ""
-    )
-    
-    Write-Progress -Activity $Activity -Status $Status -PercentComplete $PercentComplete -CurrentOperation $CurrentOperation
-    Write-Host "🔄 $Status" -ForegroundColor Cyan
-    if ($CurrentOperation) {
-        Write-Host "   └─ $CurrentOperation" -ForegroundColor Gray
-    }
-}
-
-function Write-Status-Message {
-    <#
-    .SYNOPSIS
-        Standardized status messaging with colors and emojis
-    #>
-    param(
-        [string]$Message,
-        [ValidateSet("Info", "Success", "Warning", "Error", "Step")]
-        [string]$Type = "Info"
-    )
-    
-    $emoji = switch ($Type) {
-        "Info" { "ℹ️" }
-        "Success" { "✅" }
-        "Warning" { "⚠️" }
-        "Error" { "❌" }
-        "Step" { "🎯" }
-    }
-    
-    $color = switch ($Type) {
-        "Info" { "Cyan" }
-        "Success" { "Green" }
-        "Warning" { "Yellow" }
-        "Error" { "Red" }
-        "Step" { "Magenta" }
-    }
-    
-    Write-Host "$emoji $Message" -ForegroundColor $color
-}
-
-function Test-QuotaValues {
-    <#
-    .SYNOPSIS
-        Validates quota configuration values
-    #>
-    param($Config)
-    
-    if ($Config.WarningQuota -ge $Config.ProhibitSendQuota) {
-        throw "Warning quota ($($Config.WarningQuota)) must be less than Prohibit Send quota ($($Config.ProhibitSendQuota))"
-    }
-    
-    if ($Config.ProhibitSendQuota -ge $Config.ProhibitSendReceiveQuota) {
-        throw "Prohibit Send quota ($($Config.ProhibitSendQuota)) must be less than Prohibit Send/Receive quota ($($Config.ProhibitSendReceiveQuota))"
-    }
-    
-    Write-Status-Message "Quota configuration validated successfully" -Type "Success"
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODULE & CONNECTION MANAGEMENT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-function Initialize-Modules {
-    <#
-    .SYNOPSIS
-        Initialize required PowerShell modules and verify cmdlet availability
-    #>
-    Write-Status-Message "Initializing required modules..." -Type "Step"
-    
-    foreach ($Module in $RequiredModules) {
-        try {
-            Write-Host "  📦 Checking $Module..." -ForegroundColor Gray
-            
-            # Check if module is installed
-            $installedModule = Get-InstalledModule -Name $Module -ErrorAction SilentlyContinue
-            if (-not $installedModule) {
-                Write-Status-Message "Installing $Module..." -Type "Info"
-                Install-Module -Name $Module -Scope CurrentUser -Force -AllowClobber
-            }
-            
-            # Check if module is imported
-            $importedModule = Get-Module -Name $Module
-            if (-not $importedModule) {
-                Write-Host "  🔄 Importing $Module..." -ForegroundColor Gray
-                Import-Module -Name $Module -Force
-            }
-            
-            # Verify specific version for ExchangeOnlineManagement
-            if ($Module -eq "ExchangeOnlineManagement") {
-                $moduleVersion = (Get-Module -Name $Module).Version
-                if ($moduleVersion -lt [Version]"3.2.0") {
-                    Write-Status-Message "Updating $Module to latest version..." -Type "Info"
-                    Update-Module -Name $Module -Force
-                    Remove-Module -Name $Module -Force
-                    Import-Module -Name $Module -Force
-                }
-                Write-Host "  ✅ $Module version: $((Get-Module -Name $Module).Version)" -ForegroundColor Green
-                
-                # Verify Exchange cmdlets are available (they load dynamically after connection)
-                Write-Host "  🔍 Checking Exchange cmdlets availability..." -ForegroundColor Gray
-                $exchangeCmdlets = @('Get-AcceptedDomain', 'Get-Mailbox', 'Set-Mailbox', 'Enable-Mailbox')
-                $missingCmdlets = @()
-                
-                foreach ($cmdlet in $exchangeCmdlets) {
-                    if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
-                        $missingCmdlets += $cmdlet
-                    }
-                }
-                
-                if ($missingCmdlets.Count -gt 0) {
-                    Write-Host "  ⚠️ Exchange cmdlets not yet loaded (this is normal before connection)" -ForegroundColor Yellow
-                    Write-Host "    Missing: $($missingCmdlets -join ', ')" -ForegroundColor Gray
-                }
-                else {
-                    Write-Host "  ✅ Exchange cmdlets are available" -ForegroundColor Green
-                }
-            }
-            
-        }
-        catch {
-            Write-Status-Message "Failed to initialize $Module : $($_.Exception.Message)" -Type "Error"
-            return $false
-        }
-    }
-    
-    Write-Status-Message "All required modules initialized successfully" -Type "Success"
-    return $true
-}
-
-function Test-ExchangeConnection {
-    <#
-    .SYNOPSIS
-        Verify Exchange Online connection and cmdlet availability
-    #>
-    Write-Status-Message "Verifying Exchange Online connection..." -Type "Step"
-    
     try {
-        # Step 1: Check if Exchange cmdlets are available
-        Write-Host "  🔍 Checking Exchange cmdlets availability..." -ForegroundColor Gray
-        $exchangeCmdlets = @('Get-AcceptedDomain', 'Get-Mailbox', 'Set-Mailbox', 'Enable-Mailbox')
-        $missingCmdlets = @()
-        
-        foreach ($cmdlet in $exchangeCmdlets) {
-            if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
-                $missingCmdlets += $cmdlet
-            }
-        }
-        
-        if ($missingCmdlets.Count -gt 0) {
-            Write-Host "  ⚠️ Exchange cmdlets not available: $($missingCmdlets -join ', ')" -ForegroundColor Yellow
-            Write-Host "  🔄 Attempting to establish Exchange Online connection..." -ForegroundColor Cyan
-            Write-Host "  🌐 Using device code authentication (web browser method)..." -ForegroundColor Cyan
-            
+        foreach ($Module in $RequiredModules) {
             try {
-                # Use device code authentication - shows code and link for browser authentication
-                Connect-ExchangeOnline -Device -ShowBanner:$false -ErrorAction Stop
-                Write-Host "  ✅ Connected to Exchange Online successfully" -ForegroundColor Green
-                
-                # Re-check cmdlets after connection
-                $stillMissing = @()
-                foreach ($cmdlet in $exchangeCmdlets) {
-                    if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
-                        $stillMissing += $cmdlet
-                    }
+                if (!(Get-Module -ListAvailable -Name $Module)) {
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
+                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
                 }
-                
-                if ($stillMissing.Count -gt 0) {
-                    Write-Status-Message "Exchange cmdlets still not available after connection attempt" -Type "Error"
-                    return $false
+                if (!(Get-Module -Name $Module)) {
+                    Import-Module $Module -Force -ErrorAction Stop
                 }
+                Write-Host "   $Module ready" -ForegroundColor Green
             }
             catch {
-                Write-Status-Message "Failed to connect to Exchange Online: $($_.Exception.Message)" -Type "Error"
-                Write-Host "  💡 Please ensure you have Exchange Administrator permissions" -ForegroundColor Yellow
-                Write-Host "  🔄 Try using option 8 to reconnect to the tenant" -ForegroundColor Yellow
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
                 return $false
             }
         }
-        
-        # Step 2: Test connection using multiple methods
-        Write-Host "  🔍 Testing connection method 1: Get-ConnectionInformation..." -ForegroundColor Gray
-        $connectionInfo = Get-ConnectionInformation -ErrorAction SilentlyContinue
-        
-        if ($connectionInfo -and $connectionInfo.State -eq "Connected") {
-            Write-Status-Message "Exchange Online connection verified successfully" -Type "Success"
-            Write-Host "  🌐 Connected to: $($connectionInfo.TenantId)" -ForegroundColor Gray
-            Write-Host "  👤 Connected as: $($connectionInfo.UserPrincipalName)" -ForegroundColor Gray
-            return $true
-        }
-        
-        # Step 3: Test with Exchange cmdlets directly
-        Write-Host "  🔍 Testing connection method 2: Exchange cmdlet test..." -ForegroundColor Gray
-        
-        $testDomains = Get-AcceptedDomain -ResultSize 1 -ErrorAction SilentlyContinue
-        if ($testDomains) {
-            Write-Status-Message "Exchange Online connection verified via cmdlet test" -Type "Success"
-            Write-Host "  🌐 Exchange Online is accessible and responding" -ForegroundColor Gray
-            return $true
-        }
-        
-        # Step 4: Test mailbox access
-        Write-Host "  🔍 Testing connection method 3: Mailbox access test..." -ForegroundColor Gray
-        $testMailbox = Get-Mailbox -ResultSize 1 -ErrorAction SilentlyContinue
-        if ($testMailbox) {
-            Write-Status-Message "Exchange Online connection verified via mailbox access" -Type "Success"
-            Write-Host "  📧 Mailbox data accessible" -ForegroundColor Gray
-            return $true
-        }
-        
-        # No connection detected
-        Write-Status-Message "Unable to verify Exchange Online connection" -Type "Error"
-        Write-Host "  💡 Please check your Exchange permissions and connection status" -ForegroundColor Yellow
-        return $false
-        
+        Write-Host "   All modules ready!" -ForegroundColor Green
+        return $true
     }
     catch {
-        Write-Status-Message "Failed to verify Exchange Online connection: $($_.Exception.Message)" -Type "Error"
-        Write-Host "  📝 This might indicate missing Exchange permissions or authentication issues" -ForegroundColor Gray
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CORE MAILBOX CONFIGURATION FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# PREREQUISITES
+# ============================================================================
+
+function Test-Prerequisites {
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    Write-Host "   Checking Exchange Online connection..." -ForegroundColor Gray
+    $connection = Get-ConnectionInformation -ErrorAction SilentlyContinue
+    if (!$connection -or $connection.State -ne "Connected") {
+        Write-Host "   Not connected to Exchange Online" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        Write-Host ""
+        return @{ Success = $false }
+    }
+    Write-Host "   Connected as: $($connection.UserPrincipalName)" -ForegroundColor Green
+
+    Write-Host ""
+    return @{ Success = $true }
+}
+
+# ============================================================================
+# VALIDATION
+# ============================================================================
+
+function Test-QuotaValues {
+    param($Config)
+
+    if ($Config.WarningQuota -ge $Config.ProhibitSendQuota) {
+        throw "Warning quota must be less than Prohibit Send quota"
+    }
+    if ($Config.ProhibitSendQuota -ge $Config.ProhibitSendReceiveQuota) {
+        throw "Prohibit Send quota must be less than Prohibit Send/Receive quota"
+    }
+    Write-Host "   Quota configuration validated" -ForegroundColor Green
+}
+
+# ============================================================================
+# MAILBOX CONFIGURATION
+# ============================================================================
 
 function Enable-MailboxArchiving {
-    <#
-    .SYNOPSIS
-        Enable and verify archive mailboxes for all user mailboxes
-    #>
     param([array]$Mailboxes)
-    
-    Write-Status-Message "Processing mailbox archiving configuration..." -Type "Step"
-    
-    $archiveStats = @{
-        AlreadyEnabled = 0
-        NewlyEnabled = 0
-        Failed = 0
-    }
-    
+
+    Write-Host ""
+    Write-Host "   Enabling archive mailboxes..." -ForegroundColor Gray
+
+    $stats = @{ AlreadyEnabled = 0; NewlyEnabled = 0; Failed = 0 }
+    $errors = @()
+
     foreach ($mailbox in $Mailboxes) {
-        $Global:ProcessedMailboxes++
-        $percent = [math]::Round(($Global:ProcessedMailboxes / $Global:TotalMailboxes) * 100, 1)
-        
         try {
-            Write-Progress-Custom -Activity "Configuring Mailbox Archives" -Status "Processing $($mailbox.UserPrincipalName)" -PercentComplete $percent -CurrentOperation "Checking archive status..."
-            
-            # Check current archive status
-            $currentMailbox = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
-            
-            if ($currentMailbox.ArchiveStatus -eq 'Active') {
-                Write-Host "  ✅ Archive already enabled for: $($mailbox.UserPrincipalName)" -ForegroundColor Green
-                $archiveStats.AlreadyEnabled++
+            $current = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
+
+            if ($current.ArchiveStatus -eq 'Active') {
+                Write-Host "     Already enabled: $($mailbox.UserPrincipalName)" -ForegroundColor Green
+                $stats.AlreadyEnabled++
             }
             else {
-                Write-Host "  🔄 Enabling archive for: $($mailbox.UserPrincipalName)" -ForegroundColor Yellow
-                
-                # Enable archive mailbox
+                Write-Host "     Enabling: $($mailbox.UserPrincipalName)..." -ForegroundColor Gray
                 Enable-Mailbox -Identity $mailbox.UserPrincipalName -Archive -ErrorAction Stop
-                
-                # Verify enablement
-                Start-Sleep -Seconds 2  # Brief pause for propagation
-                $verifyMailbox = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
-                
-                if ($verifyMailbox.ArchiveStatus -eq 'Active') {
-                    Write-Host "  ✅ Archive successfully enabled for: $($mailbox.UserPrincipalName)" -ForegroundColor Green
-                    $archiveStats.NewlyEnabled++
+
+                Start-Sleep -Seconds 2
+                $verify = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
+
+                if ($verify.ArchiveStatus -eq 'Active') {
+                    Write-Host "     Enabled: $($mailbox.UserPrincipalName)" -ForegroundColor Green
+                    $stats.NewlyEnabled++
                 }
                 else {
                     throw "Archive enablement verification failed"
@@ -327,231 +136,218 @@ function Enable-MailboxArchiving {
             }
         }
         catch {
-            $errorMsg = "Failed to process archive for $($mailbox.UserPrincipalName): $($_.Exception.Message)"
-            Write-Status-Message $errorMsg -Type "Error"
-            $Global:ProcessingErrors += $errorMsg
-            $archiveStats.Failed++
+            $msg = "Failed archive for $($mailbox.UserPrincipalName): $($_.Exception.Message)"
+            Write-Host "     $msg" -ForegroundColor Red
+            $errors += $msg
+            $stats.Failed++
         }
     }
-    
-    # Summary
-    Write-Host "`n📊 Archive Processing Summary:" -ForegroundColor Cyan
-    Write-Host "  ✅ Already enabled: $($archiveStats.AlreadyEnabled)" -ForegroundColor Green
-    Write-Host "  🆕 Newly enabled: $($archiveStats.NewlyEnabled)" -ForegroundColor Green  
-    Write-Host "  ❌ Failed: $($archiveStats.Failed)" -ForegroundColor Red
+
+    Write-Host ""
+    Write-Host "   Archive results:" -ForegroundColor Gray
+    Write-Host "     Already enabled: $($stats.AlreadyEnabled)" -ForegroundColor Green
+    Write-Host "     Newly enabled:   $($stats.NewlyEnabled)" -ForegroundColor Green
+    Write-Host "     Failed:          $($stats.Failed)" -ForegroundColor $(if ($stats.Failed -gt 0) { "Red" } else { "Green" })
+
+    return @{ Stats = $stats; Errors = $errors }
 }
 
 function Set-MailboxQuotas {
-    <#
-    .SYNOPSIS
-        Configure storage quotas for all user mailboxes
-    #>
     param(
         [array]$Mailboxes,
         [hashtable]$QuotaConfiguration
     )
-    
-    Write-Status-Message "Processing mailbox quota configuration..." -Type "Step"
-    
-    $quotaStats = @{
-        Updated = 0
-        AlreadyConfigured = 0
-        Failed = 0
-    }
-    
-    # Reset progress counter for quota processing
-    $Global:ProcessedMailboxes = 0
-    
+
+    Write-Host ""
+    Write-Host "   Configuring mailbox quotas..." -ForegroundColor Gray
+
+    $stats = @{ Updated = 0; AlreadyConfigured = 0; Failed = 0 }
+    $errors = @()
+
     foreach ($mailbox in $Mailboxes) {
-        $Global:ProcessedMailboxes++
-        $percent = [math]::Round(($Global:ProcessedMailboxes / $Global:TotalMailboxes) * 100, 1)
-        
         try {
-            Write-Progress-Custom -Activity "Configuring Mailbox Quotas" -Status "Processing $($mailbox.UserPrincipalName)" -PercentComplete $percent -CurrentOperation "Setting quota limits..."
-            
-            # Get current quota settings
-            $currentMailbox = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
-            
-            # Check if quotas are already set correctly
-            $needsUpdate = $false
-            if ($currentMailbox.IssueWarningQuota -ne $QuotaConfiguration.WarningQuota) { $needsUpdate = $true }
-            if ($currentMailbox.ProhibitSendQuota -ne $QuotaConfiguration.ProhibitSendQuota) { $needsUpdate = $true }
-            if ($currentMailbox.ProhibitSendReceiveQuota -ne $QuotaConfiguration.ProhibitSendReceiveQuota) { $needsUpdate = $true }
-            
-            if (-not $needsUpdate) {
-                Write-Host "  ✅ Quotas already configured for: $($mailbox.UserPrincipalName)" -ForegroundColor Green
-                $quotaStats.AlreadyConfigured++
+            $current = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
+
+            $needsUpdate = (
+                $current.IssueWarningQuota -ne $QuotaConfiguration.WarningQuota -or
+                $current.ProhibitSendQuota -ne $QuotaConfiguration.ProhibitSendQuota -or
+                $current.ProhibitSendReceiveQuota -ne $QuotaConfiguration.ProhibitSendReceiveQuota
+            )
+
+            if (!$needsUpdate) {
+                Write-Host "     Already configured: $($mailbox.UserPrincipalName)" -ForegroundColor Green
+                $stats.AlreadyConfigured++
             }
             else {
-                Write-Host "  🔄 Updating quotas for: $($mailbox.UserPrincipalName)" -ForegroundColor Yellow
-                
-                # Apply quota settings
+                Write-Host "     Updating: $($mailbox.UserPrincipalName)..." -ForegroundColor Gray
+
                 Set-Mailbox -Identity $mailbox.UserPrincipalName `
                     -IssueWarningQuota $QuotaConfiguration.WarningQuota `
                     -ProhibitSendQuota $QuotaConfiguration.ProhibitSendQuota `
                     -ProhibitSendReceiveQuota $QuotaConfiguration.ProhibitSendReceiveQuota `
                     -UseDatabaseQuotaDefaults $false `
                     -ErrorAction Stop
-                
-                Write-Host "  ✅ Quotas updated for: $($mailbox.UserPrincipalName)" -ForegroundColor Green
-                Write-Host "    📏 Warning: $($QuotaConfiguration.WarningQuota), Send: $($QuotaConfiguration.ProhibitSendQuota), Send/Receive: $($QuotaConfiguration.ProhibitSendReceiveQuota)" -ForegroundColor Gray
-                $quotaStats.Updated++
+
+                Write-Host "     Updated: $($mailbox.UserPrincipalName)" -ForegroundColor Green
+                $stats.Updated++
             }
         }
         catch {
-            $errorMsg = "Failed to set quotas for $($mailbox.UserPrincipalName): $($_.Exception.Message)"
-            Write-Status-Message $errorMsg -Type "Error"
-            $Global:ProcessingErrors += $errorMsg
-            $quotaStats.Failed++
+            $msg = "Failed quota for $($mailbox.UserPrincipalName): $($_.Exception.Message)"
+            Write-Host "     $msg" -ForegroundColor Red
+            $errors += $msg
+            $stats.Failed++
         }
     }
-    
-    # Summary
-    Write-Host "`n📊 Quota Processing Summary:" -ForegroundColor Cyan
-    Write-Host "  🆕 Updated: $($quotaStats.Updated)" -ForegroundColor Green
-    Write-Host "  ✅ Already configured: $($quotaStats.AlreadyConfigured)" -ForegroundColor Green
-    Write-Host "  ❌ Failed: $($quotaStats.Failed)" -ForegroundColor Red
+
+    Write-Host ""
+    Write-Host "   Quota results:" -ForegroundColor Gray
+    Write-Host "     Updated:          $($stats.Updated)" -ForegroundColor Green
+    Write-Host "     Already correct:  $($stats.AlreadyConfigured)" -ForegroundColor Green
+    Write-Host "     Failed:           $($stats.Failed)" -ForegroundColor $(if ($stats.Failed -gt 0) { "Red" } else { "Green" })
+
+    return @{ Stats = $stats; Errors = $errors }
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN EXECUTION FUNCTION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 
-function Start-MailboxConfiguration {
-    <#
-    .SYNOPSIS
-        Main orchestration function for complete mailbox configuration
-    #>
-    
-    Write-Host "`n🚀 Exchange Online Mailbox Configuration Script" -ForegroundColor Magenta
-    Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Magenta
-    Write-Host "📧 Archive Enablement & Storage Quota Configuration" -ForegroundColor Cyan
-    Write-Host "⚙️  Warning: 40GB | Prohibit Send: 45GB | Prohibit Send/Receive: 49GB" -ForegroundColor Gray
-    Write-Host "═══════════════════════════════════════════════════════════════`n" -ForegroundColor Magenta
-    
+function Start-ArchivePolicies {
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  ARCHIVE POLICIES & MAILBOX QUOTAS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Enables archive mailboxes and configures storage quotas for all users" -ForegroundColor Gray
+    Write-Host ""
+
+    # Step 1: Prerequisites
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    $prereqResult = Test-Prerequisites
+    if (!$prereqResult.Success) {
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
+    }
+
+    # Step 2: Configuration Preview
+    Write-Host ""
+    Write-Host "  STEP 2: Configuration Preview" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    # Validate quotas
     try {
-        # Step 1: Validate quota configuration
-        Write-Status-Message "Validating quota configuration..." -Type "Step"
         Test-QuotaValues -Config $QuotaConfig
-        
-        # Step 2: Get all user mailboxes
-        Write-Status-Message "Retrieving user mailboxes from Exchange Online..." -Type "Step"
-        $allMailboxes = Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction Stop
-        $Global:TotalMailboxes = $allMailboxes.Count
-        
-        if ($Global:TotalMailboxes -eq 0) {
-            Write-Status-Message "No user mailboxes found in the tenant" -Type "Warning"
-            return $false
-        }
-        
-        Write-Status-Message "Found $Global:TotalMailboxes user mailboxes to process" -Type "Success"
-        
-        # User confirmation
-        Write-Host "`n📋 Configuration Summary:" -ForegroundColor Yellow
-        Write-Host "  📧 Mailboxes to process: $Global:TotalMailboxes" -ForegroundColor White
-        Write-Host "  📦 Archive enablement: Yes" -ForegroundColor White
-        Write-Host "  📏 Warning quota: $($QuotaConfig.WarningQuota)" -ForegroundColor White
-        Write-Host "  🚫 Prohibit send quota: $($QuotaConfig.ProhibitSendQuota)" -ForegroundColor White
-        Write-Host "  ⛔ Prohibit send/receive quota: $($QuotaConfig.ProhibitSendReceiveQuota)" -ForegroundColor White
-        
-        $confirmation = Read-Host "`n🤔 Do you want to proceed with mailbox configuration? (Y/N)"
-        if ($confirmation -notin @('Y', 'y', 'Yes', 'yes')) {
-            Write-Status-Message "Operation cancelled by user" -Type "Warning"
-            return $false
-        }
-        
-        # Step 3: Enable mailbox archiving
-        Write-Host "`n" + "═" * 70 -ForegroundColor Cyan
-        Write-Status-Message "PHASE 1: MAILBOX ARCHIVE ENABLEMENT" -Type "Step"
-        Write-Host "═" * 70 -ForegroundColor Cyan
-        
-        Enable-MailboxArchiving -Mailboxes $allMailboxes
-        
-        # Step 4: Configure mailbox quotas
-        Write-Host "`n" + "═" * 70 -ForegroundColor Cyan
-        Write-Status-Message "PHASE 2: MAILBOX QUOTA CONFIGURATION" -Type "Step" 
-        Write-Host "═" * 70 -ForegroundColor Cyan
-        
-        Set-MailboxQuotas -Mailboxes $allMailboxes -QuotaConfiguration $QuotaConfig
-        
-        # Step 5: Final summary and recommendations
-        Write-Host "`n" + "═" * 70 -ForegroundColor Green
-        Write-Status-Message "MAILBOX CONFIGURATION COMPLETED" -Type "Success"
-        Write-Host "═" * 70 -ForegroundColor Green
-        
-        Write-Host "`n📊 Overall Processing Summary:" -ForegroundColor Cyan
-        Write-Host "  📧 Total mailboxes processed: $Global:TotalMailboxes" -ForegroundColor White
-        Write-Host "  ❌ Total errors encountered: $($Global:ProcessingErrors.Count)" -ForegroundColor Red
-        
-        if ($Global:ProcessingErrors.Count -gt 0) {
-            Write-Host "`n📋 Error Details:" -ForegroundColor Red
-            foreach ($errorMessage in $Global:ProcessingErrors) {
-                Write-Host "  • $errorMessage" -ForegroundColor Red
-            }
-        }
-        
-        Write-Host "`n💡 Post-Configuration Recommendations:" -ForegroundColor Yellow
-        Write-Host "  • Monitor mailbox usage with Get-MailboxStatistics" -ForegroundColor Gray
-        Write-Host "  • Consider auto-expanding archives for high-usage mailboxes" -ForegroundColor Gray
-        Write-Host "  • Review retention policies for optimal storage management" -ForegroundColor Gray
-        Write-Host "  • Test archive accessibility in Outlook clients" -ForegroundColor Gray
-        
-        return $true
-        
     }
     catch {
-        Write-Status-Message "Critical error in mailbox configuration: $($_.Exception.Message)" -Type "Error"
-        Write-Host "📝 Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Gray
-        return $false
+        Write-Host "  Invalid quota configuration: $_" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
     }
-    finally {
-        # Clean up progress bars
-        Write-Progress -Activity "Mailbox Configuration" -Completed
+
+    # Get mailbox count
+    Write-Host "   Retrieving mailboxes..." -ForegroundColor Gray
+    $allMailboxes = Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue
+
+    if (!$allMailboxes -or $allMailboxes.Count -eq 0) {
+        Write-Host "   No user mailboxes found in the tenant" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
     }
+
+    Write-Host ""
+    Write-Host "  The following will be configured for ALL $($allMailboxes.Count) user mailboxes:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    Archive mailbox:          Enabled" -ForegroundColor Gray
+    Write-Host "    Warning quota:            $($QuotaConfig.WarningQuota / 1GB) GB" -ForegroundColor Gray
+    Write-Host "    Prohibit send quota:      $($QuotaConfig.ProhibitSendQuota / 1GB) GB" -ForegroundColor Gray
+    Write-Host "    Prohibit send/receive:    $($QuotaConfig.ProhibitSendReceiveQuota / 1GB) GB" -ForegroundColor Gray
+    Write-Host ""
+
+    # Confirmation
+    Write-Host "  [Y] Proceed with configuration  [N] Cancel" -ForegroundColor Gray
+    $confirm = Read-Host "  Apply settings? (Y/N)"
+
+    if ($confirm -notlike "Y*") {
+        Write-Host ""
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
+    }
+
+    # Step 3: Apply archive settings
+    Write-Host ""
+    Write-Host "  STEP 3: Enabling Archive Mailboxes" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    $archiveResult = Enable-MailboxArchiving -Mailboxes $allMailboxes
+
+    # Step 4: Apply quotas
+    Write-Host ""
+    Write-Host "  STEP 4: Configuring Storage Quotas" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    $quotaResult = Set-MailboxQuotas -Mailboxes $allMailboxes -QuotaConfiguration $QuotaConfig
+
+    # Summary
+    $totalErrors = $archiveResult.Errors + $quotaResult.Errors
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Mailboxes processed: $($allMailboxes.Count)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Archive:" -ForegroundColor Yellow
+    Write-Host "    Already enabled: $($archiveResult.Stats.AlreadyEnabled)" -ForegroundColor Green
+    Write-Host "    Newly enabled:   $($archiveResult.Stats.NewlyEnabled)" -ForegroundColor Green
+    Write-Host "    Failed:          $($archiveResult.Stats.Failed)" -ForegroundColor $(if ($archiveResult.Stats.Failed -gt 0) { "Red" } else { "Green" })
+    Write-Host ""
+    Write-Host "  Quotas:" -ForegroundColor Yellow
+    Write-Host "    Updated:         $($quotaResult.Stats.Updated)" -ForegroundColor Green
+    Write-Host "    Already correct: $($quotaResult.Stats.AlreadyConfigured)" -ForegroundColor Green
+    Write-Host "    Failed:          $($quotaResult.Stats.Failed)" -ForegroundColor $(if ($quotaResult.Stats.Failed -gt 0) { "Red" } else { "Green" })
+
+    if ($totalErrors.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Errors:" -ForegroundColor Red
+        foreach ($err in $totalErrors) {
+            Write-Host "    - $err" -ForegroundColor Red
+        }
+    }
+
+    Write-Host ""
+    Write-Host "  Next Steps:" -ForegroundColor Yellow
+    Write-Host "    1. Monitor mailbox usage with Get-MailboxStatistics" -ForegroundColor Gray
+    Write-Host "    2. Consider auto-expanding archives for high-usage mailboxes" -ForegroundColor Gray
+    Write-Host "    3. Test archive accessibility in Outlook clients" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SCRIPT EXECUTION ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
 
 try {
-    Write-Status-Message "Loading Exchange Mailbox Configuration Script..." -Type "Info"
-    
-    # Step 1: Initialize modules
-    Write-Status-Message "Step 1: Initialize Modules" -Type "Step"
-    if (-not (Initialize-Modules)) {
-        Write-Status-Message "Module initialization failed - exiting" -Type "Error"
-        Read-Host "Press Enter to continue"
+    if (!(Initialize-ScriptModules)) {
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
         return
     }
-    
-    # Step 2: Test Exchange connection
-    Write-Status-Message "Step 2: Verify Exchange Online Connection" -Type "Step"
-    if (-not (Test-ExchangeConnection)) {
-        Write-Status-Message "Exchange Online connection verification failed - exiting" -Type "Error"
-        Read-Host "Press Enter to continue"
-        return
-    }
-    
-    # Step 3: Execute main configuration
-    Write-Status-Message "Step 3: Start Mailbox Configuration Process" -Type "Step"
-    $results = Start-MailboxConfiguration
-    
-    if ($results) {
-        Write-Status-Message "Mailbox configuration process completed successfully!" -Type "Success"
-    }
-    else {
-        Write-Status-Message "Mailbox configuration process did not complete successfully" -Type "Warning"
-    }
+
+    Start-ArchivePolicies
 }
 catch {
-    Write-Status-Message "Script execution failed: $($_.Exception.Message)" -Type "Error"
-    Write-Host "📝 Error details: $($_.Exception.GetType().FullName)" -ForegroundColor Gray
-    Write-Host "📍 Line number: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Gray
+    Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
 }
-finally {
-    Write-Host "`n⏸️ Press Enter to return to menu..." -ForegroundColor Gray
-    Read-Host
-}
-
-# ▼ CB & Claude | BITS 365 Automation | v1.0 | "Smarter not Harder"

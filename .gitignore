@@ -1,0 +1,21 @@
+# Test output
+test-results*.xml
+TestResults/
+
+# PowerShell session state
+*.ps1xml
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials / secrets — never commit these
+*.cred
+*.pfx
+*.key
+secrets.ps1

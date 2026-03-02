@@ -8,76 +8,66 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0
 #>
 
 # Required Modules
 $RequiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Security',
-    'Microsoft.Graph.Groups',
-    'Microsoft.Graph.Identity.DirectoryManagement',
     'ExchangeOnlineManagement'
 )
 
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
+function Initialize-ScriptModules {
+    Write-Host "   Checking required modules..." -ForegroundColor Yellow
+
     try {
         foreach ($Module in $RequiredModules) {
             try {
                 if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
                     Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
                 }
                 if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
                     Import-Module $Module -Force -ErrorAction Stop
                 }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
+                Write-Host "   $Module ready" -ForegroundColor Green
             }
             catch {
-                Write-Error "Failed to install/import ${Module}: $($_.Exception.Message)"
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
                 return $false
             }
         }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
+        Write-Host "   All modules ready!" -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Error "Module initialization failed: $($_.Exception.Message)"
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# Connect to Exchange Online
-function Connect-ExchangeOnlineService {
-    Write-Host "🔌 Connecting to Exchange Online..." -ForegroundColor Cyan
+function Test-Prerequisites {
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
-    try {
-        # Check if already connected
-        $existingConnection = Get-ConnectionInformation -ErrorAction SilentlyContinue
-
-        if ($existingConnection) {
-            Write-Host "✅ Already connected to Exchange Online" -ForegroundColor Green
-            return $true
-        }
-
-        # Connect to Exchange Online
-        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
-        Write-Host "✅ Successfully connected to Exchange Online" -ForegroundColor Green
-        return $true
+    Write-Host "   Checking Exchange Online connection..." -ForegroundColor Gray
+    $connection = Get-ConnectionInformation -ErrorAction SilentlyContinue
+    if (!$connection -or $connection.State -ne "Connected") {
+        Write-Host "   Not connected to Exchange Online" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        Write-Host ""
+        return @{ Success = $false }
     }
-    catch {
-        Write-Error "Failed to connect to Exchange Online: $($_.Exception.Message)"
-        return $false
-    }
+    Write-Host "   Connected as: $($connection.UserPrincipalName)" -ForegroundColor Green
+
+    Write-Host ""
+    return @{ Success = $true }
 }
 
 # Create Safe Attachments Policy
 function New-SafeAttachmentsConfiguration {
-    Write-Host "`n📎 Configuring Safe Attachments Policies..." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   Configuring Safe Attachments Policies..." -ForegroundColor Cyan
 
     $safeAttachPolicyName = "Default Safe Attachments Policy"
     $safeAttachRuleName = "Default Safe Attachments Rule"
@@ -87,7 +77,7 @@ function New-SafeAttachmentsConfiguration {
         $existingPolicy = Get-SafeAttachmentPolicy -Identity $safeAttachPolicyName -ErrorAction SilentlyContinue
 
         if ($existingPolicy) {
-            Write-Host "⚠️ Safe Attachments policy '$safeAttachPolicyName' already exists" -ForegroundColor Yellow
+            Write-Host "   Safe Attachments policy '$safeAttachPolicyName' already exists" -ForegroundColor Yellow
             Write-Host "   Updating existing policy..." -ForegroundColor Cyan
 
             Set-SafeAttachmentPolicy -Identity $safeAttachPolicyName `
@@ -96,7 +86,7 @@ function New-SafeAttachmentsConfiguration {
                 -Redirect $false `
                 -ActionOnError $true
 
-            Write-Host "✅ Updated Safe Attachments policy" -ForegroundColor Green
+            Write-Host "   Updated Safe Attachments policy" -ForegroundColor Green
         }
         else {
             Write-Host "   Creating new Safe Attachments policy..." -ForegroundColor Cyan
@@ -107,7 +97,7 @@ function New-SafeAttachmentsConfiguration {
                 -Redirect $false `
                 -ActionOnError $true
 
-            Write-Host "✅ Created Safe Attachments policy" -ForegroundColor Green
+            Write-Host "   Created Safe Attachments policy" -ForegroundColor Green
         }
 
         # Check if Safe Attachments rule already exists
@@ -125,20 +115,21 @@ function New-SafeAttachmentsConfiguration {
                 -Enabled $true `
                 -Priority 0
 
-            Write-Host "✅ Created Safe Attachments rule (applied to all domains)" -ForegroundColor Green
+            Write-Host "   Created Safe Attachments rule (applied to all domains)" -ForegroundColor Green
         }
 
         return $true
     }
     catch {
-        Write-Error "Failed to configure Safe Attachments policy: $($_.Exception.Message)"
+        Write-Host "     Failed to configure Safe Attachments policy: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
 # Create Safe Links Policy
 function New-SafeLinksConfiguration {
-    Write-Host "`n🔗 Configuring Safe Links Policies..." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   Configuring Safe Links Policies..." -ForegroundColor Cyan
 
     $safeLinksPolicyName = "Default Safe Links Policy"
     $safeLinksRuleName = "Default Safe Links Rule"
@@ -148,7 +139,7 @@ function New-SafeLinksConfiguration {
         $existingPolicy = Get-SafeLinksPolicy -Identity $safeLinksPolicyName -ErrorAction SilentlyContinue
 
         if ($existingPolicy) {
-            Write-Host "⚠️ Safe Links policy '$safeLinksPolicyName' already exists" -ForegroundColor Yellow
+            Write-Host "   Safe Links policy '$safeLinksPolicyName' already exists" -ForegroundColor Yellow
             Write-Host "   Updating existing policy..." -ForegroundColor Cyan
 
             Set-SafeLinksPolicy -Identity $safeLinksPolicyName `
@@ -164,7 +155,7 @@ function New-SafeLinksConfiguration {
                 -DisableUrlRewrite $false `
                 -EnableOrganizationBranding $false
 
-            Write-Host "✅ Updated Safe Links policy" -ForegroundColor Green
+            Write-Host "   Updated Safe Links policy" -ForegroundColor Green
         }
         else {
             Write-Host "   Creating new Safe Links policy..." -ForegroundColor Cyan
@@ -182,7 +173,7 @@ function New-SafeLinksConfiguration {
                 -DisableUrlRewrite $false `
                 -EnableOrganizationBranding $false
 
-            Write-Host "✅ Created Safe Links policy" -ForegroundColor Green
+            Write-Host "   Created Safe Links policy" -ForegroundColor Green
         }
 
         # Check if Safe Links rule already exists
@@ -200,61 +191,80 @@ function New-SafeLinksConfiguration {
                 -Enabled $true `
                 -Priority 0
 
-            Write-Host "✅ Created Safe Links rule (applied to all domains)" -ForegroundColor Green
+            Write-Host "   Created Safe Links rule (applied to all domains)" -ForegroundColor Green
         }
 
         return $true
     }
     catch {
-        Write-Error "Failed to configure Safe Links policy: $($_.Exception.Message)"
+        Write-Host "     Failed to configure Safe Links policy: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# Main execution
 function Start-SafeAttachments {
-    Write-Host "🚀 Starting Safe Attachments & Safe Links Configuration..." -ForegroundColor Cyan
-    Write-Host "   Settings: User-friendly (Dynamic Delivery for attachments)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SAFE ATTACHMENTS & SAFE LINKS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Configures email security with attachment scanning and URL protection" -ForegroundColor Gray
+    Write-Host ""
 
-    if (!(Initialize-Modules)) {
-        Write-Error "Failed to initialize required modules. Exiting."
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    $prereqResult = Test-Prerequisites
+    if (!$prereqResult.Success) {
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
 
-    if (!(Connect-ExchangeOnlineService)) {
-        Write-Error "Failed to connect to Exchange Online. Exiting."
-        return
+    Write-Host ""
+    Write-Host "  STEP 2: Configuring Policies" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    Write-Host "   Safe Attachments Policy..." -ForegroundColor White
+
+    $safeAttachmentsResult = New-SafeAttachmentsConfiguration
+
+    Write-Host ""
+    Write-Host "   Safe Links Policy..." -ForegroundColor White
+    $safeLinksResult = New-SafeLinksConfiguration
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Host "  Safe Attachments: $(if ($safeAttachmentsResult) { 'Configured' } else { 'Failed' })" -ForegroundColor $(if ($safeAttachmentsResult) { "Green" } else { "Red" })
+    Write-Host "  Safe Links:       $(if ($safeLinksResult) { 'Configured' } else { 'Failed' })" -ForegroundColor $(if ($safeLinksResult) { "Green" } else { "Red" })
+
+    if ($safeAttachmentsResult -and $safeLinksResult) {
+        Write-Host ""
+        Write-Host "  Next Steps:" -ForegroundColor Yellow
+        Write-Host "    - Safe Attachments: Dynamic Delivery (1-2 min delay for emails with attachments)" -ForegroundColor Gray
+        Write-Host "    - Safe Links: Protects Email, Teams, and Office apps" -ForegroundColor Gray
+        Write-Host "    - Click tracking enabled, malicious links blocked when clicked" -ForegroundColor Gray
     }
 
-    $safeAttachmentsSuccess = New-SafeAttachmentsConfiguration
-    $safeLinksSuccess = New-SafeLinksConfiguration
-
-    if ($safeAttachmentsSuccess -and $safeLinksSuccess) {
-        Write-Host "`n✅ Safe Attachments & Safe Links configuration completed successfully!" -ForegroundColor Green
-
-        Write-Host "`n📋 Configuration Summary:" -ForegroundColor Cyan
-        Write-Host "   Safe Attachments:" -ForegroundColor White
-        Write-Host "     - Action: Dynamic Delivery (users can read email body while attachments scan)" -ForegroundColor White
-        Write-Host "     - Scanning: Enabled for all attachments" -ForegroundColor White
-        Write-Host "     - Delay: 1-2 minutes for emails with attachments" -ForegroundColor White
-        Write-Host "`n   Safe Links:" -ForegroundColor White
-        Write-Host "     - Protection: Email, Teams, and Office apps" -ForegroundColor White
-        Write-Host "     - Click tracking: Enabled" -ForegroundColor White
-        Write-Host "     - Real-time URL scanning: Enabled" -ForegroundColor White
-        Write-Host "     - Applied to: All accepted domains (including internal senders)" -ForegroundColor White
-
-        Write-Host "`n💡 Users may notice:" -ForegroundColor Cyan
-        Write-Host "   - Slight delay for emails with attachments (1-2 min)" -ForegroundColor Gray
-        Write-Host "   - URLs in emails will look different (rewritten for protection)" -ForegroundColor Gray
-        Write-Host "   - Malicious links will be blocked when clicked" -ForegroundColor Gray
-    }
-    else {
-        Write-Error "Safe Attachments/Links configuration failed."
-    }
-
-    Write-Host "`n🔌 Disconnecting from Exchange Online..." -ForegroundColor Cyan
-    Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host ""
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Execute the script
-Start-SafeAttachments
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+try {
+    if (!(Initialize-ScriptModules)) {
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
+        return
+    }
+
+    Start-SafeAttachments
+}
+catch {
+    Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+}

@@ -2,67 +2,38 @@
 
 <#
 .SYNOPSIS
-    Manages SharePoint site permission groups and access levels
+    Manages SharePoint permission groups
 .DESCRIPTION
-    Creates and configures SharePoint permission groups with appropriate access levels
+    Creates and configures SharePoint site permission groups.
+    COMING SOON - This feature is under development.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Placeholder
 #>
 
-# Required Modules
-$RequiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Sites',
-    'Microsoft.Graph.Groups',
-    'Microsoft.Graph.Identity.DirectoryManagement',
-    'Microsoft.Graph.Users'
-)
-
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    try {
-        foreach ($Module in $RequiredModules) {
-            try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
-                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-                }
-                if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
-                    Import-Module $Module -Force -ErrorAction Stop
-                }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
-            }
-            catch {
-                Write-Error "Failed to install/import ${Module}: $($_.Exception.Message)"
-                return $false
-            }
-        }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Error "Module initialization failed: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Main execution
 function Start-PermissionGroups {
-    Write-Host "🚀 Starting SharePoint Permission Groups Configuration..." -ForegroundColor Cyan
-    
-    if (!(Initialize-Modules)) {
-        Write-Error "Failed to initialize required modules. Exiting."
-        return
-    }
-    
-    Write-Host "📋 SharePoint permission groups functionality to be implemented..." -ForegroundColor Yellow
-    Write-Host "Required modules are now available for implementation." -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SHAREPOINT PERMISSION GROUPS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Status: COMING SOON" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  This feature is currently under development." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Planned Features:" -ForegroundColor White
+    Write-Host "    - Site collection permission groups" -ForegroundColor Gray
+    Write-Host "    - Custom permission levels" -ForegroundColor Gray
+    Write-Host "    - Bulk permission assignment" -ForegroundColor Gray
+    Write-Host "    - Permission audit reporting" -ForegroundColor Gray
+    Write-Host "    - Inheritance management" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  For now, manage permissions manually:" -ForegroundColor Yellow
+    Write-Host "    https://admin.microsoft.com/sharepoint" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Execute the script
 Start-PermissionGroups

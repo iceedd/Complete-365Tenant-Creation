@@ -2,67 +2,38 @@
 
 <#
 .SYNOPSIS
-    Configures Windows Autopilot deployment profiles and settings
+    Configures Windows Autopilot deployment profiles
 .DESCRIPTION
-    Manages Autopilot deployment profiles, device enrollment, and OOBE customization
+    Automated Autopilot profile creation and device enrollment settings.
+    COMING SOON - This feature is under development.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Placeholder
 #>
 
-# Required Modules
-$RequiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.DeviceManagement',
-    'Microsoft.Graph.DeviceManagement.Enrolment',
-    'Microsoft.Graph.Groups',
-    'Microsoft.Graph.Identity.DirectoryManagement'
-)
-
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    try {
-        foreach ($Module in $RequiredModules) {
-            try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
-                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-                }
-                if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
-                    Import-Module $Module -Force -ErrorAction Stop
-                }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
-            }
-            catch {
-                Write-Error "Failed to install/import ${Module}: $($_.Exception.Message)"
-                return $false
-            }
-        }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Error "Module initialization failed: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Main execution
 function Start-AutopilotConfig {
-    Write-Host "🚀 Starting Autopilot Configuration..." -ForegroundColor Cyan
-    
-    if (!(Initialize-Modules)) {
-        Write-Error "Failed to initialize required modules. Exiting."
-        return
-    }
-    
-    Write-Host "📋 Autopilot configuration functionality to be implemented..." -ForegroundColor Yellow
-    Write-Host "Required modules are now available for implementation." -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  AUTOPILOT CONFIGURATION" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Status: COMING SOON" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  This feature is currently under development." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Planned Features:" -ForegroundColor White
+    Write-Host "    - Deployment profile creation" -ForegroundColor Gray
+    Write-Host "    - OOBE customization" -ForegroundColor Gray
+    Write-Host "    - Device import from CSV" -ForegroundColor Gray
+    Write-Host "    - Enrollment status page configuration" -ForegroundColor Gray
+    Write-Host "    - Profile assignment to groups" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  For now, configure Autopilot manually:" -ForegroundColor Yellow
+    Write-Host "    https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/AutopilotDeploymentProfiles.ReactView" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Execute the script
 Start-AutopilotConfig

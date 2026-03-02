@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, feature/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest  # Windows runner — matches production environment
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+
+      - name: Run Lint
+        shell: pwsh
+        run: ./Build/Build.ps1 -Severity Warning

@@ -21,6 +21,60 @@ $Global:CurrentScopes = @()
 $Global:GitHubRepo = "cbro09/Complete-365Tenant-Creation"
 $Global:GitHubBranch = "main" # Change to "dev" for testing
 $Global:ScriptCache = @{}
+$Global:SharedHelpersLoaded = $false
+
+# Load Shared Helper Module
+function Initialize-SharedHelpers {
+    <#
+    .SYNOPSIS
+        Load the shared helper module from GitHub or local path
+    #>
+
+    if ($Global:SharedHelpersLoaded) {
+        return $true
+    }
+
+    $helperPath = "Shared/ScriptHelpers.ps1"
+
+    try {
+        # Try GitHub first
+        $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/$helperPath"
+        $helperContent = Invoke-RestMethod -Uri $url -TimeoutSec 10 -ErrorAction Stop
+
+        # Execute the helper script to load functions
+        $scriptBlock = [ScriptBlock]::Create($helperContent)
+        . $scriptBlock
+
+        $Global:SharedHelpersLoaded = $true
+        Write-Host "   Shared helpers loaded from GitHub" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        # Try local path as fallback
+        $localPaths = @(
+            ".\Shared\ScriptHelpers.ps1",
+            "$PSScriptRoot\Shared\ScriptHelpers.ps1",
+            "Shared\ScriptHelpers.ps1"
+        )
+
+        foreach ($localPath in $localPaths) {
+            if (Test-Path $localPath -ErrorAction SilentlyContinue) {
+                try {
+                    . $localPath
+                    $Global:SharedHelpersLoaded = $true
+                    Write-Host "   Shared helpers loaded from local path" -ForegroundColor Green
+                    return $true
+                }
+                catch {
+                    continue
+                }
+            }
+        }
+
+        Write-Host "   Could not load shared helpers (non-critical)" -ForegroundColor Yellow
+        return $false
+    }
+}
 
 # Required Modules for Main Menu
 $RequiredModules = @(
@@ -330,8 +384,6 @@ function Test-ConfigPoliciesExist {
         
         # Check how many core policies exist
         $coreExists = $corePolicies | Where-Object { $_ -in $existingPolicies }
-        $coreCompletionRate = $coreExists.Count / $corePolicies.Count
-        
         # Check if optional policies exist (bonus points but not required)
         $optionalExists = $optionalPolicies | Where-Object { $_ -in $existingPolicies }
         
@@ -586,7 +638,7 @@ function Save-SessionState {
     }
 }
 
-function Load-SessionState {
+function Import-SessionState {
     try {
         if (Test-Path $Global:StateFilePath) {
             $jsonState = Get-Content -Path $Global:StateFilePath -Raw
@@ -935,8 +987,7 @@ function Show-EnhancedProgressDashboard {
     $serviceProgress = Get-ServiceProgress -CompletedSteps $CompletedSteps
     $overallCompleted = ($serviceProgress.Values | Measure-Object -Property Completed -Sum).Sum
     $overallTotal = ($serviceProgress.Values | Measure-Object -Property Total -Sum).Sum
-    $overallPercentage = if ($overallTotal -gt 0) { [math]::Round(($overallCompleted / $overallTotal) * 100) } else { 0 }
-    
+
     Write-Host "╔═══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║                          🚀 TENANT SETUP PROGRESS                             ║" -ForegroundColor Cyan
     Write-Host "╠═══════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
@@ -1501,6 +1552,8 @@ function Set-ServiceScopes {
         catch {
             Write-Host "❌ Failed to obtain additional permissions: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "💡 You may need to consent to additional permissions in your browser" -ForegroundColor Yellow
+            Write-Host "Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 3 }
             return $false
         }
     }
@@ -2092,9 +2145,10 @@ function Show-DebugStatusOverride {
 # Main execution loop
 function Start-AutomationHub {
     Initialize-Modules
-    
+    Initialize-SharedHelpers
+
     # Try to load previous session state
-    if (Load-SessionState) {
+    if (Import-SessionState) {
         Show-SessionInfo
     }
 
@@ -2181,7 +2235,7 @@ function Start-AutomationHub {
                 $services = @("Entra", "Intune", "Exchange", "SharePoint", "Security", "Purview")
                 foreach ($service in $services) {
                     Write-Host "$service Service:" -ForegroundColor White
-                    $authStatus = Test-ServiceAuthentication -Service $service -ShowStatus
+                    Test-ServiceAuthentication -Service $service -ShowStatus | Out-Null
                 }
                 
                 Write-Host ""

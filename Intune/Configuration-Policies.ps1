@@ -2,16 +2,20 @@
 
 <#
 .SYNOPSIS
-    Creates comprehensive Intune configuration policies with full settings
+    Creates comprehensive Intune configuration policies
 .DESCRIPTION
-    Creates 18 production-ready configuration policies using exported settings data
+    Creates 18 production-ready configuration policies using exported settings data.
+    Includes preview mode and automatic group assignment.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.1
+    2.0 - Standardized UX with preview mode
 #>
 
-# Required Modules
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.DeviceManagement',
@@ -19,210 +23,331 @@ $RequiredModules = @(
     'Microsoft.Graph.Identity.DirectoryManagement'
 )
 
+$RequiredScopes = @(
+    "DeviceManagementConfiguration.ReadWrite.All",
+    "Group.Read.All",
+    "Directory.Read.All"
+)
+
 # Policy assignment configuration
-function Get-PolicyAssignments {
-    return @{
-        "Default Web Pages" = @("Windows Devices (Autopilot)")
-        "Defender Configuration" = @("Windows Devices (Autopilot)")
-        "Disable UAC for Quickassist" = @("Windows Devices (Autopilot)")
-        "Edge Update Policy" = @("Windows Devices (Autopilot)")
-        "EDR Policy" = @("Windows Devices (Autopilot)")
-        "Enable Bitlocker" = @("Windows Devices (Autopilot)")
-        "Enable Built-in Administrator Account" = @("Windows Devices (Autopilot)")
-        "LAPS" = @("Windows Devices (Autopilot)")
-        "Office Updates Configuration" = @("Windows Devices (Autopilot)")
-        "OneDrive Configuration" = @("Windows Devices (Autopilot)")
-        "Outlook Configuration" = @("Windows Devices (Autopilot)")
-        "Power Options" = @("Windows Devices (Autopilot)")
-        "Prevent Users From Unenrolling Devices" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
-        "Sharepoint File Sync" = @("Windows Devices (Autopilot)")
-        "System Services" = @("Windows Devices (Autopilot)")
-        "Tamper Protection" = @("Windows Devices (Autopilot)")
-        "Web Sign-in Policy" = @("Windows Devices (Autopilot)")
-        "NGP Windows Default Policy" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+$PolicyAssignments = @{
+    "Default Web Pages" = @("Windows Devices (Autopilot)")
+    "Defender Configuration" = @("Windows Devices (Autopilot)")
+    "Disable UAC for Quickassist" = @("Windows Devices (Autopilot)")
+    "Edge Update Policy" = @("Windows Devices (Autopilot)")
+    "EDR Policy" = @("Windows Devices (Autopilot)")
+    "Enable Bitlocker" = @("Windows Devices (Autopilot)")
+    "Enable Built-in Administrator Account" = @("Windows Devices (Autopilot)")
+    "LAPS" = @("Windows Devices (Autopilot)")
+    "Office Updates Configuration" = @("Windows Devices (Autopilot)")
+    "OneDrive Configuration" = @("Windows Devices (Autopilot)")
+    "Outlook Configuration" = @("Windows Devices (Autopilot)")
+    "Power Options" = @("Windows Devices (Autopilot)")
+    "Prevent Users From Unenrolling Devices" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+    "Sharepoint File Sync" = @("Windows Devices (Autopilot)")
+    "System Services" = @("Windows Devices (Autopilot)")
+    "Tamper Protection" = @("Windows Devices (Autopilot)")
+    "Web Sign-in Policy" = @("Windows Devices (Autopilot)")
+    "NGP Windows Default Policy" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+function Initialize-ScriptModules {
+    Write-Host "   Checking required modules..." -ForegroundColor Yellow
+
+    try {
+        foreach ($Module in $RequiredModules) {
+            try {
+                if (!(Get-Module -ListAvailable -Name $Module)) {
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
+                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+                }
+                if (!(Get-Module -Name $Module)) {
+                    Import-Module $Module -Force -ErrorAction Stop
+                }
+                Write-Host "   $Module ready" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
+                return $false
+            }
+        }
+        Write-Host "   All modules ready!" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
 }
 
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    foreach ($Module in $RequiredModules) {
-        if (!(Get-Module -ListAvailable -Name $Module)) {
-            Write-Host "Installing $Module..." -ForegroundColor Yellow
-            Install-Module $Module -Force -Scope CurrentUser -AllowClobber
-        }
-        if (!(Get-Module -Name $Module)) {
-            Write-Host "Importing $Module..." -ForegroundColor Yellow
-            Import-Module $Module -Force
-        }
-    }
-    Write-Host "✅ Modules ready!" -ForegroundColor Green
-}
-
-# Get tenant information for dynamic substitution
 function Get-TenantInfo {
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $domain = $org.VerifiedDomains | Where-Object { $_.IsDefault -eq $true } | Select-Object -ExpandProperty Name
         $tenantName = ($domain -split '\.')[0]
-        
+
         return @{
             TenantId = $org.Id
             Domain = $domain
             TenantName = $tenantName
             SharePointUrl = "https://$tenantName.sharepoint.com/"
+            OrganizationName = $org.DisplayName
         }
     }
     catch {
-        Write-Error "Failed to get tenant info: $($_.Exception.Message)"
         return $null
     }
 }
 
-# Get device group ID by name
-function Get-DeviceGroupId {
-    param([string]$GroupName)
-    
-    try {
-        $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction Stop
+# ============================================================================
+# PREREQUISITES
+# ============================================================================
+
+function Test-Prerequisites {
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    # Check Graph connection
+    Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
+    $context = Get-MgContext
+    if (!$context) {
+        Write-Host "   Not connected to Microsoft Graph" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        return @{ Success = $false }
+    }
+    Write-Host "   Connected as: $($context.Account)" -ForegroundColor Green
+
+    # Check and request scopes
+    Write-Host "   Checking required permissions..." -ForegroundColor Gray
+    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+
+    if ($missingScopes.Count -gt 0) {
+        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+        try {
+            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+            Write-Host "   Permissions updated" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+            return @{ Success = $false }
+        }
+    }
+    else {
+        Write-Host "   All required permissions present" -ForegroundColor Green
+    }
+
+    # Get tenant info
+    Write-Host "   Getting tenant information..." -ForegroundColor Gray
+    $tenantInfo = Get-TenantInfo
+    if (!$tenantInfo) {
+        Write-Host "   Failed to get tenant information" -ForegroundColor Red
+        return @{ Success = $false }
+    }
+    Write-Host "   Tenant: $($tenantInfo.OrganizationName)" -ForegroundColor Green
+    Write-Host "   SharePoint: $($tenantInfo.SharePointUrl)" -ForegroundColor Green
+
+    # Load policy definitions
+    Write-Host "   Loading policy definitions..." -ForegroundColor Gray
+    $policies = Get-PolicyDefinitions
+    if ($policies.Count -eq 0) {
+        Write-Host "   No policy definitions found" -ForegroundColor Red
+        return @{ Success = $false }
+    }
+    Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
+
+    # Check device groups
+    Write-Host "   Checking device groups..." -ForegroundColor Gray
+    $groupCache = @{}
+    $missingGroups = @()
+
+    $uniqueGroups = $PolicyAssignments.Values | ForEach-Object { $_ } | Select-Object -Unique
+    foreach ($groupName in $uniqueGroups) {
+        $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
         if ($group) {
-            return $group.Id
-        } else {
-            Write-Warning "Device group '$GroupName' not found"
-            return $null
+            $groupCache[$groupName] = $group.Id
+        }
+        else {
+            $missingGroups += $groupName
         }
     }
-    catch {
-        Write-Error "Failed to resolve group '$GroupName': $($_.Exception.Message)"
-        return $null
+
+    if ($missingGroups.Count -gt 0) {
+        Write-Host "   Missing groups: $($missingGroups -join ', ')" -ForegroundColor Yellow
+        Write-Host "   Run Device Groups script first" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "   All device groups found" -ForegroundColor Green
+    }
+
+    Write-Host ""
+    return @{
+        Success = $true
+        TenantInfo = $tenantInfo
+        Policies = $policies
+        GroupCache = $groupCache
+        MissingGroups = $missingGroups
     }
 }
 
-# Substitute dynamic values in policy settings
-function Update-PolicyDynamicValues {
-    param(
-        [hashtable]$Policy,
-        [hashtable]$TenantInfo,
-        [string]$LapsAdminName = "Localadmin"
-    )
-    
-    # Convert policy to JSON for easier string replacement
-    $policyJson = $Policy | ConvertTo-Json -Depth 20
-    
-    # Replace SharePoint URLs
-    $policyJson = $policyJson -replace "https://contoso\.sharepoint\.com/", $TenantInfo.SharePointUrl
-    
-    # Replace LAPS admin names
-    $policyJson = $policyJson -replace '"Localadmin"', "`"$LapsAdminName`""
-    
-    # Replace tenant ID placeholders (if any)
-    $policyJson = $policyJson -replace 'tenantId=', "tenantId=$($TenantInfo.TenantId)"
-    
-    # Convert back to hashtable
-    return $policyJson | ConvertFrom-Json -AsHashtable
-}
-
-# Policy definitions loading function
 function Get-PolicyDefinitions {
     try {
-        Write-Host "  🔍 Attempting to load policy definitions..." -ForegroundColor Gray
-        
-        # Method 1: Try GitHub download first (most reliable for your hub system)
+        # Try GitHub download first
         try {
-            Write-Host "  🌐 Downloading policies from GitHub..." -ForegroundColor Cyan
-            # Ensure TLS 1.2 is used for SSL connections
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/AllPolicies_Complete.json"
             $jsonContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
-            
-            # Convert to hashtable if it's not already
+
             if ($jsonContent -is [string]) {
                 $jsonContent = $jsonContent | ConvertFrom-Json -AsHashtable
-            } elseif ($jsonContent -is [array] -or $jsonContent -is [PSCustomObject]) {
+            }
+            elseif ($jsonContent -is [array] -or $jsonContent -is [PSCustomObject]) {
                 $jsonContent = $jsonContent | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
             }
-            
-            Write-Host "  ✅ Successfully downloaded $($jsonContent.Count) policies from GitHub" -ForegroundColor Green
+
             return $jsonContent
         }
         catch {
-            Write-Host "  ⚠️ GitHub download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            # Try local file
         }
-        
-        # Method 2: Try local file locations (fallback)
+
+        # Try local file locations
         $possiblePaths = @(
             ".\AllPolicies_Complete.json",
             ".\Intune\AllPolicies_Complete.json",
             "$PWD\AllPolicies_Complete.json"
         )
-        
-        # Only try local paths if we have a valid script path
-        if ($MyInvocation.ScriptName -and $MyInvocation.ScriptName.Trim() -ne "") {
-            $scriptDir = Split-Path -Parent $MyInvocation.ScriptName
-            if ($scriptDir -and $scriptDir.Trim() -ne "") {
-                $possiblePaths += Join-Path $scriptDir "AllPolicies_Complete.json"
-            }
-        }
-        
+
         foreach ($path in $possiblePaths) {
             if ($path -and (Test-Path $path -ErrorAction SilentlyContinue)) {
-                Write-Host "  📁 Loading policies from local file: $path" -ForegroundColor Gray
                 $jsonContent = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
-                Write-Host "  ✅ Loaded $($jsonContent.Count) policies from local file" -ForegroundColor Green
                 return $jsonContent
             }
         }
-        
-        throw "Unable to load policies from GitHub or local files"
+
+        return @()
     }
     catch {
-        Write-Error "Failed to load policy definitions: $($_.Exception.Message)"
-        Write-Host "  💡 Troubleshooting:" -ForegroundColor Yellow
-        Write-Host "    - Check internet connection for GitHub download" -ForegroundColor Gray
-        Write-Host "    - Verify GitHub repository URL is correct" -ForegroundColor Gray
-        Write-Host "    - Ensure AllPolicies_Complete.json exists in repository" -ForegroundColor Gray
         return @()
     }
 }
 
-# Create configuration policy with assignments
-function New-ConfigurationPolicy {
+# ============================================================================
+# PREVIEW MODE
+# ============================================================================
+
+function Show-PolicyPreview {
+    param(
+        [array]$Policies,
+        [hashtable]$TenantInfo
+    )
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  PREVIEW: Configuration Policies" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Tenant: $($TenantInfo.OrganizationName)" -ForegroundColor White
+    Write-Host "  SharePoint URL: $($TenantInfo.SharePointUrl)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  The following $($Policies.Count) configuration policies will be created:" -ForegroundColor White
+    Write-Host ""
+
+    # Header
+    Write-Host "  # | Policy Name                              | Settings | Assignments" -ForegroundColor Yellow
+    Write-Host "  --|------------------------------------------|----------|------------" -ForegroundColor Gray
+
+    $index = 1
+    foreach ($policy in $Policies) {
+        $name = $policy.name
+        if ($name.Length -gt 40) { $name = $name.Substring(0, 37) + "..." }
+
+        $settingsCount = if ($policy.settings) { $policy.settings.Count } else { 0 }
+        $assignmentCount = if ($PolicyAssignments.ContainsKey($policy.name)) { $PolicyAssignments[$policy.name].Count } else { 0 }
+
+        Write-Host ("  {0,2} | {1,-40} | {2,8} | {3}" -f $index, $name, $settingsCount, $assignmentCount) -ForegroundColor White
+        $index++
+    }
+
+    Write-Host ""
+    Write-Host "  Key Configurations:" -ForegroundColor Yellow
+    Write-Host "    - BitLocker encryption with LAPS" -ForegroundColor Gray
+    Write-Host "    - OneDrive Known Folder Move" -ForegroundColor Gray
+    Write-Host "    - Edge browser policies" -ForegroundColor Gray
+    Write-Host "    - Defender and EDR configurations" -ForegroundColor Gray
+    Write-Host "    - Power management settings" -ForegroundColor Gray
+    Write-Host ""
+}
+
+# ============================================================================
+# POLICY CREATION
+# ============================================================================
+
+function Update-PolicyDynamicValues {
+    param(
+        [hashtable]$Policy,
+        [hashtable]$TenantInfo,
+        [string]$LapsAdminName
+    )
+
+    $policyJson = $Policy | ConvertTo-Json -Depth 20
+    $policyJson = $policyJson -replace "https://contoso\.sharepoint\.com/", $TenantInfo.SharePointUrl
+    # Replace LAPS admin name in both policies (Enable Built-in Admin + LAPS)
+    $policyJson = $policyJson -replace '"BLadmin"', "`"$LapsAdminName`""
+    $policyJson = $policyJson -replace 'tenantId=', "tenantId=$($TenantInfo.TenantId)"
+
+    return $policyJson | ConvertFrom-Json -AsHashtable
+}
+
+function New-ConfigurationPolicyItem {
     param(
         [hashtable]$PolicyDefinition,
         [hashtable]$TenantInfo,
         [string]$LapsAdminName,
-        [string[]]$DeviceGroupIds = @()
+        [hashtable]$GroupCache
     )
-    
+
+    $policyName = $PolicyDefinition.name
+
     try {
-        # Check if policy already exists
-        $existingPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET | 
-            Select-Object -ExpandProperty value | Where-Object { $_.name -eq $PolicyDefinition.name }
-        
+        # Check if policy exists
+        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET
+        $existingPolicy = $existingPolicies.value | Where-Object { $_.name -eq $policyName }
+
         if ($existingPolicy) {
-            Write-Host "⚠️  Policy '$($PolicyDefinition.name)' already exists" -ForegroundColor Yellow
-            return $existingPolicy
+            Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
+            return @{ Success = $true; Skipped = $true; Policy = $existingPolicy }
         }
-        
+
         # Update dynamic values
         $updatedPolicy = Update-PolicyDynamicValues -Policy $PolicyDefinition -TenantInfo $TenantInfo -LapsAdminName $LapsAdminName
-        
-        # Create the policy
+
+        # Create policy
         $newPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method POST -Body ($updatedPolicy | ConvertTo-Json -Depth 20)
-        
-        Write-Host "✅ Created: $($PolicyDefinition.name)" -ForegroundColor Green
-        Write-Host "   Policy ID: $($newPolicy.id)" -ForegroundColor Gray
-        Write-Host "   Settings: $($updatedPolicy.settings.Count)" -ForegroundColor Gray
-        
-        # Assign to device groups
-        if ($DeviceGroupIds.Count -gt 0) {
-            $assignmentBody = @{
-                assignments = @()
+
+        # Assign to groups
+        if ($PolicyAssignments.ContainsKey($policyName)) {
+            $deviceGroupIds = @()
+            foreach ($groupName in $PolicyAssignments[$policyName]) {
+                if ($GroupCache.ContainsKey($groupName) -and $GroupCache[$groupName]) {
+                    $deviceGroupIds += $GroupCache[$groupName]
+                }
             }
-            
-            foreach ($groupId in $DeviceGroupIds) {
-                if ($groupId) {
+
+            if ($deviceGroupIds.Count -gt 0) {
+                $assignmentBody = @{
+                    assignments = @()
+                }
+
+                foreach ($groupId in $deviceGroupIds) {
                     $assignmentBody.assignments += @{
                         target = @{
                             "@odata.type" = "#microsoft.graph.groupAssignmentTarget"
@@ -230,154 +355,168 @@ function New-ConfigurationPolicy {
                         }
                     }
                 }
-            }
-            
-            if ($assignmentBody.assignments.Count -gt 0) {
-                Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
-                Write-Host "   Assigned to $($assignmentBody.assignments.Count) device groups" -ForegroundColor Gray
+
+                $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
             }
         }
-        
-        return $newPolicy
+
+        Write-Host "     Created (ID: $($newPolicy.id))" -ForegroundColor Green
+        return @{ Success = $true; Skipped = $false; Policy = $newPolicy }
     }
     catch {
-        Write-Error "❌ Failed to create policy '$($PolicyDefinition.name)': $($_.Exception.Message)"
-        return $null
+        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Main execution function
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 function Start-ConfigurationPolicyCreation {
-    Write-Host "`n🚀 Creating Intune Configuration Policies..." -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    
-    # Verify connection
-    $context = Get-MgContext
-    if (!$context) {
-        Write-Error "❌ Not connected to Microsoft Graph. Please connect first."
+    # Header
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  CONFIGURATION POLICIES" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Creates Intune device configuration policies" -ForegroundColor Gray
+    Write-Host ""
+
+    # Step 1: Prerequisites
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    $prereqResult = Test-Prerequisites
+
+    if (!$prereqResult.Success) {
+        Write-Host ""
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    # Get tenant information
-    $tenantInfo = Get-TenantInfo
-    if (!$tenantInfo) {
-        Write-Error "❌ Failed to get tenant information"
-        return
-    }
-    
-    Write-Host "✅ Connected to: $($tenantInfo.Domain)" -ForegroundColor Green
-    Write-Host "   SharePoint URL: $($tenantInfo.SharePointUrl)" -ForegroundColor Gray
-    
-    # Get LAPS admin name from user
-    $lapsAdminName = Read-Host "Enter LAPS local admin name (default: Localadmin)"
+
+    # Step 2: Get LAPS admin name
+    Write-Host ""
+    Write-Host "  STEP 2: Configuration" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    Write-Host "   Enter the local admin account name for LAPS" -ForegroundColor Gray
+    Write-Host "   (This will be the local admin on all Windows devices)" -ForegroundColor Gray
+    Write-Host ""
+    $lapsAdminName = Read-Host "   LAPS admin name (default: Localadmin)"
     if ([string]::IsNullOrWhiteSpace($lapsAdminName)) {
         $lapsAdminName = "Localadmin"
     }
-    
-    # Get policy definitions
-    $policies = Get-PolicyDefinitions
-    $assignments = Get-PolicyAssignments
-    
-    Write-Host "`n📋 Found $($policies.Count) policy definitions" -ForegroundColor Yellow
-    
-    # Resolve device group IDs
-    Write-Host "`n🔍 Resolving device groups..." -ForegroundColor Yellow
-    $groupCache = @{}
-    
-    foreach ($assignment in $assignments.GetEnumerator()) {
-        foreach ($groupName in $assignment.Value) {
-            if (!$groupCache.ContainsKey($groupName)) {
-                $groupId = Get-DeviceGroupId -GroupName $groupName
-                $groupCache[$groupName] = $groupId
-                if ($groupId) {
-                    Write-Host "   ✅ $groupName" -ForegroundColor Green
-                } else {
-                    Write-Host "   ⚠️  $groupName (not found)" -ForegroundColor Yellow
-                }
-            }
-        }
+    Write-Host "   Using LAPS admin: $lapsAdminName" -ForegroundColor Green
+
+    # Step 3: Preview
+    Write-Host ""
+    Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
+    Show-PolicyPreview -Policies $prereqResult.Policies -TenantInfo $prereqResult.TenantInfo
+
+    # Confirmation
+    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+    Write-Host ""
+    $confirm = Read-Host "  Create these configuration policies? (Y/N)"
+
+    if ($confirm -notlike "Y*") {
+        Write-Host ""
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        return
     }
-    
-    # Create policies
-    Write-Host "`n⚙️  Creating configuration policies..." -ForegroundColor Yellow
-    $createdPolicies = @()
-    $failedPolicies = @()
-    
-    foreach ($policy in $policies) {
-        Write-Host "`n📋 Creating: $($policy.name)" -ForegroundColor White
-        
-        # Get device group IDs for this policy
-        $deviceGroupIds = @()
-        if ($assignments.ContainsKey($policy.name)) {
-            foreach ($groupName in $assignments[$policy.name]) {
-                $groupId = $groupCache[$groupName]
-                if ($groupId) {
-                    $deviceGroupIds += $groupId
-                }
+
+    # Step 4: Execute
+    Write-Host ""
+    Write-Host "  STEP 4: Creating Policies" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    $results = @{
+        Created = @()
+        Skipped = @()
+        Failed = @()
+    }
+
+    foreach ($policy in $prereqResult.Policies) {
+        Write-Host "   $($policy.name)..." -ForegroundColor White
+
+        $result = New-ConfigurationPolicyItem -PolicyDefinition $policy -TenantInfo $prereqResult.TenantInfo -LapsAdminName $lapsAdminName -GroupCache $prereqResult.GroupCache
+
+        if ($result.Success) {
+            if ($result.Skipped) {
+                $results.Skipped += $policy.name
+            }
+            else {
+                $results.Created += $policy.name
             }
         }
-        
-        $result = New-ConfigurationPolicy -PolicyDefinition $policy -TenantInfo $tenantInfo -LapsAdminName $lapsAdminName -DeviceGroupIds $deviceGroupIds
-        
-        if ($result) {
-            $createdPolicies += $result
-        } else {
-            $failedPolicies += $policy.name
+        else {
+            $results.Failed += @{ Name = $policy.name; Error = $result.Error }
         }
-        
-        # Small delay to avoid throttling
+
         Start-Sleep -Milliseconds 500
     }
-    
-    # Summary
-    Write-Host "`n" + "=" * 60 -ForegroundColor Cyan
-    Write-Host "📊 SUMMARY" -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host "✅ Successfully created: $($createdPolicies.Count) policies" -ForegroundColor Green
-    
-    if ($failedPolicies.Count -gt 0) {
-        Write-Host "❌ Failed to create: $($failedPolicies.Count) policies" -ForegroundColor Red
-        foreach ($failed in $failedPolicies) {
-            Write-Host "   - $failed" -ForegroundColor Red
+
+    # Step 5: Summary
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Host "  Created: $($results.Created.Count)" -ForegroundColor Green
+    Write-Host "  Skipped (existing): $($results.Skipped.Count)" -ForegroundColor Yellow
+    Write-Host "  Failed: $($results.Failed.Count)" -ForegroundColor $(if ($results.Failed.Count -gt 0) { "Red" } else { "Green" })
+    Write-Host ""
+
+    if ($results.Failed.Count -gt 0) {
+        Write-Host "  Failed Policies:" -ForegroundColor Red
+        foreach ($fail in $results.Failed) {
+            Write-Host "    - $($fail.Name): $($fail.Error)" -ForegroundColor Red
         }
-        if ($failedPolicies -contains "EDR Policy") {
-            Write-Host "`n⚠️  MANUAL ACTION REQUIRED FOR EDR POLICY:" -ForegroundColor Yellow
-            Write-Host "   1. Go to: Intune Admin Center → Endpoint Security → Microsoft Defender for Endpoint" -ForegroundColor White
-            Write-Host "   2. Click: 'Connect Microsoft Defender for Endpoint to Microsoft Intune'" -ForegroundColor White  
-            Write-Host "   3. Complete setup in Defender Security Center" -ForegroundColor White
-            Write-Host "   4. Re-run this script to create EDR policy" -ForegroundColor White
-            Write-Host "💡 This is a one-time setup requirement" -ForegroundColor Gray
+        Write-Host ""
+
+        # Check for EDR policy failure
+        if ($results.Failed.Name -contains "EDR Policy") {
+            Write-Host "  EDR POLICY MANUAL SETUP REQUIRED:" -ForegroundColor Yellow
+            Write-Host "    1. Go to Intune Admin Center" -ForegroundColor Gray
+            Write-Host "    2. Endpoint Security > Microsoft Defender for Endpoint" -ForegroundColor Gray
+            Write-Host "    3. Connect Defender to Intune" -ForegroundColor Gray
+            Write-Host "    4. Re-run this script after setup" -ForegroundColor Gray
+            Write-Host ""
         }
     }
-    
-    Write-Host "`n💡 Next Steps:" -ForegroundColor Yellow
-    Write-Host "   1. Verify policies in Intune admin center" -ForegroundColor Gray
-    Write-Host "   2. Check policy assignments to device groups" -ForegroundColor Gray
-    Write-Host "   3. Monitor policy deployment status" -ForegroundColor Gray
-    Write-Host "   4. Test on pilot devices before full rollout" -ForegroundColor Gray
-    
-    Write-Host "`n🔧 Key Configurations Applied:" -ForegroundColor Yellow
-    Write-Host "   - BitLocker encryption with 30-day LAPS rotation" -ForegroundColor Gray
-    Write-Host "   - OneDrive Known Folder Move" -ForegroundColor Gray  
-    Write-Host "   - Edge browser policies with SharePoint homepage" -ForegroundColor Gray
-    Write-Host "   - Defender and EDR configurations" -ForegroundColor Gray
-    Write-Host "   - Power management and system services" -ForegroundColor Gray
-    
-    return $createdPolicies
+
+    Write-Host "  IMPORTANT:" -ForegroundColor Yellow
+    Write-Host "    - Policies are assigned to device groups automatically" -ForegroundColor Gray
+    Write-Host "    - Allow time for policies to sync to devices" -ForegroundColor Gray
+    Write-Host "    - LAPS admin name: $lapsAdminName" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Next Steps:" -ForegroundColor Yellow
+    Write-Host "    1. Verify policies in Intune admin center" -ForegroundColor Gray
+    Write-Host "    2. Monitor policy deployment status" -ForegroundColor Gray
+    Write-Host "    3. Test on pilot devices first" -ForegroundColor Gray
+    Write-Host "    4. Run Compliance Policies script" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Initialize and run
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
 try {
-    Initialize-Modules
-    $results = Start-ConfigurationPolicyCreation
-    
-    if ($results) {
-        Write-Host "`n🎉 Configuration policy creation completed!" -ForegroundColor Green
-        Write-Host "📋 Created $($results.Count) policies with full settings" -ForegroundColor Green
+    if (!(Initialize-ScriptModules)) {
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
+        return
     }
+
+    Start-ConfigurationPolicyCreation
 }
 catch {
-    Write-Error "❌ Script execution failed: $($_.Exception.Message)"
+    Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
 }
-
-# ▼ CB & Claude | BITS 365 Automation | v1.0 | "Smarter not Harder"

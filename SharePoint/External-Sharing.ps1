@@ -2,66 +2,38 @@
 
 <#
 .SYNOPSIS
-    Configures SharePoint external sharing policies and settings
+    Configures SharePoint external sharing settings
 .DESCRIPTION
-    Manages external sharing permissions, guest access, and collaboration settings
+    Manages external sharing policies and guest access settings.
+    COMING SOON - This feature is under development.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Placeholder
 #>
 
-# Required Modules
-$RequiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Sites',
-    'Microsoft.Graph.Identity.DirectoryManagement',
-    'Microsoft.Graph.Policies'
-)
-
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    try {
-        foreach ($Module in $RequiredModules) {
-            try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
-                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-                }
-                if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
-                    Import-Module $Module -Force -ErrorAction Stop
-                }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
-            }
-            catch {
-                Write-Error "Failed to install/import ${Module}: $($_.Exception.Message)"
-                return $false
-            }
-        }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Error "Module initialization failed: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Main execution
 function Start-ExternalSharing {
-    Write-Host "🚀 Starting SharePoint External Sharing Configuration..." -ForegroundColor Cyan
-    
-    if (!(Initialize-Modules)) {
-        Write-Error "Failed to initialize required modules. Exiting."
-        return
-    }
-    
-    Write-Host "📋 SharePoint external sharing functionality to be implemented..." -ForegroundColor Yellow
-    Write-Host "Required modules are now available for implementation." -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  EXTERNAL SHARING SETTINGS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Status: COMING SOON" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  This feature is currently under development." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Planned Features:" -ForegroundColor White
+    Write-Host "    - Tenant-level sharing policies" -ForegroundColor Gray
+    Write-Host "    - Site-level sharing controls" -ForegroundColor Gray
+    Write-Host "    - Guest access expiration" -ForegroundColor Gray
+    Write-Host "    - Domain allow/block lists" -ForegroundColor Gray
+    Write-Host "    - Anonymous link settings" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  For now, configure sharing manually:" -ForegroundColor Yellow
+    Write-Host "    https://admin.microsoft.com/sharepoint?page=sharing" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Execute the script
 Start-ExternalSharing

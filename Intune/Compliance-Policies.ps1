@@ -10,10 +10,13 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Standardized UX with preview mode
 #>
 
-# Required Modules
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.DeviceManagement',
@@ -21,54 +24,143 @@ $RequiredModules = @(
     'Microsoft.Graph.Identity.DirectoryManagement'
 )
 
+$RequiredScopes = @(
+    'DeviceManagementConfiguration.ReadWrite.All',
+    'DeviceManagementManagedDevices.ReadWrite.All',
+    'Group.Read.All',
+    'Directory.Read.All'
+)
+
 # Policy assignment configuration - maps to our dynamic device groups
-function Get-PolicyAssignments {
-    return @{
-        "Android Basic Compliance" = @("Android Devices", "Corporate Owned Devices")
-        "iOS Basic Compliance" = @("iOS Devices", "Corporate Owned Devices") 
-        "macOS Basic Compliance" = @("macOS Devices", "Corporate Owned Devices")
-        "Windows 10/11 Basic Compliance" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
-    }
+$PolicyAssignments = @{
+    "Android Basic Compliance" = @("Android Devices", "Corporate Owned Devices")
+    "iOS Basic Compliance" = @("iOS Devices", "Corporate Owned Devices")
+    "macOS Basic Compliance" = @("macOS Devices", "Corporate Owned Devices")
+    "Windows 10/11 Basic Compliance" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
 }
 
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
+# ============================================================================
+# HELPER FUNCTIONS (fallback if shared helpers not loaded)
+# ============================================================================
+
+function Initialize-ScriptModules {
+    Write-Host "   Checking required modules..." -ForegroundColor Yellow
+
     try {
         foreach ($Module in $RequiredModules) {
             try {
                 if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
                     Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
                 }
                 if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
                     Import-Module $Module -Force -ErrorAction Stop
                 }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
+                Write-Host "   $Module ready" -ForegroundColor Green
             }
             catch {
-                Write-Error "Failed to initialize $Module : $($_.Exception.Message)"
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
                 return $false
             }
         }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
+        Write-Host "   All modules ready!" -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Error "Module initialization error: $($_.Exception.Message)"
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# Get tenant information for dynamic substitution
+# ============================================================================
+# PREREQUISITES
+# ============================================================================
+
+function Test-Prerequisites {
+    <#
+    .SYNOPSIS
+        Verify all prerequisites before running
+    #>
+
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 40) -ForegroundColor Gray
+
+    $allPassed = $true
+
+    # Check Graph connection
+    Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
+    $context = Get-MgContext
+    if (!$context) {
+        Write-Host "   Not connected to Microsoft Graph" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        return $false
+    }
+    Write-Host "   Connected as: $($context.Account)" -ForegroundColor Green
+
+    # Check scopes
+    Write-Host "   Checking required permissions..." -ForegroundColor Gray
+    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+
+    if ($missingScopes.Count -gt 0) {
+        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+        Write-Host "   Attempting to request additional permissions..." -ForegroundColor Yellow
+
+        try {
+            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+            Disconnect-MgGraph -ErrorAction SilentlyContinue
+            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+            Write-Host "   Permissions updated" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+            $allPassed = $false
+        }
+    }
+    else {
+        Write-Host "   All required permissions present" -ForegroundColor Green
+    }
+
+    # Check for device groups
+    Write-Host "   Checking for required device groups..." -ForegroundColor Gray
+    $allGroupNames = $PolicyAssignments.Values | ForEach-Object { $_ } | Select-Object -Unique
+    $missingGroups = @()
+
+    foreach ($groupName in $allGroupNames) {
+        $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
+        if (!$group) {
+            $missingGroups += $groupName
+        }
+    }
+
+    if ($missingGroups.Count -gt 0) {
+        Write-Host "   Missing device groups:" -ForegroundColor Yellow
+        foreach ($missing in $missingGroups) {
+            Write-Host "     - $missing" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "   Run 'Device Groups' script first to create these groups" -ForegroundColor Yellow
+        Write-Host "   Policies will be created but assignments will fail for missing groups" -ForegroundColor Yellow
+        # Don't fail - just warn
+    }
+    else {
+        Write-Host "   All required device groups found" -ForegroundColor Green
+    }
+
+    Write-Host ""
+    return $allPassed
+}
+
+# ============================================================================
+# DATA LOADING
+# ============================================================================
+
 function Get-TenantInfo {
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $domain = $org.VerifiedDomains | Where-Object { $_.IsDefault -eq $true } | Select-Object -ExpandProperty Name
         $tenantName = ($domain -split '\.')[0]
-        
+
         return @{
             TenantId = $org.Id
             Domain = $domain
@@ -77,141 +169,175 @@ function Get-TenantInfo {
         }
     }
     catch {
-        Write-Error "Failed to get tenant info: $($_.Exception.Message)"
+        Write-Host "   Failed to get tenant info: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
 
-# Get device group ID by name
 function Get-DeviceGroupId {
     param([string]$GroupName)
-    
+
     try {
-        $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction Stop
+        $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction SilentlyContinue
         if ($group) {
             return $group.Id
-        } else {
-            Write-Warning "Device group '$GroupName' not found"
-            return $null
         }
+        return $null
     }
     catch {
-        Write-Error "Failed to resolve group '$GroupName': $($_.Exception.Message)"
         return $null
     }
 }
 
-# Load compliance policy definitions from GitHub or local fallback
 function Get-PolicyDefinitions {
+    <#
+    .SYNOPSIS
+        Load compliance policy definitions from GitHub or local fallback
+    #>
+
     try {
-        Write-Host "  🔍 Attempting to load compliance policy definitions..." -ForegroundColor Gray
-        
-        # Method 1: Try GitHub download first (most reliable for hub system)
+        # Try GitHub download first
         try {
-            Write-Host "  🌐 Downloading compliance policies from GitHub..." -ForegroundColor Cyan
-            # Ensure TLS 1.2 is used for SSL connections
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/CompliancePolicies_Complete.json"
-            $jsonContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
-            
-            # Convert to hashtable if it's not already
+            $jsonContent = Invoke-RestMethod -Uri $url -TimeoutSec 15 -ErrorAction Stop
+
             if ($jsonContent -is [string]) {
                 $jsonContent = $jsonContent | ConvertFrom-Json -AsHashtable
-            } elseif ($jsonContent -is [array] -or $jsonContent -is [PSCustomObject]) {
+            }
+            elseif ($jsonContent -is [array] -or $jsonContent -is [PSCustomObject]) {
                 $jsonContent = $jsonContent | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
             }
-            
-            Write-Host "  ✅ Successfully downloaded $($jsonContent.Count) compliance policies from GitHub" -ForegroundColor Green
+
+            Write-Host "   Loaded $($jsonContent.Count) policies from GitHub" -ForegroundColor Green
             return $jsonContent
         }
         catch {
-            Write-Host "  ⚠️ GitHub download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "   GitHub download failed, trying local files..." -ForegroundColor Yellow
         }
-        
-        # Method 2: Try local file locations (fallback)
+
+        # Try local file locations
         $possiblePaths = @(
             ".\CompliancePolicies_Complete.json",
             ".\Intune\CompliancePolicies_Complete.json",
-            "Intune\CompliancePolicies_Complete.json",
-            "$PWD\CompliancePolicies_Complete.json",
-            "$PWD\Intune\CompliancePolicies_Complete.json"
+            "$PSScriptRoot\CompliancePolicies_Complete.json"
         )
-        
-        # Only try local paths if we have a valid script path
-        if ($MyInvocation.ScriptName -and $MyInvocation.ScriptName.Trim() -ne "") {
-            $scriptDir = Split-Path -Parent $MyInvocation.ScriptName
-            if ($scriptDir -and $scriptDir.Trim() -ne "") {
-                $possiblePaths += Join-Path $scriptDir "CompliancePolicies_Complete.json"
-            }
-        }
-        
-        Write-Host "  🔍 Checking local file paths..." -ForegroundColor Gray
+
         foreach ($path in $possiblePaths) {
-            if ($path -and (Test-Path $path -ErrorAction SilentlyContinue)) {
-                Write-Host "  📁 Loading policies from local file: $path" -ForegroundColor Gray
+            if (Test-Path $path -ErrorAction SilentlyContinue) {
                 $jsonContent = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
-                Write-Host "  ✅ Loaded $($jsonContent.Count) compliance policies from local file" -ForegroundColor Green
+                Write-Host "   Loaded $($jsonContent.Count) policies from local file" -ForegroundColor Green
                 return $jsonContent
-            } else {
-                Write-Host "  ❌ Not found: $path" -ForegroundColor DarkGray
             }
         }
-        
-        throw "Unable to load compliance policies from GitHub or local files"
+
+        throw "Policy definitions not found"
     }
     catch {
-        Write-Error "Failed to load compliance policy definitions: $($_.Exception.Message)"
-        Write-Host "  💡 Troubleshooting:" -ForegroundColor Yellow
-        Write-Host "    - Check internet connection for GitHub download" -ForegroundColor Gray
-        Write-Host "    - Verify GitHub repository URL is correct" -ForegroundColor Gray
-        Write-Host "    - Ensure CompliancePolicies_Complete.json exists in repository" -ForegroundColor Gray
+        Write-Host "   Failed to load policy definitions: $($_.Exception.Message)" -ForegroundColor Red
         return @()
     }
 }
 
-# Create compliance policy with assignments
+# ============================================================================
+# PREVIEW MODE
+# ============================================================================
+
+function Show-PolicyPreview {
+    param(
+        [array]$Policies,
+        [hashtable]$GroupCache
+    )
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  PREVIEW: Compliance Policies" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  The following $($Policies.Count) compliance policies will be created:" -ForegroundColor White
+    Write-Host ""
+
+    # Header
+    Write-Host "  # | Policy Name                    | Platform   | Target Groups" -ForegroundColor Yellow
+    Write-Host "  --|--------------------------------|------------|----------------------------" -ForegroundColor Gray
+
+    $index = 1
+    foreach ($policy in $Policies) {
+        $platform = $policy.'@odata.type' -replace '#microsoft.graph.', '' -replace 'CompliancePolicy', ''
+        $platform = $platform.Substring(0, [Math]::Min(10, $platform.Length))
+
+        $targetGroups = if ($PolicyAssignments.ContainsKey($policy.displayName)) {
+            $groupNames = $PolicyAssignments[$policy.displayName]
+            $validGroups = $groupNames | Where-Object { $GroupCache[$_] }
+            if ($validGroups.Count -gt 0) {
+                ($validGroups | ForEach-Object { $_.Substring(0, [Math]::Min(12, $_.Length)) }) -join ", "
+            }
+            else { "(no valid groups)" }
+        }
+        else { "(none)" }
+
+        $name = $policy.displayName
+        if ($name.Length -gt 30) { $name = $name.Substring(0, 27) + "..." }
+
+        Write-Host ("  {0,2} | {1,-30} | {2,-10} | {3}" -f $index, $name, $platform, $targetGroups) -ForegroundColor White
+        $index++
+    }
+
+    Write-Host ""
+
+    # Show group status
+    Write-Host "  Device Group Status:" -ForegroundColor Yellow
+    foreach ($groupName in ($GroupCache.Keys | Sort-Object)) {
+        $status = if ($GroupCache[$groupName]) { "Found" } else { "Missing" }
+        $color = if ($GroupCache[$groupName]) { "Green" } else { "Yellow" }
+        Write-Host "    $groupName : $status" -ForegroundColor $color
+    }
+
+    Write-Host ""
+}
+
+# ============================================================================
+# POLICY CREATION
+# ============================================================================
+
 function New-CompliancePolicy {
     param(
         [hashtable]$PolicyDefinition,
-        [hashtable]$TenantInfo,
         [string[]]$DeviceGroupIds = @()
     )
-    
+
+    $policyName = $PolicyDefinition.displayName
+
     try {
         # Check if policy already exists
-        $existingPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method GET | 
-            Select-Object -ExpandProperty value | Where-Object { $_.displayName -eq $PolicyDefinition.displayName }
-        
+        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method GET
+        $existingPolicy = $existingPolicies.value | Where-Object { $_.displayName -eq $policyName }
+
         if ($existingPolicy) {
-            Write-Host "⚠️  Policy '$($PolicyDefinition.displayName)' already exists" -ForegroundColor Yellow
-            return $existingPolicy
+            Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
         }
-        
-        # Clean the policy definition for creation (remove system fields)
+
+        # Clean policy definition
         $cleanPolicy = $PolicyDefinition.Clone()
-        $fieldsToRemove = @('id', 'createdDateTime', 'lastModifiedDateTime', 'version', '@odata.context', '@odata.type')
+        $fieldsToRemove = @('id', 'createdDateTime', 'lastModifiedDateTime', 'version', '@odata.context')
         foreach ($field in $fieldsToRemove) {
             if ($cleanPolicy.ContainsKey($field)) {
                 $cleanPolicy.Remove($field)
             }
         }
-        
-        # Add the OData type back for proper policy creation
-        $cleanPolicy.'@odata.type' = $PolicyDefinition.'@odata.type'
-        
-        # Create the policy
+
+        # Create policy
         $newPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method POST -Body ($cleanPolicy | ConvertTo-Json -Depth 20)
-        
-        Write-Host "✅ Created: $($PolicyDefinition.displayName)" -ForegroundColor Green
-        Write-Host "   Policy ID: $($newPolicy.id)" -ForegroundColor Gray
-        Write-Host "   Platform: $($PolicyDefinition.'@odata.type' -replace '#microsoft.graph.', '' -replace 'CompliancePolicy', '')" -ForegroundColor Gray
-        
-        # Assign to device groups
+
+        Write-Host "     Created successfully (ID: $($newPolicy.id))" -ForegroundColor Green
+
+        # Assign to device groups using Invoke-MgGraphRequest (reliable method)
         if ($DeviceGroupIds.Count -gt 0) {
             $assignmentBody = @{
                 assignments = @()
             }
-            
+
             foreach ($groupId in $DeviceGroupIds) {
                 if ($groupId) {
                     $assignmentBody.assignments += @{
@@ -222,193 +348,216 @@ function New-CompliancePolicy {
                     }
                 }
             }
-            
+
             if ($assignmentBody.assignments.Count -gt 0) {
                 try {
-                    # Use alternative approach due to Microsoft Graph SDK bugs in 2025
-                    $headers = @{
-                        'Authorization' = "Bearer $((Get-MgContext).Token)"
-                        'Content-Type' = 'application/json'
-                    }
-
+                    # Use Invoke-MgGraphRequest instead of broken REST method
                     $assignmentUri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($newPolicy.id)')/assign"
-                    $assignmentJson = $assignmentBody | ConvertTo-Json -Depth 10
+                    Invoke-MgGraphRequest -Uri $assignmentUri -Method POST -Body $assignmentBody | Out-Null
 
-                    # Try direct REST call to bypass SDK bug
-                    $response = Invoke-RestMethod -Uri $assignmentUri -Method POST -Body $assignmentJson -Headers $headers
-                    Write-Host "   ✅ Assigned to $($assignmentBody.assignments.Count) device groups" -ForegroundColor Green
+                    Write-Host "     Assigned to $($assignmentBody.assignments.Count) group(s)" -ForegroundColor Green
                 }
                 catch {
-                    Write-Host "   ⚠️ Assignment failed (SDK bug): Using fallback method..." -ForegroundColor Yellow
+                    Write-Host "     Assignment failed: $($_.Exception.Message)" -ForegroundColor Yellow
 
-                    # Fallback: Create assignments individually
+                    # Try individual assignments as fallback
+                    $assignedCount = 0
                     foreach ($assignment in $assignmentBody.assignments) {
                         try {
                             $singleAssignment = @{ assignments = @($assignment) }
-                            $fallbackJson = $singleAssignment | ConvertTo-Json -Depth 10
-                            Invoke-RestMethod -Uri $assignmentUri -Method POST -Body $fallbackJson -Headers $headers
-                            Write-Host "   ✅ Individual assignment succeeded" -ForegroundColor Green
+                            Invoke-MgGraphRequest -Uri $assignmentUri -Method POST -Body $singleAssignment -ErrorAction Stop
+                            $assignedCount++
                         }
                         catch {
-                            Write-Host "   ❌ Assignment still failed: $($_.Exception.Message)" -ForegroundColor Red
+                            # Silent fail for individual
                         }
+                    }
+
+                    if ($assignedCount -gt 0) {
+                        Write-Host "     Assigned to $assignedCount group(s) via fallback" -ForegroundColor Yellow
                     }
                 }
             }
         }
-        
-        return $newPolicy
+
+        return @{ Success = $true; Policy = $newPolicy; Skipped = $false }
     }
     catch {
-        Write-Error "❌ Failed to create compliance policy '$($PolicyDefinition.displayName)': $($_.Exception.Message)"
-        Write-Host "   Error details: $($_.Exception.Response.Content.ReadAsStringAsync().Result)" -ForegroundColor Red
-        return $null
+        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Main execution function
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 function Start-CompliancePolicyCreation {
-    Write-Host "`n🚀 Creating Intune Compliance Policies..." -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    
-    # Verify connection
-    $context = Get-MgContext
-    if (!$context) {
-        Write-Error "❌ Not connected to Microsoft Graph. Please connect first."
+    # Header
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  INTUNE COMPLIANCE POLICIES" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Creates platform-specific compliance policies for device management" -ForegroundColor Gray
+    Write-Host ""
+
+    # Step 1: Prerequisites
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    if (!(Test-Prerequisites)) {
+        Write-Host ""
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    # Get tenant information
+
+    # Step 2: Load data
+    Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 40) -ForegroundColor Gray
+
     $tenantInfo = Get-TenantInfo
     if (!$tenantInfo) {
-        Write-Error "❌ Failed to get tenant information"
+        Write-Host "   Failed to get tenant information" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    Write-Host "✅ Connected to: $($tenantInfo.Domain)" -ForegroundColor Green
-    Write-Host "   Organization: $($tenantInfo.OrganizationName)" -ForegroundColor Gray
-    
-    # Get policy definitions
+    Write-Host "   Tenant: $($tenantInfo.OrganizationName)" -ForegroundColor Green
+
+    Write-Host "   Loading policy definitions..." -ForegroundColor Gray
     $policies = Get-PolicyDefinitions
-    $assignments = Get-PolicyAssignments
-    
-    Write-Host "`n📋 Found $($policies.Count) compliance policy definitions" -ForegroundColor Yellow
-    
     if ($policies.Count -eq 0) {
-        Write-Error "❌ No compliance policies found to deploy"
+        Write-Host "   No policies found to deploy" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    # Show policy summary
-    Write-Host "`n📱 Compliance Policies to Deploy:" -ForegroundColor Cyan
-    foreach ($policy in $policies) {
-        $platform = $policy.'@odata.type' -replace '#microsoft.graph.', '' -replace 'CompliancePolicy', ''
-        Write-Host "   • $($policy.displayName) ($platform)" -ForegroundColor White
-    }
-    
-    # Resolve device group IDs
-    Write-Host "`n🔍 Resolving device groups..." -ForegroundColor Yellow
+
+    # Build group cache
+    Write-Host "   Resolving device groups..." -ForegroundColor Gray
     $groupCache = @{}
-    
-    foreach ($assignment in $assignments.GetEnumerator()) {
-        foreach ($groupName in $assignment.Value) {
-            if (!$groupCache.ContainsKey($groupName)) {
-                $groupId = Get-DeviceGroupId -GroupName $groupName
-                $groupCache[$groupName] = $groupId
-                if ($groupId) {
-                    Write-Host "   ✅ $groupName" -ForegroundColor Green
-                } else {
-                    Write-Host "   ⚠️  $groupName (not found)" -ForegroundColor Yellow
-                }
-            }
-        }
+    $allGroupNames = $PolicyAssignments.Values | ForEach-Object { $_ } | Select-Object -Unique
+
+    foreach ($groupName in $allGroupNames) {
+        $groupId = Get-DeviceGroupId -GroupName $groupName
+        $groupCache[$groupName] = $groupId
     }
-    
-    # User confirmation
-    Write-Host "`n📋 Deployment Summary:" -ForegroundColor Yellow
-    Write-Host "   📱 Compliance policies: $($policies.Count)" -ForegroundColor White
-    Write-Host "   🎯 Device groups: $($groupCache.Keys.Count)" -ForegroundColor White
-    Write-Host "   🏢 Target tenant: $($tenantInfo.OrganizationName)" -ForegroundColor White
-    
-    $confirm = Read-Host "`nProceed with compliance policy deployment? (Y/n)"
-    if ($confirm -like "n*") {
-        Write-Host "❌ Deployment cancelled by user" -ForegroundColor Yellow
+
+    # Step 3: Preview
+    Write-Host ""
+    Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
+    Show-PolicyPreview -Policies $policies -GroupCache $groupCache
+
+    # Confirmation
+    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+    Write-Host ""
+    $confirm = Read-Host "  Create these compliance policies? (Y/N)"
+
+    if ($confirm -notlike "Y*") {
+        Write-Host ""
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
-    
-    # Create policies
-    Write-Host "`n🛡️ Creating compliance policies..." -ForegroundColor Yellow
-    $createdPolicies = @()
-    $failedPolicies = @()
-    
+
+    # Step 4: Execute
+    Write-Host ""
+    Write-Host "  STEP 4: Creating Policies" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 40) -ForegroundColor Gray
+
+    $results = @{
+        Created = @()
+        Skipped = @()
+        Failed = @()
+    }
+
     foreach ($policy in $policies) {
-        Write-Host "`n📋 Creating: $($policy.displayName)" -ForegroundColor White
-        
-        # Get device group IDs for this policy
+        Write-Host "   $($policy.displayName)..." -ForegroundColor White
+
+        # Get group IDs for this policy
         $deviceGroupIds = @()
-        if ($assignments.ContainsKey($policy.displayName)) {
-            foreach ($groupName in $assignments[$policy.displayName]) {
+        if ($PolicyAssignments.ContainsKey($policy.displayName)) {
+            foreach ($groupName in $PolicyAssignments[$policy.displayName]) {
                 $groupId = $groupCache[$groupName]
                 if ($groupId) {
                     $deviceGroupIds += $groupId
                 }
             }
         }
-        
-        $result = New-CompliancePolicy -PolicyDefinition $policy -TenantInfo $tenantInfo -DeviceGroupIds $deviceGroupIds
-        
-        if ($result) {
-            $createdPolicies += $result
-        } else {
-            $failedPolicies += $policy.displayName
+
+        $result = New-CompliancePolicy -PolicyDefinition $policy -DeviceGroupIds $deviceGroupIds
+
+        if ($result.Success) {
+            if ($result.Skipped) {
+                $results.Skipped += $policy.displayName
+            }
+            else {
+                $results.Created += $policy.displayName
+            }
         }
-        
-        # Small delay to avoid throttling
+        else {
+            $results.Failed += @{ Name = $policy.displayName; Error = $result.Error }
+        }
+
         Start-Sleep -Milliseconds 500
     }
-    
-    # Summary
-    Write-Host "`n" + "=" * 60 -ForegroundColor Cyan
-    Write-Host "📊 DEPLOYMENT SUMMARY" -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host "✅ Successfully created: $($createdPolicies.Count) policies" -ForegroundColor Green
-    
-    if ($failedPolicies.Count -gt 0) {
-        Write-Host "❌ Failed to create: $($failedPolicies.Count) policies" -ForegroundColor Red
-        foreach ($failed in $failedPolicies) {
-            Write-Host "   - $failed" -ForegroundColor Red
+
+    # Step 5: Summary
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Host "  Created: $($results.Created.Count)" -ForegroundColor Green
+    Write-Host "  Skipped (existing): $($results.Skipped.Count)" -ForegroundColor Yellow
+    Write-Host "  Failed: $($results.Failed.Count)" -ForegroundColor $(if ($results.Failed.Count -gt 0) { "Red" } else { "Green" })
+    Write-Host ""
+
+    if ($results.Created.Count -gt 0) {
+        Write-Host "  Created Policies:" -ForegroundColor Green
+        foreach ($name in $results.Created) {
+            Write-Host "    - $name" -ForegroundColor White
         }
+        Write-Host ""
     }
-    
-    Write-Host "`n💡 Next Steps:" -ForegroundColor Yellow
-    Write-Host "   1. Verify policies in Intune admin center" -ForegroundColor Gray
-    Write-Host "   2. Check policy assignments to device groups" -ForegroundColor Gray
-    Write-Host "   3. Monitor device compliance reporting" -ForegroundColor Gray
-    Write-Host "   4. Test compliance evaluation on pilot devices" -ForegroundColor Gray
-    
-    Write-Host "`n🔒 Key Compliance Requirements Applied:" -ForegroundColor Yellow
-    Write-Host "   - Device encryption mandatory (BitLocker, FileVault)" -ForegroundColor Gray  
-    Write-Host "   - Strong password/passcode policies (6-8+ characters)" -ForegroundColor Gray
-    Write-Host "   - 15-minute inactivity timeouts" -ForegroundColor Gray
-    Write-Host "   - 90-day password expiration cycles" -ForegroundColor Gray
-    Write-Host "   - Jailbreak/root detection for mobile devices" -ForegroundColor Gray
-    Write-Host "   - Minimum OS version enforcement" -ForegroundColor Gray
-    
-    return $createdPolicies
+
+    if ($results.Failed.Count -gt 0) {
+        Write-Host "  Failed Policies:" -ForegroundColor Red
+        foreach ($fail in $results.Failed) {
+            Write-Host "    - $($fail.Name): $($fail.Error)" -ForegroundColor Red
+        }
+        Write-Host ""
+    }
+
+    Write-Host "  Next Steps:" -ForegroundColor Yellow
+    Write-Host "    1. Verify policies in Intune admin center" -ForegroundColor Gray
+    Write-Host "    2. Check policy assignments to device groups" -ForegroundColor Gray
+    Write-Host "    3. Monitor device compliance reporting" -ForegroundColor Gray
+    Write-Host "    4. Test compliance evaluation on pilot devices" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Initialize and run
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
 try {
-    Initialize-Modules
-    $results = Start-CompliancePolicyCreation
-    
-    if ($results) {
-        Write-Host "`n🎉 Compliance policy creation completed!" -ForegroundColor Green
-        Write-Host "🛡️ Created $($results.Count) compliance policies with device assignments" -ForegroundColor Green
+    if (!(Initialize-ScriptModules)) {
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
+        return
     }
+
+    Start-CompliancePolicyCreation
 }
 catch {
-    Write-Error "❌ Script execution failed: $($_.Exception.Message)"
+    Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
 }
-
-# ▼ CB & Claude | BITS 365 Automation | v1.0 | "Smarter not Harder"

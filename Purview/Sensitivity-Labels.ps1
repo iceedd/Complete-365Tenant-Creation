@@ -2,68 +2,38 @@
 
 <#
 .SYNOPSIS
-    Configures Microsoft Purview sensitivity labels and protection policies
+    Configures Microsoft Purview sensitivity labels
 .DESCRIPTION
-    Manages sensitivity labels, label policies, and information protection settings
+    Creates sensitivity labels for document and email classification.
+    COMING SOON - This feature is under development.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    2.0 - Placeholder
 #>
 
-# Required Modules
-$RequiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Compliance',
-    'Microsoft.Graph.Security',
-    'Microsoft.Graph.Groups',
-    'Microsoft.Graph.Identity.DirectoryManagement',
-    'ExchangeOnlineManagement'
-)
-
-# Auto-install and import required modules
-function Initialize-Modules {
-    Write-Host "🔧 Checking required modules..." -ForegroundColor Yellow
-    
-    try {
-        foreach ($Module in $RequiredModules) {
-            try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "Installing $Module..." -ForegroundColor Yellow
-                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-                }
-                if (!(Get-Module -Name $Module)) {
-                    Write-Host "Importing $Module..." -ForegroundColor Yellow
-                    Import-Module $Module -Force -ErrorAction Stop
-                }
-                Write-Host "✅ $Module ready!" -ForegroundColor Green
-            }
-            catch {
-                Write-Error "Failed to install/import ${Module}: $($_.Exception.Message)"
-                return $false
-            }
-        }
-        Write-Host "✅ All modules ready!" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Error "Module initialization failed: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Main execution
 function Start-SensitivityLabels {
-    Write-Host "🚀 Starting Sensitivity Labels Configuration..." -ForegroundColor Cyan
-    
-    if (!(Initialize-Modules)) {
-        Write-Error "Failed to initialize required modules. Exiting."
-        return
-    }
-    
-    Write-Host "📋 Sensitivity labels functionality to be implemented..." -ForegroundColor Yellow
-    Write-Host "Required modules are now available for implementation." -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SENSITIVITY LABELS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Status: COMING SOON" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  This feature is currently under development." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Planned Features:" -ForegroundColor White
+    Write-Host "    - Public/Internal/Confidential labels" -ForegroundColor Gray
+    Write-Host "    - Encryption settings" -ForegroundColor Gray
+    Write-Host "    - Content marking (headers/footers)" -ForegroundColor Gray
+    Write-Host "    - Auto-labeling policies" -ForegroundColor Gray
+    Write-Host "    - Label analytics" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  For now, configure labels manually:" -ForegroundColor Yellow
+    Write-Host "    https://compliance.microsoft.com/informationprotection" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
 
-# Execute the script
 Start-SensitivityLabels
