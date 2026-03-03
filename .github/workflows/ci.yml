@@ -24,3 +24,44 @@ jobs:
       - name: Run Lint
         shell: pwsh
         run: ./Build/Build.ps1 -Severity Warning
+
+  test:
+    name: Pester Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.6.0 -Force -Scope CurrentUser
+
+      - name: Run Unit Tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.6.0
+
+          $config = New-PesterConfiguration
+          $config.Run.Path              = './Tests/Unit/'
+          $config.Output.Verbosity      = 'Detailed'
+          $config.Run.PassThru          = $true
+          $config.TestResult.Enabled    = $true
+          $config.TestResult.OutputPath   = 'test-results.xml'
+          $config.TestResult.OutputFormat = 'NUnitXml'
+
+          $result = Invoke-Pester -Configuration $config
+
+          if ($result.FailedCount -gt 0) {
+            Write-Error "Pester: $($result.FailedCount) test(s) failed."
+            exit 1
+          }
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-test-results
+          path: test-results.xml

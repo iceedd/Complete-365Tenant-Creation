@@ -1460,7 +1460,15 @@ function Test-ServiceAuthentication {
         }
         "SharePoint" {
             $authStatus.RequiredAuth = "SharePointPnP"
-            if ($ShowStatus) { Write-Host "💡 SharePoint: Uses Graph API (when implemented)" -ForegroundColor Gray }
+            try {
+                Get-SPOTenant -ErrorAction Stop | Out-Null
+                $authStatus.ServiceConnected = $true
+                if ($ShowStatus) { Write-Host "   SharePoint: Connected" -ForegroundColor Green }
+            }
+            catch {
+                $authStatus.ServiceConnected = $false
+                if ($ShowStatus) { Write-Host "   SharePoint: Not connected (SPO service)" -ForegroundColor Yellow }
+            }
         }
         default {
             # Most services can use Graph
@@ -1469,6 +1477,40 @@ function Test-ServiceAuthentication {
     }
     
     return $authStatus
+}
+
+function Connect-SharePointOnline {
+    # Derives SPO admin URL from the connected tenant and calls Connect-SPOService
+    try {
+        $org = Get-MgOrganization | Select-Object -First 1
+        $initialDomain = $org.VerifiedDomains | Where-Object { $_.IsInitial } | Select-Object -ExpandProperty Name
+        $tenantName = $initialDomain -replace '\.onmicrosoft\.com$', ''
+        $spoAdminUrl = "https://$tenantName-admin.sharepoint.com"
+
+        # Check if SPO module is available
+        if (!(Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+            Write-Host "   Installing Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Yellow
+            Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        }
+
+        # Check if already connected
+        try {
+            Get-SPOTenant -ErrorAction Stop | Out-Null
+            Write-Host "   SharePoint Online: already connected" -ForegroundColor Green
+            return $true
+        }
+        catch {}
+
+        Write-Host "   Connecting to SharePoint Online ($spoAdminUrl)..." -ForegroundColor Yellow
+        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+        Write-Host "   SharePoint Online: connected" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "   Failed to connect to SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Connect manually: Connect-SPOService -Url https://[tenant]-admin.sharepoint.com" -ForegroundColor Gray
+        return $false
+    }
 }
 
 # Simplified and Robust Authentication System with Auto-Scope Expansion
@@ -1558,7 +1600,13 @@ function Set-ServiceScopes {
         }
     }
 
-    Write-Host "✅ All required permissions present for $Service" -ForegroundColor Green
+    Write-Host "   Graph permissions ready for $Service" -ForegroundColor Green
+
+    # SharePoint also requires a separate SPO service connection
+    if ($Service -eq "SharePoint") {
+        return Connect-SharePointOnline
+    }
+
     return $true
 }
 
