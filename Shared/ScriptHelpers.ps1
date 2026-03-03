@@ -826,7 +826,7 @@ function Show-NextSteps {
         [string]$Title = "Next Steps"
     )
 
-    Write-Host "  $Title:" -ForegroundColor Yellow
+    Write-Host "  ${Title}:" -ForegroundColor Yellow
 
     $index = 1
     foreach ($step in $Steps) {
@@ -853,7 +853,7 @@ function Show-ImportantInfo {
         [string]$Title = "Important Information"
     )
 
-    Write-Host "  $Title:" -ForegroundColor Yellow
+    Write-Host "  ${Title}:" -ForegroundColor Yellow
 
     foreach ($key in $Items.Keys) {
         Write-Host "    ${key}: $($Items[$key])" -ForegroundColor Gray
