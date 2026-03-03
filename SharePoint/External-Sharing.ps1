@@ -541,6 +541,9 @@ function Start-ExternalSharing {
     if ($presetChoice -like "Q*") {
         Write-Host ""
         Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
 
@@ -548,6 +551,9 @@ function Start-ExternalSharing {
     if (![int]::TryParse($presetChoice, [ref]$presetNum) -or $presetNum -lt 1 -or $presetNum -gt 4) {
         Write-Host ""
         Write-Host "  Invalid selection. Exiting." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
 
@@ -588,6 +594,9 @@ function Start-ExternalSharing {
     if ($confirm -notlike "Y*") {
         Write-Host ""
         Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
     }
 
