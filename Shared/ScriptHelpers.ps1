@@ -765,8 +765,8 @@ function Show-ExecutionSummary {
         [string]$ItemType = "items"
     )
 
-    $successCount = ($Results | Where-Object { $_.Success }).Count
-    $failCount = ($Results | Where-Object { -not $_.Success }).Count
+    $successCount = @($Results | Where-Object { $_.Success }).Count
+    $failCount = @($Results | Where-Object { -not $_.Success }).Count
 
     Write-Host ""
     Write-Host ("=" * 70) -ForegroundColor Cyan

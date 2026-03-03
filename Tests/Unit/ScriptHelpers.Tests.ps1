@@ -70,12 +70,10 @@ Describe 'Write-LogMessage' {
     Context 'Message content' {
 
         It 'includes the supplied message text in the output string' {
-            $capturedMessage = $null
-            Mock Write-Host { $capturedMessage = $Object }
-
             Write-LogMessage -Message 'test message text' -Type Info
-
-            $capturedMessage | Should -Match 'test message text'
+            Should -Invoke Write-Host -ParameterFilter {
+                "$Object" -match 'test message text'
+            }
         }
 
         It 'defaults Type to Info when Type is omitted' {
@@ -123,7 +121,7 @@ Describe 'Write-ScriptHeader' {
             Write-ScriptHeader -Title 'Test'
             # Two blank lines: one before the header block, one after
             Should -Invoke Write-Host -ParameterFilter {
-                $null -eq $Object -or $Object -eq ''
+                $null -eq $Object -or "$Object" -eq ''
             }
         }
     }
@@ -173,7 +171,7 @@ Describe 'Write-SectionHeader' {
     It 'also outputs a leading blank line' {
         Write-SectionHeader -Title 'Section'
         Should -Invoke Write-Host -ParameterFilter {
-            $null -eq $Object -or $Object -eq ''
+            $null -eq $Object -or "$Object" -eq ''
         }
     }
 }
@@ -365,7 +363,7 @@ Describe 'Start-ThrottledLoop' {
 
         It 'captures the exception message in the Error property' {
             $items = @('bad-item')
-            $results = Start-ThrottledLoop -Items $items -ScriptBlock { throw 'boom' } -DelayMs 0
+            $results = @(Start-ThrottledLoop -Items $items -ScriptBlock { throw 'boom' } -DelayMs 0)
             $results[0].Error | Should -Be 'boom'
         }
 
@@ -473,8 +471,9 @@ Describe 'Show-ExecutionSummary' {
                 @{ Success = $false; Item = @{ Name = 'Bad' };  Error = 'err'; Index = 2 }
             )
             Show-ExecutionSummary -Results $results
-            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Green' -and $Object -match 'Good' }
-            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Red'   -and $Object -match 'Bad'  }
+            # "Created:" header is Green; individual item names are White
+            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Green' -and "$Object" -match 'Created' }
+            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Red'   -and "$Object" -match 'Bad'  }
         }
     }
 
@@ -572,7 +571,7 @@ Describe 'Show-NextSteps' {
     It 'outputs a trailing blank line' {
         Show-NextSteps -Steps @('Step')
         Should -Invoke Write-Host -ParameterFilter {
-            $null -eq $Object -or $Object -eq ''
+            $null -eq $Object -or "$Object" -eq ''
         }
     }
 }
@@ -625,7 +624,7 @@ Describe 'Show-ImportantInfo' {
     It 'outputs a trailing blank line' {
         Show-ImportantInfo -Items @{ A = 'B' }
         Should -Invoke Write-Host -ParameterFilter {
-            $null -eq $Object -or $Object -eq ''
+            $null -eq $Object -or "$Object" -eq ''
         }
     }
 }
