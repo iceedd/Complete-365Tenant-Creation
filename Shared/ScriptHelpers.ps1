@@ -923,9 +923,3 @@ function Show-ComingSoon {
     Show-PauseBeforeExit
 }
 
-# ============================================================================
-# EXPORT
-# ============================================================================
-
-# Export all functions when dot-sourced
-Export-ModuleMember -Function * -ErrorAction SilentlyContinue
