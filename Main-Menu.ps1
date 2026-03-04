@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.6
+    1.7
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.6"
+$Script:MenuVersion = "1.7"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1766,16 +1766,21 @@ function Show-EntraMenu {
                     }
                     # Write to a temp file and run in a separate pwsh process.
                     # This avoids scope/function collisions and module-removal side-effects
-                    # in the parent menu session. MSAL token cache means Graph re-connects
-                    # silently (same user, same machine, token still valid).
+                    # in the parent menu session.
                     $tempScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.ps1'
                     try {
                         $Global:ScriptCache[$provKey] | Set-Content -Path $tempScript -Encoding UTF8
                         Write-Host "🚀 Launching User Provisioning Tool..." -ForegroundColor Cyan
                         Write-Host "   (The tool will open in a new window — return here when done)" -ForegroundColor Gray
-                        # Pass TenantId so the tool can silently re-connect via MSAL cached token
+                        # Extract Bearer token from current Graph session and pass via env var
+                        # so the child process can connect silently without a login prompt.
                         $tenantId = (Get-MgContext).TenantId
-                        $psArgs   = "-NoProfile -File `"$tempScript`""
+                        try {
+                            $resp = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/v1.0/me' -Method GET -OutputType HttpResponseMessage -ErrorAction Stop
+                            $bearerToken = $resp.RequestMessage.Headers.Authorization.Parameter
+                            if ($bearerToken) { $env:M365_BEARER_TOKEN = $bearerToken }
+                        } catch { }
+                        $psArgs = "-NoProfile -File `"$tempScript`""
                         if ($tenantId) { $psArgs += " -TenantId `"$tenantId`"" }
                         Start-Process pwsh -ArgumentList $psArgs -Wait
                     }
@@ -1784,6 +1789,7 @@ function Show-EntraMenu {
                         Start-Sleep 3
                     }
                     finally {
+                        $env:M365_BEARER_TOKEN = $null
                         Remove-Item $tempScript -ErrorAction SilentlyContinue
                     }
                 } else {
