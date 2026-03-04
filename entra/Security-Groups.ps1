@@ -415,15 +415,22 @@ function Set-GroupLicenseAssignment {
 
     try {
         # Check if license is already attached
-        $licenseDetails = Invoke-MgGraphRequest -Method GET `
-            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
-            -ErrorAction SilentlyContinue
-        if ($licenseDetails -and $licenseDetails.value) {
-            $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
-            if ($existing.Count -gt 0) {
-                Write-Host "     License already attached to group" -ForegroundColor Gray
-                return $true
+        # Invoke-MgGraphRequest throws terminating errors — -ErrorAction SilentlyContinue
+        # does NOT suppress them, so wrap in try/catch
+        try {
+            $licenseDetails = Invoke-MgGraphRequest -Method GET `
+                -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
+                -ErrorAction Stop
+            if ($licenseDetails -and $licenseDetails.value) {
+                $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
+                if ($existing.Count -gt 0) {
+                    Write-Host "     License already attached to group" -ForegroundColor Gray
+                    return $true
+                }
             }
+        }
+        catch {
+            # licenseDetails endpoint unavailable — proceed to assignLicense attempt
         }
 
         # Pre-serialize body to avoid Invoke-MgGraphRequest hashtable serialization issues
