@@ -195,6 +195,18 @@ function Test-Prerequisites {
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
     $licenseResult = Show-TenantLicenses
 
+    # Check which licence groups already exist (built dynamically, so checked separately)
+    foreach ($group in $licenseResult.DynamicLicenseGroups) {
+        $existing = Get-MgGroup -Filter "displayName eq '$($group.Name)'" -ErrorAction SilentlyContinue
+        if ($existing) {
+            $existingGroups += $group.Name
+        }
+    }
+
+    if ($existingGroups.Count -gt 0) {
+        Write-Host "   Found $($existingGroups.Count) existing group(s) total (will be skipped)" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     return @{
         Success              = $true
