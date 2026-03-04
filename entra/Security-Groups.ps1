@@ -9,7 +9,8 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    2.1 - Added Helpdesk Operator Group with Intune Help Desk Operator role assignment
+    3.0 - License groups now use Group-Based Licensing (GBL). Groups are created
+          dynamically from tenant SKUs and licenses are attached automatically.
 #>
 
 # ============================================================================
@@ -25,7 +26,8 @@ $RequiredModules = @(
 $RequiredScopes = @(
     "Group.ReadWrite.All",
     "Directory.Read.All",
-    "DeviceManagementRBAC.ReadWrite.All"
+    "DeviceManagementRBAC.ReadWrite.All",
+    "LicenseAssignment.ReadWrite.All"
 )
 
 # Friendly display names for common Microsoft 365 SKU part numbers
@@ -51,13 +53,16 @@ $SkuFriendlyNames = @{
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LICENSE GROUPS — FULLY DYNAMIC
+# LICENSE GROUPS — GROUP-BASED LICENSING (GBL)
 # ─────────────────────────────────────────────────────────────────────────────
-# License groups are generated at runtime from the tenant's active SKUs.
-# One "License - <Name>" group is created per purchased license automatically.
-# No hardcoded GUIDs needed — the script discovers the best identifying
-# service plan for each SKU using a frequency algorithm (least-shared plan wins).
-# Re-running the script after a new license purchase will create the new group.
+# One "License - <Name>" assigned security group is created per active SKU.
+# The license SKU is attached to each group automatically (Set-MgGroupLicense).
+# When a user is added to a group, M365 assigns the license automatically.
+# When removed, the license is removed automatically.
+# Re-running after a new license purchase creates the new group and attaches it.
+#
+# HD workflow in the provisioning tool:
+#   Create user → select license group(s) → licenses assign automatically
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Static security group definitions (non-license groups only)
@@ -202,57 +207,37 @@ function Test-Prerequisites {
 # LICENSE DISCOVERY
 # ============================================================================
 
-function Build-LicenseGroups {
+function Build-GblLicenseGroups {
     <#
     .SYNOPSIS
-        Dynamically generates license group definitions from the tenant's active SKUs.
-        Picks the least-shared service plan per SKU as the membership rule identifier.
+        Builds GBL license group configs from the tenant's active SKUs.
+        Each group is an assigned security group — adding a user assigns the license.
     #>
     param([array]$ActiveSkus)
-
-    # Build a frequency map: how many SKUs each service plan appears in
-    $planFrequency = @{}
-    foreach ($sku in $ActiveSkus) {
-        foreach ($plan in $sku.ServicePlans) {
-            if ($planFrequency.ContainsKey($plan.ServicePlanId)) {
-                $planFrequency[$plan.ServicePlanId]++
-            }
-            else {
-                $planFrequency[$plan.ServicePlanId] = 1
-            }
-        }
-    }
 
     $licenseGroups = [System.Collections.Generic.List[hashtable]]::new()
 
     foreach ($sku in $ActiveSkus) {
-        if ($sku.ServicePlans.Count -eq 0) { continue }
-
-        # Pick the service plan that appears in the fewest SKUs (most unique identifier)
-        $bestPlan = $sku.ServicePlans |
-            Sort-Object { $planFrequency[$_.ServicePlanId] }, ServicePlanName |
-            Select-Object -First 1
-
-        if ($null -eq $bestPlan) { continue }
-
-        $friendlyName = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
+        $friendlyName  = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
             $SkuFriendlyNames[$sku.SkuPartNumber]
         }
         else {
             $sku.SkuPartNumber
         }
 
-        $isShared   = $planFrequency[$bestPlan.ServicePlanId] -gt 1
-        $sharedNote = if ($isShared) { " [plan shared — group may overlap with another license]" } else { '' }
+        $available = $sku.PrepaidUnits.Enabled - $sku.ConsumedUnits
 
         $licenseGroups.Add(@{
             Name           = "License - $friendlyName"
-            Description    = "Users with $friendlyName — identified by service plan $($bestPlan.ServicePlanName)$sharedNote"
-            MembershipRule = "(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq `"$($bestPlan.ServicePlanId)`" -and assignedPlan.capabilityStatus -eq `"Enabled`"))"
-            GroupType      = "DynamicMembership"
-            MembershipType = "Dynamic"
-            IsSharedPlan   = $isShared
+            Description    = "Group-based licensing for $friendlyName. Adding a user to this group automatically assigns the license."
+            GroupType      = "Assigned"
+            MembershipType = "Manual"
+            SkuId          = $sku.SkuId
             SkuPartNumber  = $sku.SkuPartNumber
+            FriendlyName   = $friendlyName
+            TotalSeats     = $sku.PrepaidUnits.Enabled
+            ConsumedSeats  = $sku.ConsumedUnits
+            AvailableSeats = $available
         })
     }
 
@@ -274,63 +259,41 @@ function Show-TenantLicenses {
             return @{ DynamicLicenseGroups = @() }
         }
 
-        # Display license table
+        # Build GBL groups from active SKUs
+        $gblGroups = Build-GblLicenseGroups -ActiveSkus $allSkus
+
+        # Display combined table: license + seat counts + GBL group status
         Write-Host ""
-        Write-Host "   ACTIVE LICENSES IN TENANT" -ForegroundColor Yellow
-        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
-        Write-Host ("   {0,-38} {1,7} {2,9}" -f "License", "In Use", "Available") -ForegroundColor Yellow
-        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+        Write-Host "   GBL LICENSE GROUPS (one group per active license)" -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 62) -ForegroundColor Gray
+        Write-Host ("   {0,-36} {1,7} {2,11}" -f "License Group", "In Use", "Available") -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 62) -ForegroundColor Gray
 
-        foreach ($sku in $allSkus) {
-            $friendly    = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
-                               $SkuFriendlyNames[$sku.SkuPartNumber]
-                           }
-                           else {
-                               $sku.SkuPartNumber
-                           }
-            $consumed    = $sku.ConsumedUnits
-            $available   = $sku.PrepaidUnits.Enabled - $consumed
-            $nameDisplay = if ($friendly.Length -gt 38) { $friendly.Substring(0, 35) + '...' } else { $friendly }
-            $availColor  = if ($available -le 0) { 'Red' } elseif ($available -le 5) { 'Yellow' } else { 'Green' }
+        $noSeatsCount = 0
+        foreach ($group in $gblGroups | Sort-Object Name) {
+            $display    = if ($group.Name.Length -gt 36) { $group.Name.Substring(0, 33) + '...' } else { $group.Name }
+            $available  = $group.AvailableSeats
+            $availColor = if ($available -le 0) { 'Red' } elseif ($available -le 5) { 'Yellow' } else { 'Green' }
+            $availText  = if ($available -le 0) { 'NO SEATS' } else { "$available" }
 
-            Write-Host -NoNewline ("   {0,-38} {1,7} " -f $nameDisplay, $consumed)
-            Write-Host ("{0,9}" -f $available) -ForegroundColor $availColor
+            Write-Host -NoNewline ("   {0,-36} {1,7} " -f $display, $group.ConsumedSeats)
+            Write-Host ("{0,11}" -f $availText) -ForegroundColor $availColor
+
+            if ($available -le 0) { $noSeatsCount++ }
         }
 
-        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+        Write-Host ("   " + "-" * 62) -ForegroundColor Gray
+        Write-Host ("   {0} GBL license group(s) will be created" -f $gblGroups.Count) -ForegroundColor White
 
-        # Build dynamic license groups from the active SKUs
-        $dynamicGroups = Build-LicenseGroups -ActiveSkus $allSkus
-
-        # Show what was detected
-        Write-Host ""
-        Write-Host "   LICENSE GROUPS TO CREATE" -ForegroundColor Yellow
-        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
-
-        $sharedCount = 0
-        foreach ($group in $dynamicGroups | Sort-Object Name) {
-            $display = if ($group.Name.Length -gt 42) { $group.Name.Substring(0, 39) + '...' } else { $group.Name }
-            Write-Host -NoNewline ("   {0,-44} " -f $display)
-            if ($group.IsSharedPlan) {
-                Write-Host "[SHARED PLAN]" -ForegroundColor Yellow
-                $sharedCount++
-            }
-            else {
-                Write-Host "OK" -ForegroundColor Green
-            }
-        }
-
-        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
-        Write-Host ("   {0} license group(s) detected" -f $dynamicGroups.Count) -ForegroundColor White
-
-        if ($sharedCount -gt 0) {
+        if ($noSeatsCount -gt 0) {
             Write-Host ""
-            Write-Host "   [SHARED PLAN] = identifying service plan exists in multiple SKUs." -ForegroundColor Yellow
-            Write-Host "   These groups may include users from more than one license type." -ForegroundColor Gray
+            Write-Host "   WARNING: $noSeatsCount license(s) have no available seats." -ForegroundColor Red
+            Write-Host "   HD will receive a warning if they try to assign these." -ForegroundColor Yellow
+            Write-Host "   Contact your sales team to purchase additional seats." -ForegroundColor Gray
         }
 
         Write-Host ""
-        return @{ DynamicLicenseGroups = $dynamicGroups }
+        return @{ DynamicLicenseGroups = $gblGroups }
     }
     catch {
         Write-Host "   Could not retrieve license data: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -441,6 +404,41 @@ function Add-IntuneHelpDeskOperatorRole {
 }
 
 # ============================================================================
+# LICENSE ATTACHMENT
+# ============================================================================
+
+function Set-GroupLicenseAssignment {
+    param(
+        [string]$GroupId,
+        [string]$SkuId
+    )
+
+    try {
+        # Check if license is already attached to avoid duplicate assignment
+        $existing = @(Get-MgGroupLicenseDetail -GroupId $GroupId -ErrorAction SilentlyContinue |
+                      Where-Object { $_.SkuId -eq $SkuId })
+
+        if ($existing.Count -gt 0) {
+            Write-Host "     License already attached to group" -ForegroundColor Gray
+            return $true
+        }
+
+        Set-MgGroupLicense -GroupId $GroupId `
+            -AddLicenses @(@{ SkuId = $SkuId }) `
+            -RemoveLicenses @() `
+            -ErrorAction Stop
+
+        Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "     Failed to attach license: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "     Attach manually: Entra admin centre > Groups > $GroupId > Licenses" -ForegroundColor Gray
+        return $false
+    }
+}
+
+# ============================================================================
 # GROUP CREATION
 # ============================================================================
 
@@ -455,6 +453,10 @@ function New-SecurityGroupItem {
 
         if ($existingGroup) {
             Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
+            # For license groups, still verify the license is attached in case it was missed
+            if ($GroupConfig.SkuId) {
+                $null = Set-GroupLicenseAssignment -GroupId $existingGroup.Id -SkuId $GroupConfig.SkuId
+            }
             return @{ Success = $true; Skipped = $true; Group = $existingGroup }
         }
 
@@ -482,8 +484,13 @@ function New-SecurityGroupItem {
 
         # Create the group
         $newGroup = New-MgGroup -BodyParameter $groupParams -ErrorAction Stop
-
         Write-Host "     Created (ID: $($newGroup.Id))" -ForegroundColor Green
+
+        # For license groups, attach the SKU to enable group-based licensing
+        if ($GroupConfig.SkuId) {
+            $null = Set-GroupLicenseAssignment -GroupId $newGroup.Id -SkuId $GroupConfig.SkuId
+        }
+
         return @{ Success = $true; Skipped = $false; Group = $newGroup }
     }
     catch {
@@ -607,18 +614,20 @@ function Start-SecurityGroupCreation {
 
     # Important notes
     Write-Host "  IMPORTANT:" -ForegroundColor Yellow
-    Write-Host "    - Dynamic groups take 5-10 minutes to populate members" -ForegroundColor Gray
-    Write-Host "    - BITS Admin Users, Helpdesk Operator Group will auto-populate when admins are created" -ForegroundColor Gray
+    Write-Host "    - Dynamic groups (BITS Admin, SSPR, Helpdesk) take 5-10 min to populate" -ForegroundColor Gray
     Write-Host "    - NoMFA Exclusion Group is MANUAL - Admin-Creation adds BG02 automatically" -ForegroundColor Gray
-    Write-Host "    - License groups populate automatically when licenses are assigned - no manual steps needed" -ForegroundColor Gray
-    Write-Host "    - If license groups stay empty, verify service plan GUIDs match your tenant (see script header)" -ForegroundColor Gray
+    Write-Host "    - License groups use Group-Based Licensing (GBL):" -ForegroundColor Gray
+    Write-Host "        Add user to group  ->  M365 assigns license automatically" -ForegroundColor Gray
+    Write-Host "        Remove from group  ->  M365 removes license automatically" -ForegroundColor Gray
+    Write-Host "    - Users can be in multiple license groups to receive multiple licenses" -ForegroundColor Gray
+    Write-Host "    - GBL processing can take up to 10 minutes after group membership changes" -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  Next Steps:" -ForegroundColor Yellow
     Write-Host "    1. Run Admin-Creation script (adds BG02 to NoMFA group automatically)" -ForegroundColor Gray
-    Write-Host "    2. Assign licenses to users via M365 admin centre or provisioning tool" -ForegroundColor Gray
-    Write-Host "    3. Wait 5-10 minutes - license groups will populate automatically" -ForegroundColor Gray
-    Write-Host "    4. Run Conditional Access Policies script" -ForegroundColor Gray
+    Write-Host "    2. Use the provisioning tool to create users and assign them to license groups" -ForegroundColor Gray
+    Write-Host "    3. Run Conditional Access Policies script" -ForegroundColor Gray
+    Write-Host "    4. Re-run this script after purchasing new licenses to add new GBL groups" -ForegroundColor Gray
     Write-Host ""
 
     # Show key group IDs
