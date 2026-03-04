@@ -365,8 +365,18 @@ function New-ConfigurationPolicyItem {
         return @{ Success = $true; Skipped = $false; Policy = $newPolicy }
     }
     catch {
-        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
-        return @{ Success = $false; Error = $_.Exception.Message }
+        $errorMessage = $_.Exception.Message
+        # Try to get more details from the response
+        if ($_.ErrorDetails.Message) {
+            try {
+                $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errorDetails.error.message) {
+                    $errorMessage = "$errorMessage - $($errorDetails.error.message)"
+                }
+            } catch { }
+        }
+        Write-Host "     Failed: $errorMessage" -ForegroundColor Red
+        return @{ Success = $false; Error = $errorMessage }
     }
 }
 
