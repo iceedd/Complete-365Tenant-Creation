@@ -432,26 +432,55 @@ function Set-GroupLicenseAssignment {
             removeLicenses = @()
         } | ConvertTo-Json -Depth 5 -Compress
 
-        $null = Invoke-MgGraphRequest -Method POST `
-            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense" `
-            -Body $bodyJson `
-            -ContentType "application/json" `
-            -ErrorAction Stop
+        # Try v1.0 endpoint first; fall back to beta if 404
+        # (assignLicense on groups has broader availability in beta for some tenant configs)
+        $endpoints = @(
+            "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense",
+            "https://graph.microsoft.com/beta/groups/$GroupId/assignLicense"
+        )
 
-        Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
-        return $true
+        $attached = $false
+        foreach ($uri in $endpoints) {
+            try {
+                $null = Invoke-MgGraphRequest -Method POST `
+                    -Uri $uri `
+                    -Body $bodyJson `
+                    -ContentType "application/json" `
+                    -ErrorAction Stop
+                $attached = $true
+                break
+            }
+            catch {
+                $innerMsg = $_.Exception.Message
+                if ($innerMsg -notlike "*NotFound*" -and $innerMsg -notlike "*404*") {
+                    throw  # Surface non-404 errors immediately
+                }
+                # 404 on this endpoint — try next
+            }
+        }
+
+        if ($attached) {
+            Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
+            return $true
+        }
+
+        # Both endpoints returned 404 — diagnose
+        $ctx = Get-MgContext
+        $hasScope = $ctx -and ($ctx.Scopes -contains 'LicenseAssignment.ReadWrite.All')
+        if (!$hasScope) {
+            Write-Host "     Scope LicenseAssignment.ReadWrite.All not in current token" -ForegroundColor Red
+            Write-Host "     Disconnect from Graph and reconnect — approve the permission prompt" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "     Scope is present but API returned 404. Possible causes:" -ForegroundColor Yellow
+            Write-Host "       - Developer/trial SKUs may not support GBL via API" -ForegroundColor Gray
+            Write-Host "       - Tenant GBL feature not yet activated" -ForegroundColor Gray
+        }
+        Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
+        return $false
     }
     catch {
-        $errMsg = $_.Exception.Message
-        Write-Host "     Failed to attach license: $errMsg" -ForegroundColor Yellow
-        if ($errMsg -like "*NotFound*" -or $errMsg -like "*404*") {
-            Write-Host "     Common causes for 404 on assignLicense:" -ForegroundColor Gray
-            Write-Host "       1. LicenseAssignment.ReadWrite.All consent not granted" -ForegroundColor Gray
-            Write-Host "          Fix: re-run script and approve the permission prompt" -ForegroundColor Gray
-            Write-Host "       2. Group-Based Licensing requires Azure AD Premium P1 or higher" -ForegroundColor Gray
-            Write-Host "          Included in: Business Premium, E3, E5 — NOT in Basic/Standard" -ForegroundColor Gray
-            Write-Host "       3. Existing group may be wrong type (must be plain security group)" -ForegroundColor Gray
-        }
+        Write-Host "     Failed to attach license: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
         return $false
     }
