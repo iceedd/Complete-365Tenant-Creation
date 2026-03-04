@@ -307,6 +307,86 @@ function Update-PolicyDynamicValues {
     return $policyJson | ConvertFrom-Json -AsHashtable
 }
 
+function New-EDRPolicy {
+    param(
+        [string]$PolicyName = "EDR Policy",
+        [hashtable]$GroupCache
+    )
+
+    try {
+        # Check if EDR policy already exists
+        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq '$PolicyName'" -Method GET
+        if ($existingPolicies.value.Count -gt 0) {
+            Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
+            return @{ Success = $true; Skipped = $true; Policy = $existingPolicies.value[0] }
+        }
+
+        # Check Defender connector status first
+        $connectorStatus = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors" -Method GET
+        $defenderConnector = $connectorStatus.value | Where-Object { $_.partnerState -eq "enabled" -or $_.partnerState -eq "available" }
+
+        if (!$defenderConnector) {
+            throw "Defender for Endpoint connector not enabled. Please enable it in Intune Admin Center first."
+        }
+
+        # Create EDR policy using Endpoint Security template with Auto from connector
+        # Template ID for EDR: 0385b795-0f2f-44ac-8602-9f65bf6adede_1
+        $edrPolicyBody = @{
+            name = $PolicyName
+            description = "Endpoint Detection and Response - Auto from connector"
+            platforms = "windows10"
+            technologies = "mdm,microsoftSense"
+            templateReference = @{
+                templateId = "0385b795-0f2f-44ac-8602-9f65bf6adede_1"
+            }
+            settings = @(
+                @{
+                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationSetting"
+                    settingInstance = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                        settingDefinitionId = "device_vendor_msft_windowsadvancedthreatprotection_configurationtype"
+                        settingInstanceTemplateReference = @{
+                            settingInstanceTemplateId = "23ab0ea3-1b12-429a-8ed0-7390cf699160"
+                        }
+                        choiceSettingValue = @{
+                            settingValueTemplateReference = @{
+                                settingValueTemplateId = "e5c7c98c-c854-4140-836e-bd22db59d651"
+                                useTemplateDefault = $false
+                            }
+                            value = "device_vendor_msft_windowsadvancedthreatprotection_configurationtype_autofromconnector"
+                            children = @()
+                        }
+                    }
+                }
+            )
+        }
+
+        $newPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method POST -Body ($edrPolicyBody | ConvertTo-Json -Depth 20)
+
+        # Assign to groups
+        if ($GroupCache -and $GroupCache.ContainsKey("Windows Devices (Autopilot)") -and $GroupCache["Windows Devices (Autopilot)"]) {
+            $assignmentBody = @{
+                assignments = @(
+                    @{
+                        target = @{
+                            "@odata.type" = "#microsoft.graph.groupAssignmentTarget"
+                            groupId = $GroupCache["Windows Devices (Autopilot)"]
+                        }
+                    }
+                )
+            }
+            $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
+        }
+
+        Write-Host "     Created (ID: $($newPolicy.id))" -ForegroundColor Green
+        return @{ Success = $true; Skipped = $false; Policy = $newPolicy }
+    }
+    catch {
+        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
 function New-ConfigurationPolicyItem {
     param(
         [hashtable]$PolicyDefinition,
@@ -318,6 +398,11 @@ function New-ConfigurationPolicyItem {
     $policyName = $PolicyDefinition.name
 
     try {
+        # Handle EDR Policy specially - it requires Endpoint Security API with auto-from-connector
+        if ($policyName -eq "EDR Policy" -or $PolicyDefinition.templateReference.templateFamily -eq "endpointSecurityEndpointDetectionAndResponse") {
+            return New-EDRPolicy -PolicyName $policyName -GroupCache $GroupCache
+        }
+
         # Check if policy exists
         $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET
         $existingPolicy = $existingPolicies.value | Where-Object { $_.name -eq $policyName }
