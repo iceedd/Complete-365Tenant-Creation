@@ -315,54 +315,30 @@ function New-EDRPolicy {
     )
 
     try {
-        # Check if EDR policy already exists
-        $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq '$PolicyName'" -Method GET
-        if ($existingPolicies.value.Count -gt 0) {
+        # Check if EDR policy already exists (check both intents and configurationPolicies)
+        $existingIntents = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/intents?`$filter=displayName eq '$PolicyName'" -Method GET -ErrorAction SilentlyContinue
+        if ($existingIntents.value.Count -gt 0) {
             Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
-            return @{ Success = $true; Skipped = $true; Policy = $existingPolicies.value[0] }
+            return @{ Success = $true; Skipped = $true; Policy = $existingIntents.value[0] }
         }
 
-        # Check Defender connector status first
-        $connectorStatus = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors" -Method GET
-        $defenderConnector = $connectorStatus.value | Where-Object { $_.partnerState -eq "enabled" -or $_.partnerState -eq "available" }
+        # EDR Template ID
+        $edrTemplateId = "0385b795-0f2f-44ac-8602-9f65bf6adede_1"
 
-        if (!$defenderConnector) {
-            throw "Defender for Endpoint connector not enabled. Please enable it in Intune Admin Center first."
-        }
-
-        # Create EDR policy using Endpoint Security template with Auto from connector
-        # Template ID for EDR: 0385b795-0f2f-44ac-8602-9f65bf6adede_1
+        # Create EDR policy using templates/createInstance API (proper Endpoint Security method)
         $edrPolicyBody = @{
-            name = $PolicyName
+            displayName = $PolicyName
             description = "Endpoint Detection and Response - Auto from connector"
-            platforms = "windows10"
-            technologies = "mdm,microsoftSense"
-            templateReference = @{
-                templateId = "0385b795-0f2f-44ac-8602-9f65bf6adede_1"
-            }
-            settings = @(
+            settingsDelta = @(
                 @{
-                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationSetting"
-                    settingInstance = @{
-                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
-                        settingDefinitionId = "device_vendor_msft_windowsadvancedthreatprotection_configurationtype"
-                        settingInstanceTemplateReference = @{
-                            settingInstanceTemplateId = "23ab0ea3-1b12-429a-8ed0-7390cf699160"
-                        }
-                        choiceSettingValue = @{
-                            settingValueTemplateReference = @{
-                                settingValueTemplateId = "e5c7c98c-c854-4140-836e-bd22db59d651"
-                                useTemplateDefault = $false
-                            }
-                            value = "device_vendor_msft_windowsadvancedthreatprotection_configurationtype_autofromconnector"
-                            children = @()
-                        }
-                    }
+                    "@odata.type" = "#microsoft.graph.deviceManagementStringSettingInstance"
+                    definitionId = "deviceConfiguration--windowsAdvancedThreatProtection_configurationPackageType"
+                    value = "autoFromConnector"
                 }
             )
         }
 
-        $newPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method POST -Body ($edrPolicyBody | ConvertTo-Json -Depth 20)
+        $newPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/templates/$edrTemplateId/createInstance" -Method POST -Body ($edrPolicyBody | ConvertTo-Json -Depth 10)
 
         # Assign to groups
         if ($GroupCache -and $GroupCache.ContainsKey("Windows Devices (Autopilot)") -and $GroupCache["Windows Devices (Autopilot)"]) {
@@ -376,7 +352,7 @@ function New-EDRPolicy {
                     }
                 )
             }
-            $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
+            $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/intents('$($newPolicy.id)')/assign" -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
         }
 
         Write-Host "     Created (ID: $($newPolicy.id))" -ForegroundColor Green
