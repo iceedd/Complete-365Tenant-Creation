@@ -25,6 +25,7 @@ $RequiredModules = @(
 
 $RequiredScopes = @(
     "DeviceManagementConfiguration.ReadWrite.All",
+    "DeviceManagementManagedDevices.ReadWrite.All",
     "Group.Read.All",
     "Directory.Read.All"
 )
