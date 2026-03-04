@@ -414,34 +414,45 @@ function Set-GroupLicenseAssignment {
     )
 
     try {
-        # Check if license is already attached (REST API — avoids SDK type issues)
+        # Check if license is already attached
         $licenseDetails = Invoke-MgGraphRequest -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
             -ErrorAction SilentlyContinue
-        $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
-
-        if ($existing.Count -gt 0) {
-            Write-Host "     License already attached to group" -ForegroundColor Gray
-            return $true
+        if ($licenseDetails -and $licenseDetails.value) {
+            $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
+            if ($existing.Count -gt 0) {
+                Write-Host "     License already attached to group" -ForegroundColor Gray
+                return $true
+            }
         }
 
-        # Attach the SKU via REST API (mirrors compliance policy fix — SDK Set-MgGroupLicense
-        # has known type conversion issues with GUID parameters in some module versions)
-        $body = @{
-            addLicenses    = @(@{ skuId = $SkuId })
+        # Pre-serialize body to avoid Invoke-MgGraphRequest hashtable serialization issues
+        $bodyJson = [ordered]@{
+            addLicenses    = @([ordered]@{ skuId = $SkuId })
             removeLicenses = @()
-        }
+        } | ConvertTo-Json -Depth 5 -Compress
+
         $null = Invoke-MgGraphRequest -Method POST `
             -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense" `
-            -Body $body `
+            -Body $bodyJson `
+            -ContentType "application/json" `
             -ErrorAction Stop
 
         Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Host "     Failed to attach license: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "     Attach manually: Entra admin centre > Groups > $GroupId > Licenses" -ForegroundColor Gray
+        $errMsg = $_.Exception.Message
+        Write-Host "     Failed to attach license: $errMsg" -ForegroundColor Yellow
+        if ($errMsg -like "*NotFound*" -or $errMsg -like "*404*") {
+            Write-Host "     Common causes for 404 on assignLicense:" -ForegroundColor Gray
+            Write-Host "       1. LicenseAssignment.ReadWrite.All consent not granted" -ForegroundColor Gray
+            Write-Host "          Fix: re-run script and approve the permission prompt" -ForegroundColor Gray
+            Write-Host "       2. Group-Based Licensing requires Azure AD Premium P1 or higher" -ForegroundColor Gray
+            Write-Host "          Included in: Business Premium, E3, E5 — NOT in Basic/Standard" -ForegroundColor Gray
+            Write-Host "       3. Existing group may be wrong type (must be plain security group)" -ForegroundColor Gray
+        }
+        Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
         return $false
     }
 }
@@ -494,8 +505,10 @@ function New-SecurityGroupItem {
         $newGroup = New-MgGroup -BodyParameter $groupParams -ErrorAction Stop
         Write-Host "     Created (ID: $($newGroup.Id))" -ForegroundColor Green
 
-        # For license groups, attach the SKU to enable group-based licensing
+        # For license groups, wait briefly for Azure AD replication before attaching SKU
         if ($GroupConfig.SkuId) {
+            Write-Host "     Waiting for group to provision..." -ForegroundColor Gray
+            Start-Sleep -Seconds 5
             $null = Set-GroupLicenseAssignment -GroupId $newGroup.Id -SkuId $GroupConfig.SkuId
         }
 
