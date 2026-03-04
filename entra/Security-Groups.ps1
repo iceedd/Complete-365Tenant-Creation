@@ -18,7 +18,8 @@
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Groups'
+    'Microsoft.Graph.Groups',
+    'Microsoft.Graph.Identity.DirectoryManagement'
 )
 
 $RequiredScopes = @(
@@ -26,6 +27,38 @@ $RequiredScopes = @(
     "Directory.Read.All",
     "DeviceManagementRBAC.ReadWrite.All"
 )
+
+# Friendly display names for common Microsoft 365 SKU part numbers
+$SkuFriendlyNames = @{
+    'O365_BUSINESS_ESSENTIALS'        = 'Microsoft 365 Business Basic'
+    'SMB_BUSINESS_ESSENTIALS'         = 'Microsoft 365 Business Basic'
+    'O365_BUSINESS_PREMIUM'           = 'Microsoft 365 Business Standard'
+    'SMB_BUSINESS_PREMIUM'            = 'Microsoft 365 Business Standard'
+    'SPE'                             = 'Microsoft 365 Business Premium'
+    'SPB'                             = 'Microsoft 365 Business Premium'
+    'EXCHANGESTANDARD'                = 'Exchange Online Plan 1'
+    'EXCHANGEENTERPRISE'              = 'Exchange Online Plan 2'
+    'VISIOONLINE'                     = 'Visio Plan 1'
+    'VISIO_PLAN2_DEP'                 = 'Visio Plan 2'
+    'MCOEV'                           = 'Teams Phone Standard'
+    'DYN365_BUSCENTRAL_ESSENTIAL'     = 'Dynamics 365 Business Central Ess.'
+    'DYN365_BUSCENTRAL_PREMIUM'       = 'Dynamics 365 Business Central Prem.'
+    'Microsoft_365_Apps_for_Business' = 'Microsoft 365 Apps for Business'
+    'TEAMS_ESSENTIALS'                = 'Microsoft Teams Essentials'
+    'POWER_BI_PRO'                    = 'Power BI Pro'
+    'PROJECTPREMIUM'                  = 'Project Plan 5'
+    'PROJECTPROFESSIONAL'             = 'Project Plan 3'
+}
+
+# Maps each license group name to the service plan that identifies it.
+# Used at runtime to verify which groups apply to this tenant's licenses.
+$LicenseGroupPlans = @{
+    'License - Business Basic'         = 'TEAMS1'
+    'License - Business Standard'      = 'OFFICESUBSCRIPTION'
+    'License - Business Premium'       = 'INTUNE_A'
+    'License - Exchange Online Plan 1' = 'EXCHANGE_S_STANDARD'
+    'License - Exchange Online Plan 2' = 'EXCHANGE_S_ENTERPRISE'
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LICENSE GROUP APPROACH
@@ -213,10 +246,100 @@ function Test-Prerequisites {
         Write-Host "   No existing groups found" -ForegroundColor Green
     }
 
+    # Discover tenant licenses and verify which license groups apply
+    Write-Host ""
+    Write-Host "   STEP 1b: License Discovery" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    $licenseResult = Show-TenantLicenses
+
     Write-Host ""
     return @{
-        Success = $true
-        ExistingGroups = $existingGroups
+        Success           = $true
+        ExistingGroups    = $existingGroups
+        UnavailableGroups = $licenseResult.UnavailableGroups
+    }
+}
+
+# ============================================================================
+# LICENSE DISCOVERY
+# ============================================================================
+
+function Show-TenantLicenses {
+    Write-Host "   Fetching tenant licenses..." -ForegroundColor Gray
+
+    try {
+        $allSkus = @(
+            Get-MgSubscribedSku -All -ErrorAction Stop |
+            Where-Object { $_.CapabilityStatus -eq 'Enabled' -and $_.PrepaidUnits.Enabled -gt 0 } |
+            Sort-Object SkuPartNumber
+        )
+
+        if ($allSkus.Count -eq 0) {
+            Write-Host "   No active licenses found in tenant" -ForegroundColor Yellow
+            return @{ UnavailableGroups = @($LicenseGroupPlans.Keys) }
+        }
+
+        # Display license table
+        Write-Host ""
+        Write-Host "   ACTIVE LICENSES IN TENANT" -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+        Write-Host ("   {0,-38} {1,7} {2,9}" -f "License", "In Use", "Available") -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+
+        foreach ($sku in $allSkus) {
+            $friendly    = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
+                               $SkuFriendlyNames[$sku.SkuPartNumber]
+                           } else {
+                               $sku.SkuPartNumber
+                           }
+            $consumed    = $sku.ConsumedUnits
+            $available   = $sku.PrepaidUnits.Enabled - $consumed
+            $nameDisplay = if ($friendly.Length -gt 38) { $friendly.Substring(0, 35) + '...' } else { $friendly }
+            $availColor  = if ($available -le 0) { 'Red' } elseif ($available -le 5) { 'Yellow' } else { 'Green' }
+
+            Write-Host -NoNewline ("   {0,-38} {1,7} " -f $nameDisplay, $consumed)
+            Write-Host ("{0,9}" -f $available) -ForegroundColor $availColor
+        }
+
+        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+
+        # Build flat map of every service plan name present across all active SKUs
+        $tenantPlans = @{}
+        foreach ($sku in $allSkus) {
+            foreach ($plan in $sku.ServicePlans) {
+                $tenantPlans[$plan.ServicePlanName] = $plan.ServicePlanId
+            }
+        }
+
+        # Verify which license groups are relevant for this tenant
+        Write-Host ""
+        Write-Host "   LICENSE GROUP VERIFICATION" -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+
+        $unavailableGroups = @()
+        foreach ($entry in $LicenseGroupPlans.GetEnumerator() | Sort-Object Key) {
+            $planName  = $entry.Value
+            $groupName = $entry.Key
+            $display   = if ($groupName.Length -gt 42) { $groupName.Substring(0, 39) + '...' } else { $groupName }
+
+            if ($tenantPlans.ContainsKey($planName)) {
+                Write-Host -NoNewline ("   {0,-44} " -f $display)
+                Write-Host "ACTIVE" -ForegroundColor Green
+            }
+            else {
+                Write-Host -NoNewline ("   {0,-44} " -f $display)
+                Write-Host "NOT IN TENANT  (will be skipped)" -ForegroundColor Yellow
+                $unavailableGroups += $groupName
+            }
+        }
+
+        Write-Host ""
+        return @{ UnavailableGroups = $unavailableGroups }
+    }
+    catch {
+        Write-Host "   Could not retrieve license data: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "   License verification skipped — all groups will be attempted" -ForegroundColor Gray
+        return @{ UnavailableGroups = @() }
     }
 }
 
@@ -399,10 +522,13 @@ function Start-SecurityGroupCreation {
         return
     }
 
+    # Filter out license groups whose license is not purchased in this tenant
+    $groupsToCreate = @($SecurityGroups | Where-Object { $_.Name -notin $prereqResult.UnavailableGroups })
+
     # Step 2: Preview
     Write-Host ""
     Write-Host "  STEP 2: Preview" -ForegroundColor Yellow
-    Show-GroupPreview -Groups $SecurityGroups -ExistingGroups $prereqResult.ExistingGroups
+    Show-GroupPreview -Groups $groupsToCreate -ExistingGroups $prereqResult.ExistingGroups
 
     # Confirmation
     Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
@@ -429,7 +555,7 @@ function Start-SecurityGroupCreation {
         Failed = @()
     }
 
-    foreach ($group in $SecurityGroups) {
+    foreach ($group in $groupsToCreate) {
         Write-Host "   $($group.Name)..." -ForegroundColor White
 
         $result = New-SecurityGroupItem -GroupConfig $group
@@ -463,6 +589,7 @@ function Start-SecurityGroupCreation {
 
     Write-Host "  Created: $($results.Created.Count)" -ForegroundColor Green
     Write-Host "  Skipped (existing): $($results.Skipped.Count)" -ForegroundColor Yellow
+    Write-Host "  Skipped (not in tenant): $($prereqResult.UnavailableGroups.Count)" -ForegroundColor Gray
     Write-Host "  Failed: $($results.Failed.Count)" -ForegroundColor $(if ($results.Failed.Count -gt 0) { "Red" } else { "Green" })
     Write-Host ""
 
