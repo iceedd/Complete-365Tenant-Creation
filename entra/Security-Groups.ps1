@@ -27,6 +27,28 @@ $RequiredScopes = @(
     "DeviceManagementRBAC.ReadWrite.All"
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LICENSE GROUP APPROACH
+# ─────────────────────────────────────────────────────────────────────────────
+# License groups use 'assignedPlans' dynamic rules. They populate automatically
+# when a license is assigned to a user — no manual attribute setting needed.
+#
+# Each tier is identified by a service plan GUID that is UNIQUE to that tier:
+#
+#   INTUNE_A           c1ec4a95-1f05-45b3-a911-aa3fa01094f5  (Premium only)
+#   OFFICESUBSCRIPTION 43de0ff5-c92c-492b-9116-175376d08c38  (Standard + Premium)
+#   TEAMS1             57ff2da0-773e-42df-b2af-ffb7a2317929  (Basic + Std + Premium)
+#   EXCHANGE_S_STANDARD  efb87545-963c-4e0d-99df-69c6916d9eb0  (EXO Plan 1)
+#   EXCHANGE_S_ENTERPRISE a413a9ff-720c-4822-98ef-2f37c2a21f4c (EXO Plan 2)
+#
+# To verify these GUIDs against your tenant's actual SKUs, run:
+#   $plans = @('INTUNE_A','OFFICESUBSCRIPTION','TEAMS1','EXCHANGE_S_STANDARD','EXCHANGE_S_ENTERPRISE')
+#   Get-MgSubscribedSku | ForEach-Object { $s = $_
+#       $_.ServicePlans | Where-Object { $_.ServicePlanName -in $plans } |
+#       Select-Object @{N='SKU';E={$s.SkuPartNumber}}, ServicePlanName, ServicePlanId
+#   }
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Security group definitions
 $SecurityGroups = @(
     @{
@@ -50,38 +72,43 @@ $SecurityGroups = @(
         MembershipType = "Dynamic"
     },
     @{
-        Name = "License - Business Basic"
-        Description = "Enabled users with Business Basic licensing assignment"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.extensionAttribute1 -eq "BusinessBasic")'
-        GroupType = "DynamicMembership"
+        Name           = "License - Business Basic"
+        Description    = "M365 Business Basic users — has Teams but no desktop Office apps or Intune"
+        # Identified by: has Teams (TEAMS1) AND no desktop Office AND no Intune
+        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "57ff2da0-773e-42df-b2af-ffb7a2317929" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "43de0ff5-c92c-492b-9116-175376d08c38" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
+        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
-        Name = "License - Business Standard"
-        Description = "Enabled users with Business Standard licensing assignment"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.extensionAttribute1 -eq "BusinessStandard")'
-        GroupType = "DynamicMembership"
+        Name           = "License - Business Standard"
+        Description    = "M365 Business Standard users — has desktop Office apps but not Intune"
+        # Identified by: has OFFICESUBSCRIPTION (desktop apps) AND no Intune
+        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "43de0ff5-c92c-492b-9116-175376d08c38" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
+        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
-        Name = "License - Business Premium"
-        Description = "Enabled users with Business Premium licensing assignment"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.extensionAttribute1 -eq "BusinessPremium")'
-        GroupType = "DynamicMembership"
+        Name           = "License - Business Premium"
+        Description    = "M365 Business Premium users — identified by Intune service plan (unique to Premium)"
+        # Identified by: has INTUNE_A (only present in Business Premium, not Basic or Standard)
+        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
+        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
-        Name = "License - Exchange Online Plan 1"
-        Description = "Enabled users with Exchange Online Plan 1 licensing assignment"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.extensionAttribute1 -eq "ExchangeOnline1")'
-        GroupType = "DynamicMembership"
+        Name           = "License - Exchange Online Plan 1"
+        Description    = "Standalone Exchange Online Plan 1 users — mailbox only, no Teams from this license"
+        # Identified by: has EXCHANGE_S_STANDARD AND no Teams (Teams would indicate a Business SKU)
+        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "efb87545-963c-4e0d-99df-69c6916d9eb0" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "57ff2da0-773e-42df-b2af-ffb7a2317929" -and assignedPlan.capabilityStatus -eq "Enabled"))'
+        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
-        Name = "License - Exchange Online Plan 2"
-        Description = "Enabled users with Exchange Online Plan 2 licensing assignment"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.extensionAttribute1 -eq "ExchangeOnline2")'
-        GroupType = "DynamicMembership"
+        Name           = "License - Exchange Online Plan 2"
+        Description    = "Exchange Online Plan 2 users — 100GB mailbox. Covers standalone and Business Premium + EXO2 addon"
+        # Identified by: has EXCHANGE_S_ENTERPRISE (the 100GB plan, only in EXO Plan 2 SKU)
+        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "a413a9ff-720c-4822-98ef-2f37c2a21f4c" -and assignedPlan.capabilityStatus -eq "Enabled"))'
+        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
@@ -461,13 +488,15 @@ function Start-SecurityGroupCreation {
     Write-Host "    - Dynamic groups take 5-10 minutes to populate members" -ForegroundColor Gray
     Write-Host "    - BITS Admin Users, Helpdesk Operator Group will auto-populate when admins are created" -ForegroundColor Gray
     Write-Host "    - NoMFA Exclusion Group is MANUAL - Admin-Creation adds BG02 automatically" -ForegroundColor Gray
-    Write-Host "    - Set extensionAttribute1 on users for license groups" -ForegroundColor Gray
+    Write-Host "    - License groups populate automatically when licenses are assigned - no manual steps needed" -ForegroundColor Gray
+    Write-Host "    - If license groups stay empty, verify service plan GUIDs match your tenant (see script header)" -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  Next Steps:" -ForegroundColor Yellow
     Write-Host "    1. Run Admin-Creation script (adds BG02 to NoMFA group automatically)" -ForegroundColor Gray
-    Write-Host "    2. Run Conditional Access Policies script" -ForegroundColor Gray
-    Write-Host "    3. Configure user extensionAttribute1 for license assignment" -ForegroundColor Gray
+    Write-Host "    2. Assign licenses to users via M365 admin centre or provisioning tool" -ForegroundColor Gray
+    Write-Host "    3. Wait 5-10 minutes - license groups will populate automatically" -ForegroundColor Gray
+    Write-Host "    4. Run Conditional Access Policies script" -ForegroundColor Gray
     Write-Host ""
 
     # Show key group IDs
