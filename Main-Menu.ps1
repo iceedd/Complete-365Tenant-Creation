@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.4
+    1.5
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.4"
+$Script:MenuVersion = "1.5"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1764,17 +1764,23 @@ function Show-EntraMenu {
                             break
                         }
                     }
+                    # Write to a temp file and run in a separate pwsh process.
+                    # This avoids scope/function collisions and module-removal side-effects
+                    # in the parent menu session. MSAL token cache means Graph re-connects
+                    # silently (same user, same machine, token still valid).
+                    $tempScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.ps1'
                     try {
-                        $Global:ProvisioningToolLaunchedFromMenu = $true
-                        $scriptBlock = [ScriptBlock]::Create($Global:ScriptCache[$provKey])
-                        & $scriptBlock
+                        $Global:ScriptCache[$provKey] | Set-Content -Path $tempScript -Encoding UTF8
+                        Write-Host "🚀 Launching User Provisioning Tool..." -ForegroundColor Cyan
+                        Write-Host "   (The tool will open in a new window — return here when done)" -ForegroundColor Gray
+                        Start-Process pwsh -ArgumentList "-NoProfile -File `"$tempScript`"" -Wait
                     }
                     catch {
                         Write-Host "❌ Provisioning tool error: $($_.Exception.Message)" -ForegroundColor Red
                         Start-Sleep 3
                     }
                     finally {
-                        $Global:ProvisioningToolLaunchedFromMenu = $false
+                        Remove-Item $tempScript -ErrorAction SilentlyContinue
                     }
                 } else {
                     Write-Host "❌ Create Security Groups first!" -ForegroundColor Red
