@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.5
+    1.6
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.5"
+$Script:MenuVersion = "1.6"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1773,7 +1773,11 @@ function Show-EntraMenu {
                         $Global:ScriptCache[$provKey] | Set-Content -Path $tempScript -Encoding UTF8
                         Write-Host "🚀 Launching User Provisioning Tool..." -ForegroundColor Cyan
                         Write-Host "   (The tool will open in a new window — return here when done)" -ForegroundColor Gray
-                        Start-Process pwsh -ArgumentList "-NoProfile -File `"$tempScript`"" -Wait
+                        # Pass TenantId so the tool can silently re-connect via MSAL cached token
+                        $tenantId = (Get-MgContext).TenantId
+                        $psArgs   = "-NoProfile -File `"$tempScript`""
+                        if ($tenantId) { $psArgs += " -TenantId `"$tenantId`"" }
+                        Start-Process pwsh -ArgumentList $psArgs -Wait
                     }
                     catch {
                         Write-Host "❌ Provisioning tool error: $($_.Exception.Message)" -ForegroundColor Red
