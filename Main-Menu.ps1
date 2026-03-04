@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.3
+    1.4
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.3"
+$Script:MenuVersion = "1.4"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1765,12 +1765,16 @@ function Show-EntraMenu {
                         }
                     }
                     try {
+                        $Global:ProvisioningToolLaunchedFromMenu = $true
                         $scriptBlock = [ScriptBlock]::Create($Global:ScriptCache[$provKey])
                         & $scriptBlock
                     }
                     catch {
                         Write-Host "❌ Provisioning tool error: $($_.Exception.Message)" -ForegroundColor Red
                         Start-Sleep 3
+                    }
+                    finally {
+                        $Global:ProvisioningToolLaunchedFromMenu = $false
                     }
                 } else {
                     Write-Host "❌ Create Security Groups first!" -ForegroundColor Red
