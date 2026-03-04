@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.1
+    1.2
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.1"
+$Script:MenuVersion = "1.2"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1748,11 +1748,30 @@ function Show-EntraMenu {
                     Start-Sleep 2
                 }
             }
-            "4" { 
+            "4" {
                 if (Test-Prerequisites -RequiredStep "UserCreation") {
-                    Invoke-GitHubScript -ScriptPath "entra/User-Creation.ps1"
-                    Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
-                    Initialize-CompletedSteps
+                    $provKey = "external:M365-UserProvisioning-Enterprise"
+                    if (!$Global:ScriptCache.ContainsKey($provKey)) {
+                        Write-Host "📥 Downloading User Provisioning Tool..." -ForegroundColor Yellow
+                        try {
+                            $provUrl = "https://raw.githubusercontent.com/iceedd/M365-UserProvisioning-Tool/main/M365-UserProvisioning-Enterprise.ps1"
+                            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                            $Global:ScriptCache[$provKey] = Invoke-RestMethod -Uri $provUrl -TimeoutSec 30 -ErrorAction Stop
+                        }
+                        catch {
+                            Write-Host "❌ Failed to download provisioning tool: $($_.Exception.Message)" -ForegroundColor Red
+                            Start-Sleep 3
+                            break
+                        }
+                    }
+                    try {
+                        $scriptBlock = [ScriptBlock]::Create($Global:ScriptCache[$provKey])
+                        & $scriptBlock
+                    }
+                    catch {
+                        Write-Host "❌ Provisioning tool error: $($_.Exception.Message)" -ForegroundColor Red
+                        Start-Sleep 3
+                    }
                 } else {
                     Write-Host "❌ Create Security Groups first!" -ForegroundColor Red
                     Start-Sleep 2
