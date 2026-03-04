@@ -308,51 +308,6 @@ function Update-PolicyDynamicValues {
     return $policyJson | ConvertFrom-Json -AsHashtable
 }
 
-function New-EDRPolicy {
-    param(
-        [string]$PolicyName = "EDR Policy",
-        [hashtable]$GroupCache
-    )
-
-    try {
-        # Check if ANY EDR policy already exists in configurationPolicies
-        # (EDR policies use templateFamily = endpointSecurityEndpointDetectionAndResponse)
-        $allPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET
-        $existingEdr = $allPolicies.value | Where-Object {
-            $_.templateReference.templateFamily -eq "endpointSecurityEndpointDetectionAndResponse"
-        }
-
-        if ($existingEdr) {
-            Write-Host "     EDR policy already exists: '$($existingEdr[0].name)' (skipped)" -ForegroundColor Yellow
-            return @{ Success = $true; Skipped = $true; Policy = $existingEdr[0] }
-        }
-
-        # Also check intents for older-style EDR policies
-        $intents = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/intents" -Method GET -ErrorAction SilentlyContinue
-        $edrIntent = $intents.value | Where-Object {
-            $_.templateId -like "*0385b795*" -or
-            $_.displayName -like "*EDR*" -or
-            $_.displayName -like "*Onboarding*" -or
-            $_.displayName -like "*Endpoint detection*"
-        }
-
-        if ($edrIntent) {
-            Write-Host "     EDR policy already exists: '$($edrIntent[0].displayName)' (skipped)" -ForegroundColor Yellow
-            return @{ Success = $true; Skipped = $true; Policy = $edrIntent[0] }
-        }
-
-        # No existing EDR policy - provide instructions since API creation is unreliable
-        Write-Host "     No existing EDR policy found" -ForegroundColor Yellow
-        Write-Host "     Create manually: Endpoint Security > Endpoint detection and response" -ForegroundColor Gray
-        Write-Host "     Use 'Auto from connector' configuration type" -ForegroundColor Gray
-        return @{ Success = $true; Skipped = $true; ManualRequired = $true }
-    }
-    catch {
-        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
-        return @{ Success = $false; Error = $_.Exception.Message }
-    }
-}
-
 function New-ConfigurationPolicyItem {
     param(
         [hashtable]$PolicyDefinition,
@@ -364,11 +319,6 @@ function New-ConfigurationPolicyItem {
     $policyName = $PolicyDefinition.name
 
     try {
-        # Handle EDR Policy specially - it requires Endpoint Security API with auto-from-connector
-        if ($policyName -eq "EDR Policy" -or $PolicyDefinition.templateReference.templateFamily -eq "endpointSecurityEndpointDetectionAndResponse") {
-            return New-EDRPolicy -PolicyName $policyName -GroupCache $GroupCache
-        }
-
         # Check if policy exists
         $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method GET
         $existingPolicy = $existingPolicies.value | Where-Object { $_.name -eq $policyName }
