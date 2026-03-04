@@ -9,11 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.0
+    1.1
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Script version — compared against GitHub on startup for self-update
+$Script:MenuVersion = "1.1"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -2221,7 +2224,50 @@ function Show-DebugStatusOverride {
 }
 
 # Main execution loop
+function Invoke-SelfUpdate {
+    if (!$PSCommandPath) { return }  # Running dot-sourced or interactively — skip
+
+    try {
+        Write-Host "   Checking for menu updates..." -ForegroundColor Gray
+        $url     = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Main-Menu.ps1"
+        $content = Invoke-RestMethod -Uri $url -TimeoutSec 10 -ErrorAction Stop
+
+        $match = [regex]::Match($content, '\.VERSION\s+(\S+)')
+        if (!$match.Success) { return }
+
+        $remoteVersion = [version]$match.Groups[1].Value
+        $localVersion  = [version]$Script:MenuVersion
+
+        if ($remoteVersion -le $localVersion) {
+            Write-Host "   Menu is up to date (v$localVersion)" -ForegroundColor Green
+            return
+        }
+
+        Write-Host ""
+        Write-Host "   UPDATE AVAILABLE  v$localVersion  ->  v$remoteVersion" -ForegroundColor Yellow
+        Write-Host "   A newer Main-Menu.ps1 is available on GitHub." -ForegroundColor White
+        Write-Host ""
+        $answer = Read-Host "   Update and restart now? (Y/N)"
+
+        if ($answer -notlike "Y*") {
+            Write-Host "   Skipping — you will be prompted again next run" -ForegroundColor Gray
+            return
+        }
+
+        $content | Set-Content -Path $PSCommandPath -Encoding UTF8 -Force
+        Write-Host "   Updated to v$remoteVersion. Please re-run the script." -ForegroundColor Green
+        Write-Host ""
+        Write-Host "   Press any key to exit..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        exit
+    }
+    catch {
+        Write-Host "   Could not check for updates (no network?)" -ForegroundColor Gray
+    }
+}
+
 function Start-AutomationHub {
+    Invoke-SelfUpdate
     Initialize-Modules
     Initialize-SharedHelpers
 
