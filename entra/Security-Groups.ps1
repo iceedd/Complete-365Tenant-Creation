@@ -50,39 +50,17 @@ $SkuFriendlyNames = @{
     'PROJECTPROFESSIONAL'             = 'Project Plan 3'
 }
 
-# Maps each license group name to the service plan that identifies it.
-# Used at runtime to verify which groups apply to this tenant's licenses.
-$LicenseGroupPlans = @{
-    'License - Business Basic'         = 'TEAMS1'
-    'License - Business Standard'      = 'OFFICESUBSCRIPTION'
-    'License - Business Premium'       = 'INTUNE_A'
-    'License - Exchange Online Plan 1' = 'EXCHANGE_S_STANDARD'
-    'License - Exchange Online Plan 2' = 'EXCHANGE_S_ENTERPRISE'
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# LICENSE GROUP APPROACH
+# LICENSE GROUPS — FULLY DYNAMIC
 # ─────────────────────────────────────────────────────────────────────────────
-# License groups use 'assignedPlans' dynamic rules. They populate automatically
-# when a license is assigned to a user — no manual attribute setting needed.
-#
-# Each tier is identified by a service plan GUID that is UNIQUE to that tier:
-#
-#   INTUNE_A           c1ec4a95-1f05-45b3-a911-aa3fa01094f5  (Premium only)
-#   OFFICESUBSCRIPTION 43de0ff5-c92c-492b-9116-175376d08c38  (Standard + Premium)
-#   TEAMS1             57ff2da0-773e-42df-b2af-ffb7a2317929  (Basic + Std + Premium)
-#   EXCHANGE_S_STANDARD  efb87545-963c-4e0d-99df-69c6916d9eb0  (EXO Plan 1)
-#   EXCHANGE_S_ENTERPRISE a413a9ff-720c-4822-98ef-2f37c2a21f4c (EXO Plan 2)
-#
-# To verify these GUIDs against your tenant's actual SKUs, run:
-#   $plans = @('INTUNE_A','OFFICESUBSCRIPTION','TEAMS1','EXCHANGE_S_STANDARD','EXCHANGE_S_ENTERPRISE')
-#   Get-MgSubscribedSku | ForEach-Object { $s = $_
-#       $_.ServicePlans | Where-Object { $_.ServicePlanName -in $plans } |
-#       Select-Object @{N='SKU';E={$s.SkuPartNumber}}, ServicePlanName, ServicePlanId
-#   }
+# License groups are generated at runtime from the tenant's active SKUs.
+# One "License - <Name>" group is created per purchased license automatically.
+# No hardcoded GUIDs needed — the script discovers the best identifying
+# service plan for each SKU using a frequency algorithm (least-shared plan wins).
+# Re-running the script after a new license purchase will create the new group.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Security group definitions
+# Static security group definitions (non-license groups only)
 $SecurityGroups = @(
     @{
         Name = "NoMFA Exclusion Group"
@@ -102,46 +80,6 @@ $SecurityGroups = @(
         Description = "All enabled users eligible for Self-Service Password Reset (excludes BITS admins and disabled accounts)"
         MembershipRule = '(user.accountEnabled -eq true) and (user.userType -eq "Member") and not ((user.userPrincipalName -contains "BITS-Admin") or (user.displayName -contains "BITS-Admin"))'
         GroupType = "DynamicMembership"
-        MembershipType = "Dynamic"
-    },
-    @{
-        Name           = "License - Business Basic"
-        Description    = "M365 Business Basic users — has Teams but no desktop Office apps or Intune"
-        # Identified by: has Teams (TEAMS1) AND no desktop Office AND no Intune
-        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "57ff2da0-773e-42df-b2af-ffb7a2317929" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "43de0ff5-c92c-492b-9116-175376d08c38" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
-        GroupType      = "DynamicMembership"
-        MembershipType = "Dynamic"
-    },
-    @{
-        Name           = "License - Business Standard"
-        Description    = "M365 Business Standard users — has desktop Office apps but not Intune"
-        # Identified by: has OFFICESUBSCRIPTION (desktop apps) AND no Intune
-        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "43de0ff5-c92c-492b-9116-175376d08c38" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
-        GroupType      = "DynamicMembership"
-        MembershipType = "Dynamic"
-    },
-    @{
-        Name           = "License - Business Premium"
-        Description    = "M365 Business Premium users — identified by Intune service plan (unique to Premium)"
-        # Identified by: has INTUNE_A (only present in Business Premium, not Basic or Standard)
-        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "c1ec4a95-1f05-45b3-a911-aa3fa01094f5" -and assignedPlan.capabilityStatus -eq "Enabled"))'
-        GroupType      = "DynamicMembership"
-        MembershipType = "Dynamic"
-    },
-    @{
-        Name           = "License - Exchange Online Plan 1"
-        Description    = "Standalone Exchange Online Plan 1 users — mailbox only, no Teams from this license"
-        # Identified by: has EXCHANGE_S_STANDARD AND no Teams (Teams would indicate a Business SKU)
-        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "efb87545-963c-4e0d-99df-69c6916d9eb0" -and assignedPlan.capabilityStatus -eq "Enabled")) and -not (user.assignedPlans -any (assignedPlan.servicePlanId -eq "57ff2da0-773e-42df-b2af-ffb7a2317929" -and assignedPlan.capabilityStatus -eq "Enabled"))'
-        GroupType      = "DynamicMembership"
-        MembershipType = "Dynamic"
-    },
-    @{
-        Name           = "License - Exchange Online Plan 2"
-        Description    = "Exchange Online Plan 2 users — 100GB mailbox. Covers standalone and Business Premium + EXO2 addon"
-        # Identified by: has EXCHANGE_S_ENTERPRISE (the 100GB plan, only in EXO Plan 2 SKU)
-        MembershipRule = '(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq "a413a9ff-720c-4822-98ef-2f37c2a21f4c" -and assignedPlan.capabilityStatus -eq "Enabled"))'
-        GroupType      = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
@@ -254,15 +192,72 @@ function Test-Prerequisites {
 
     Write-Host ""
     return @{
-        Success           = $true
-        ExistingGroups    = $existingGroups
-        UnavailableGroups = $licenseResult.UnavailableGroups
+        Success              = $true
+        ExistingGroups       = $existingGroups
+        DynamicLicenseGroups = $licenseResult.DynamicLicenseGroups
     }
 }
 
 # ============================================================================
 # LICENSE DISCOVERY
 # ============================================================================
+
+function Build-LicenseGroups {
+    <#
+    .SYNOPSIS
+        Dynamically generates license group definitions from the tenant's active SKUs.
+        Picks the least-shared service plan per SKU as the membership rule identifier.
+    #>
+    param([array]$ActiveSkus)
+
+    # Build a frequency map: how many SKUs each service plan appears in
+    $planFrequency = @{}
+    foreach ($sku in $ActiveSkus) {
+        foreach ($plan in $sku.ServicePlans) {
+            if ($planFrequency.ContainsKey($plan.ServicePlanId)) {
+                $planFrequency[$plan.ServicePlanId]++
+            }
+            else {
+                $planFrequency[$plan.ServicePlanId] = 1
+            }
+        }
+    }
+
+    $licenseGroups = [System.Collections.Generic.List[hashtable]]::new()
+
+    foreach ($sku in $ActiveSkus) {
+        if ($sku.ServicePlans.Count -eq 0) { continue }
+
+        # Pick the service plan that appears in the fewest SKUs (most unique identifier)
+        $bestPlan = $sku.ServicePlans |
+            Sort-Object { $planFrequency[$_.ServicePlanId] }, ServicePlanName |
+            Select-Object -First 1
+
+        if ($null -eq $bestPlan) { continue }
+
+        $friendlyName = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
+            $SkuFriendlyNames[$sku.SkuPartNumber]
+        }
+        else {
+            $sku.SkuPartNumber
+        }
+
+        $isShared   = $planFrequency[$bestPlan.ServicePlanId] -gt 1
+        $sharedNote = if ($isShared) { " [plan shared — group may overlap with another license]" } else { '' }
+
+        $licenseGroups.Add(@{
+            Name           = "License - $friendlyName"
+            Description    = "Users with $friendlyName — identified by service plan $($bestPlan.ServicePlanName)$sharedNote"
+            MembershipRule = "(user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -eq `"$($bestPlan.ServicePlanId)`" -and assignedPlan.capabilityStatus -eq `"Enabled`"))"
+            GroupType      = "DynamicMembership"
+            MembershipType = "Dynamic"
+            IsSharedPlan   = $isShared
+            SkuPartNumber  = $sku.SkuPartNumber
+        })
+    }
+
+    return $licenseGroups.ToArray()
+}
 
 function Show-TenantLicenses {
     Write-Host "   Fetching tenant licenses..." -ForegroundColor Gray
@@ -276,7 +271,7 @@ function Show-TenantLicenses {
 
         if ($allSkus.Count -eq 0) {
             Write-Host "   No active licenses found in tenant" -ForegroundColor Yellow
-            return @{ UnavailableGroups = @($LicenseGroupPlans.Keys) }
+            return @{ DynamicLicenseGroups = @() }
         }
 
         # Display license table
@@ -289,7 +284,8 @@ function Show-TenantLicenses {
         foreach ($sku in $allSkus) {
             $friendly    = if ($SkuFriendlyNames.ContainsKey($sku.SkuPartNumber)) {
                                $SkuFriendlyNames[$sku.SkuPartNumber]
-                           } else {
+                           }
+                           else {
                                $sku.SkuPartNumber
                            }
             $consumed    = $sku.ConsumedUnits
@@ -303,43 +299,43 @@ function Show-TenantLicenses {
 
         Write-Host ("   " + "-" * 58) -ForegroundColor Gray
 
-        # Build flat map of every service plan name present across all active SKUs
-        $tenantPlans = @{}
-        foreach ($sku in $allSkus) {
-            foreach ($plan in $sku.ServicePlans) {
-                $tenantPlans[$plan.ServicePlanName] = $plan.ServicePlanId
-            }
-        }
+        # Build dynamic license groups from the active SKUs
+        $dynamicGroups = Build-LicenseGroups -ActiveSkus $allSkus
 
-        # Verify which license groups are relevant for this tenant
+        # Show what was detected
         Write-Host ""
-        Write-Host "   LICENSE GROUP VERIFICATION" -ForegroundColor Yellow
+        Write-Host "   LICENSE GROUPS TO CREATE" -ForegroundColor Yellow
         Write-Host ("   " + "-" * 58) -ForegroundColor Gray
 
-        $unavailableGroups = @()
-        foreach ($entry in $LicenseGroupPlans.GetEnumerator() | Sort-Object Key) {
-            $planName  = $entry.Value
-            $groupName = $entry.Key
-            $display   = if ($groupName.Length -gt 42) { $groupName.Substring(0, 39) + '...' } else { $groupName }
-
-            if ($tenantPlans.ContainsKey($planName)) {
-                Write-Host -NoNewline ("   {0,-44} " -f $display)
-                Write-Host "ACTIVE" -ForegroundColor Green
+        $sharedCount = 0
+        foreach ($group in $dynamicGroups | Sort-Object Name) {
+            $display = if ($group.Name.Length -gt 42) { $group.Name.Substring(0, 39) + '...' } else { $group.Name }
+            Write-Host -NoNewline ("   {0,-44} " -f $display)
+            if ($group.IsSharedPlan) {
+                Write-Host "[SHARED PLAN]" -ForegroundColor Yellow
+                $sharedCount++
             }
             else {
-                Write-Host -NoNewline ("   {0,-44} " -f $display)
-                Write-Host "NOT IN TENANT  (will be skipped)" -ForegroundColor Yellow
-                $unavailableGroups += $groupName
+                Write-Host "OK" -ForegroundColor Green
             }
         }
 
+        Write-Host ("   " + "-" * 58) -ForegroundColor Gray
+        Write-Host ("   {0} license group(s) detected" -f $dynamicGroups.Count) -ForegroundColor White
+
+        if ($sharedCount -gt 0) {
+            Write-Host ""
+            Write-Host "   [SHARED PLAN] = identifying service plan exists in multiple SKUs." -ForegroundColor Yellow
+            Write-Host "   These groups may include users from more than one license type." -ForegroundColor Gray
+        }
+
         Write-Host ""
-        return @{ UnavailableGroups = $unavailableGroups }
+        return @{ DynamicLicenseGroups = $dynamicGroups }
     }
     catch {
         Write-Host "   Could not retrieve license data: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "   License verification skipped — all groups will be attempted" -ForegroundColor Gray
-        return @{ UnavailableGroups = @() }
+        Write-Host "   License group creation skipped" -ForegroundColor Gray
+        return @{ DynamicLicenseGroups = @() }
     }
 }
 
@@ -522,8 +518,8 @@ function Start-SecurityGroupCreation {
         return
     }
 
-    # Filter out license groups whose license is not purchased in this tenant
-    $groupsToCreate = @($SecurityGroups | Where-Object { $_.Name -notin $prereqResult.UnavailableGroups })
+    # Combine static groups with dynamically discovered license groups
+    $groupsToCreate = @($SecurityGroups) + @($prereqResult.DynamicLicenseGroups)
 
     # Step 2: Preview
     Write-Host ""
@@ -589,7 +585,6 @@ function Start-SecurityGroupCreation {
 
     Write-Host "  Created: $($results.Created.Count)" -ForegroundColor Green
     Write-Host "  Skipped (existing): $($results.Skipped.Count)" -ForegroundColor Yellow
-    Write-Host "  Skipped (not in tenant): $($prereqResult.UnavailableGroups.Count)" -ForegroundColor Gray
     Write-Host "  Failed: $($results.Failed.Count)" -ForegroundColor $(if ($results.Failed.Count -gt 0) { "Red" } else { "Green" })
     Write-Host ""
 
