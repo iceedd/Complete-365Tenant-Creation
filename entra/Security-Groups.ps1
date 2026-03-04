@@ -413,83 +413,73 @@ function Set-GroupLicenseAssignment {
         [string]$SkuId
     )
 
+    # 1. Check if license is already attached — each Graph call gets its own try/catch
+    #    because Invoke-MgGraphRequest throws terminating errors that nested outer
+    #    try/catch blocks can intercept unexpectedly in some module versions
     try {
-        # Check if license is already attached
-        # Invoke-MgGraphRequest throws terminating errors — -ErrorAction SilentlyContinue
-        # does NOT suppress them, so wrap in try/catch
-        try {
-            $licenseDetails = Invoke-MgGraphRequest -Method GET `
-                -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
-                -ErrorAction Stop
-            if ($licenseDetails -and $licenseDetails.value) {
-                $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
-                if ($existing.Count -gt 0) {
-                    Write-Host "     License already attached to group" -ForegroundColor Gray
-                    return $true
-                }
-            }
-        }
-        catch {
-            # licenseDetails endpoint unavailable — proceed to assignLicense attempt
-        }
-
-        # Pre-serialize body to avoid Invoke-MgGraphRequest hashtable serialization issues
-        $bodyJson = [ordered]@{
-            addLicenses    = @([ordered]@{ skuId = $SkuId })
-            removeLicenses = @()
-        } | ConvertTo-Json -Depth 5 -Compress
-
-        # Try v1.0, then beta — both call the same underlying API but beta has broader
-        # availability for some tenant/SKU configurations
-        $endpoints = @(
-            "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense",
-            "https://graph.microsoft.com/beta/groups/$GroupId/assignLicense"
-        )
-
-        $attached   = $false
-        $lastErrMsg = $null
-        foreach ($uri in $endpoints) {
-            try {
-                $null = Invoke-MgGraphRequest -Method POST `
-                    -Uri $uri `
-                    -Body $bodyJson `
-                    -ContentType "application/json" `
-                    -ErrorAction Stop
-                $attached = $true
-                break
-            }
-            catch {
-                $lastErrMsg = $_.Exception.Message
-                # Try next endpoint regardless of error type
-            }
-        }
-
-        if ($attached) {
-            Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
+        $licenseDetails = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
+            -ErrorAction Stop
+        $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
+        if ($existing.Count -gt 0) {
+            Write-Host "     License already attached to group" -ForegroundColor Gray
             return $true
         }
+    }
+    catch { <# endpoint unavailable or no licenses yet — proceed to attach #> }
 
-        # Both endpoints failed — show targeted diagnostics
+    # 2. Pre-serialize body
+    $bodyJson = [ordered]@{
+        addLicenses    = @([ordered]@{ skuId = $SkuId })
+        removeLicenses = @()
+    } | ConvertTo-Json -Depth 5 -Compress
+
+    # 3. Try v1.0 then beta — each in its own try/catch so failures never escape
+    $attached   = $false
+    $lastErrMsg = $null
+
+    try {
+        $null = Invoke-MgGraphRequest -Method POST `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense" `
+            -Body $bodyJson -ContentType "application/json" -ErrorAction Stop
+        $attached = $true
+    }
+    catch { $lastErrMsg = $_.Exception.Message }
+
+    if (!$attached) {
+        try {
+            $null = Invoke-MgGraphRequest -Method POST `
+                -Uri "https://graph.microsoft.com/beta/groups/$GroupId/assignLicense" `
+                -Body $bodyJson -ContentType "application/json" -ErrorAction Stop
+            $attached = $true
+        }
+        catch { $lastErrMsg = $_.Exception.Message }
+    }
+
+    if ($attached) {
+        Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
+        return $true
+    }
+
+    # 4. Both failed — check scope to give targeted guidance
+    $hasScope = $false
+    try {
         $ctx      = Get-MgContext
         $hasScope = $ctx -and ($ctx.Scopes -contains 'LicenseAssignment.ReadWrite.All')
+    }
+    catch { <# context unavailable #> }
 
-        if (!$hasScope) {
-            Write-Host "     Scope LicenseAssignment.ReadWrite.All not in current token" -ForegroundColor Red
-            Write-Host "     Re-run the script and approve the permission prompt" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "     API error: $lastErrMsg" -ForegroundColor Yellow
-            Write-Host "     Scope is present — this is likely a tenant or SKU limitation" -ForegroundColor Gray
-            Write-Host "     Developer/trial licenses may not support GBL via Graph API" -ForegroundColor Gray
-        }
-        Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
-        return $false
+    if (!$hasScope) {
+        Write-Host "     Scope LicenseAssignment.ReadWrite.All not in current token" -ForegroundColor Red
+        Write-Host "     Re-run the script and approve the permission prompt" -ForegroundColor Yellow
     }
-    catch {
-        Write-Host "     Unexpected error: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
-        return $false
+    else {
+        Write-Host "     API error: $lastErrMsg" -ForegroundColor Yellow
+        Write-Host "     Scope present — likely a tenant or SKU limitation" -ForegroundColor Gray
+        Write-Host "     Developer/trial SKUs may not support GBL via Graph API" -ForegroundColor Gray
     }
+    Write-Host "     Manual: Entra admin centre > Groups > [group] > Licenses > + Assignments" -ForegroundColor Gray
+    return $false
 }
 
 # ============================================================================
