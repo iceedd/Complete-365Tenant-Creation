@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.2
+    1.3
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.2"
+$Script:MenuVersion = "1.3"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -2244,8 +2244,6 @@ function Show-DebugStatusOverride {
 
 # Main execution loop
 function Invoke-SelfUpdate {
-    if (!$PSCommandPath) { return }  # Running dot-sourced or interactively — skip
-
     try {
         Write-Host "   Checking for menu updates..." -ForegroundColor Gray
         $url     = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Main-Menu.ps1"
@@ -2266,19 +2264,30 @@ function Invoke-SelfUpdate {
         Write-Host "   UPDATE AVAILABLE  v$localVersion  ->  v$remoteVersion" -ForegroundColor Yellow
         Write-Host "   A newer Main-Menu.ps1 is available on GitHub." -ForegroundColor White
         Write-Host ""
-        $answer = Read-Host "   Update and restart now? (Y/N)"
 
-        if ($answer -notlike "Y*") {
-            Write-Host "   Skipping — you will be prompted again next run" -ForegroundColor Gray
-            return
+        # If we know where the script lives, offer to auto-update
+        if ($PSCommandPath) {
+            $answer = Read-Host "   Update and restart now? (Y/N)"
+            if ($answer -notlike "Y*") {
+                Write-Host "   Skipping — you will be prompted again next run" -ForegroundColor Gray
+                return
+            }
+            $content | Set-Content -Path $PSCommandPath -Encoding UTF8 -Force
+            Write-Host "   Updated to v$remoteVersion. Please re-run the script." -ForegroundColor Green
+            Write-Host ""
+            Write-Host "   Press any key to exit..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            exit
         }
-
-        $content | Set-Content -Path $PSCommandPath -Encoding UTF8 -Force
-        Write-Host "   Updated to v$remoteVersion. Please re-run the script." -ForegroundColor Green
-        Write-Host ""
-        Write-Host "   Press any key to exit..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
-        exit
+        else {
+            # Running via IEX/launcher — can't auto-overwrite, show manual instructions
+            Write-Host "   ACTION REQUIRED: Re-download Main-Menu.ps1 to get the latest version." -ForegroundColor Yellow
+            Write-Host "   Run in PowerShell:" -ForegroundColor White
+            Write-Host "   Invoke-RestMethod 'https://raw.githubusercontent.com/cbro09/Complete-365Tenant-Creation/main/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "   Press any key to continue with current version..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 3 }
+        }
     }
     catch {
         Write-Host "   Could not check for updates (no network?)" -ForegroundColor Gray

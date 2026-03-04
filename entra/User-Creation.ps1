@@ -2,38 +2,29 @@
 
 <#
 .SYNOPSIS
-    Creates user accounts in Entra ID
+    User Creation & Management — redirects to M365-UserProvisioning-Tool
 .DESCRIPTION
-    Bulk user creation with license assignment and group membership.
-    COMING SOON - This feature is under development.
+    This stub is shown when an outdated Main-Menu.ps1 is running.
+    The provisioning tool is integrated directly in Main-Menu.ps1 v1.2+.
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    2.0 - Placeholder
+    2.1 - Update notice
 #>
 
-function Start-UserCreation {
-    Write-Host ""
-    Write-Host ("=" * 70) -ForegroundColor Cyan
-    Write-Host "  USER CREATION" -ForegroundColor Cyan
-    Write-Host ("=" * 70) -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Status: COMING SOON" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  This feature is currently under development." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  Planned Features:" -ForegroundColor White
-    Write-Host "    - Single user creation wizard" -ForegroundColor Gray
-    Write-Host "    - Bulk user import from CSV" -ForegroundColor Gray
-    Write-Host "    - Automatic license assignment" -ForegroundColor Gray
-    Write-Host "    - Group membership assignment" -ForegroundColor Gray
-    Write-Host "    - Welcome email generation" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  For now, create users manually:" -ForegroundColor Yellow
-    Write-Host "    https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/AllUsers" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-}
-
-Start-UserCreation
+Write-Host ""
+Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host "  USER CREATION & MANAGEMENT" -ForegroundColor Cyan
+Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Your Main-Menu.ps1 is out of date." -ForegroundColor Yellow
+Write-Host "  User Creation is now built in to Main-Menu.ps1 v1.2+." -ForegroundColor White
+Write-Host ""
+Write-Host "  To update, run this in PowerShell:" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  Invoke-RestMethod 'https://raw.githubusercontent.com/cbro09/Complete-365Tenant-Creation/main/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Then re-run .\Main-Menu.ps1" -ForegroundColor White
+Write-Host ""
+Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 3 }
