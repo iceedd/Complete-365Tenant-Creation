@@ -1291,9 +1291,7 @@ function Initialize-CompletedSteps {
     $Global:CompletedSteps = @{
         SecurityGroups = Test-GroupsExist -GroupNames @(
             "NoMFA Exclusion Group", "BITS Admin Users", "SSPR Eligible Users",
-            "License - Business Basic", "License - Business Standard",
-            "License - Business Premium", "License - Exchange Online Plan 1",
-            "License - Exchange Online Plan 2"
+            "Helpdesk Operator Group"
         )
         DeviceGroups = Test-GroupsExist -GroupNames @(
             "Windows Devices (Autopilot)", "macOS Devices", "iOS Devices",
