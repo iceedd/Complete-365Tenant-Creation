@@ -414,18 +414,26 @@ function Set-GroupLicenseAssignment {
     )
 
     try {
-        # Check if license is already attached to avoid duplicate assignment
-        $existing = @(Get-MgGroupLicenseDetail -GroupId $GroupId -ErrorAction SilentlyContinue |
-                      Where-Object { $_.SkuId -eq $SkuId })
+        # Check if license is already attached (REST API — avoids SDK type issues)
+        $licenseDetails = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/licenseDetails" `
+            -ErrorAction SilentlyContinue
+        $existing = @($licenseDetails.value | Where-Object { $_.skuId -eq $SkuId })
 
         if ($existing.Count -gt 0) {
             Write-Host "     License already attached to group" -ForegroundColor Gray
             return $true
         }
 
-        Set-MgGroupLicense -GroupId $GroupId `
-            -AddLicenses @(@{ SkuId = $SkuId }) `
-            -RemoveLicenses @() `
+        # Attach the SKU via REST API (mirrors compliance policy fix — SDK Set-MgGroupLicense
+        # has known type conversion issues with GUID parameters in some module versions)
+        $body = @{
+            addLicenses    = @(@{ skuId = $SkuId })
+            removeLicenses = @()
+        }
+        $null = Invoke-MgGraphRequest -Method POST `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$GroupId/assignLicense" `
+            -Body $body `
             -ErrorAction Stop
 
         Write-Host "     License attached — members will be assigned automatically" -ForegroundColor Green
