@@ -1446,10 +1446,11 @@ function Test-ServiceAuthentication {
         "Exchange" {
             $authStatus.RequiredAuth = "ExchangeOnline"
             try {
-                $exchangeSession = Get-PSSession | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" }
-                if ($exchangeSession) {
+                # Use modern Get-ConnectionInformation (EXO v3+)
+                $exoConnection = Get-ConnectionInformation -ErrorAction SilentlyContinue
+                if ($exoConnection -and $exoConnection.State -eq "Connected") {
                     $authStatus.ServiceConnected = $true
-                    if ($ShowStatus) { Write-Host "✅ Exchange Online: Connected" -ForegroundColor Green }
+                    if ($ShowStatus) { Write-Host "✅ Exchange Online: Connected as $($exoConnection.UserPrincipalName)" -ForegroundColor Green }
                 } else {
                     if ($ShowStatus) { Write-Host "⚠️ Exchange Online: Not Connected" -ForegroundColor Yellow }
                 }
@@ -1894,7 +1895,38 @@ function Show-IntuneMenu {
 
 function Show-ExchangeMenu {
     if (!(Set-ServiceScopes -Service "Exchange")) { return }
-    
+
+    # Ensure Exchange Online connection
+    Write-Host "🔄 Checking Exchange Online connection..." -ForegroundColor Gray
+
+    try {
+        # Check if ExchangeOnlineManagement module is available
+        if (!(Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+            Write-Host "📦 Installing ExchangeOnlineManagement module..." -ForegroundColor Yellow
+            Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+        }
+
+        if (!(Get-Module -Name ExchangeOnlineManagement)) {
+            Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
+        }
+
+        # Check if already connected using modern method
+        $exoConnection = Get-ConnectionInformation -ErrorAction SilentlyContinue
+        if (!$exoConnection -or $exoConnection.State -ne "Connected") {
+            Write-Host "🔐 Connecting to Exchange Online..." -ForegroundColor Yellow
+            Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
+            Write-Host "✅ Connected to Exchange Online" -ForegroundColor Green
+        } else {
+            Write-Host "✅ Exchange Online: Connected as $($exoConnection.UserPrincipalName)" -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "❌ Failed to connect to Exchange Online: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Press any key to return to main menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        return
+    }
+
     # Auto-refresh prerequisites when entering Exchange menu
     Write-Host "🔄 Checking current prerequisites..." -ForegroundColor Gray
     Initialize-CompletedSteps
