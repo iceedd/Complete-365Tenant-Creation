@@ -29,7 +29,9 @@ param()
 # CONFIGURATION
 # ============================================================================
 
-$RequiredModules = @('Microsoft.Online.SharePoint.PowerShell')
+# SPO module enables site creation, sharing settings, and admin management.
+# Graph-based operations (Entra groups, permissions) work without it.
+$Script:SpoAvailable = $false
 
 $PermissionRoleMap = @{
     Owners  = @{ Role = 'owner'; Label = 'Full Control' }
@@ -57,30 +59,35 @@ $SiteTemplates = @{
 function Initialize-ScriptModules {
     Write-Host "   Checking required modules..." -ForegroundColor Yellow
 
-    try {
-        foreach ($Module in $RequiredModules) {
-            try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
-                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
-                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-                }
-                if (!(Get-Module -Name $Module)) {
-                    Import-Module $Module -Force -ErrorAction Stop
-                }
-                Write-Host "   $Module ready" -ForegroundColor Green
-            }
-            catch {
-                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
-                return $false
-            }
-        }
-        Write-Host "   All modules ready!" -ForegroundColor Green
-        return $true
-    }
-    catch {
-        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
+    # Graph is required — must be connected via main menu
+    $graphCtx = Get-MgContext -ErrorAction SilentlyContinue
+    if ($null -eq $graphCtx) {
+        Write-Host "   Microsoft Graph: not connected — please use the main menu first" -ForegroundColor Red
         return $false
     }
+    Write-Host "   Microsoft Graph: connected" -ForegroundColor Green
+
+    # SPO module — best-effort; degrades gracefully when unavailable
+    $spoModule = 'Microsoft.Online.SharePoint.PowerShell'
+    try {
+        if (!(Get-Module -ListAvailable -Name $spoModule)) {
+            Write-Host "   Installing $spoModule..." -ForegroundColor Yellow
+            Install-Module $spoModule -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+        }
+        if (!(Get-Module -Name $spoModule)) {
+            Import-Module $spoModule -Force -ErrorAction Stop
+        }
+        $null = Get-SPOTenant -ErrorAction Stop
+        $Script:SpoAvailable = $true
+        Write-Host "   SPO module: connected" -ForegroundColor Green
+    }
+    catch {
+        $Script:SpoAvailable = $false
+        Write-Host "   SPO module: unavailable — site creation, sharing settings, and admin management disabled" -ForegroundColor Yellow
+        Write-Host "   Entra group creation and Graph permission assignment will still work" -ForegroundColor Gray
+    }
+
+    return $true
 }
 
 # ============================================================================
@@ -92,19 +99,7 @@ function Test-Prerequisites {
     Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
-    # SPO connection
-    Write-Host "   Checking SharePoint Online connection..." -ForegroundColor Gray
-    try {
-        $null = Get-SPOTenant -ErrorAction Stop
-        Write-Host "   SharePoint Online: connected" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "   Not connected to SharePoint Online" -ForegroundColor Red
-        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
-        return @{ Success = $false }
-    }
-
-    # Graph connection
+    # Graph connection (required)
     Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
     $graphCtx = Get-MgContext -ErrorAction SilentlyContinue
     if ($null -eq $graphCtx) {
@@ -114,25 +109,34 @@ function Test-Prerequisites {
     }
     Write-Host "   Microsoft Graph: connected ($($graphCtx.Account))" -ForegroundColor Green
 
-    # Detect tenant root URL
-    Write-Host "   Detecting tenant URL..." -ForegroundColor Gray
-    try {
-        $sample = Get-SPOSite -Limit 5 -ErrorAction Stop |
-                  Where-Object { $_.Url -notlike '*-my.sharepoint.com*' } |
-                  Select-Object -First 1
+    # SPO status (informational)
+    if ($Script:SpoAvailable) {
+        Write-Host "   SharePoint Online module: connected" -ForegroundColor Green
+    }
+    else {
+        Write-Host "   SharePoint Online module: unavailable" -ForegroundColor Yellow
+        Write-Host "   (Site creation, sharing settings, and admin management are disabled)" -ForegroundColor Gray
+    }
 
-        $tenantRootUrl = if ($null -ne $sample) {
-            $sample.Url -replace '(https://[^/]+).*', '$1'
-        }
-        else {
-            $tenantName = Read-Host "   Enter your tenant name (e.g. 'contoso')"
-            "https://$tenantName.sharepoint.com"
-        }
+    # Detect tenant root URL via Global set by Connect-SharePointOnline, then Graph fallback
+    Write-Host "   Detecting tenant URL..." -ForegroundColor Gray
+    $tenantRootUrl = $null
+
+    if ($Global:SPOTenantName) {
+        $tenantRootUrl = "https://$($Global:SPOTenantName).sharepoint.com"
         Write-Host "   Tenant root URL: $tenantRootUrl" -ForegroundColor Green
     }
-    catch {
-        Write-Host "   Failed to detect tenant URL: $($_.Exception.Message)" -ForegroundColor Red
-        return @{ Success = $false }
+    else {
+        try {
+            $rootSite = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites/root" -Method GET -ErrorAction Stop
+            $tenantRootUrl = "https://$($rootSite.siteCollection.hostname)"
+            Write-Host "   Tenant root URL: $tenantRootUrl" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   Could not auto-detect tenant URL: $($_.Exception.Message)" -ForegroundColor Yellow
+            $tenantName = Read-Host "   Enter your tenant name (e.g. 'contoso')"
+            $tenantRootUrl = "https://$($tenantName.Trim()).sharepoint.com"
+        }
     }
 
     Write-Host ""
@@ -204,8 +208,18 @@ function Get-NewSiteDefinition {
     }
 }
 
+function Get-GraphSiteDetails {
+    param([string]$SiteUrl)
+    try {
+        $uri      = [System.Uri]$SiteUrl
+        $hostname = $uri.Host
+        $path     = $uri.PathAndQuery.TrimEnd('/')
+        return Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites/${hostname}:${path}" -Method GET -ErrorAction Stop
+    }
+    catch { return $null }
+}
+
 function Get-ExistingSiteTargets {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'TenantRootUrl', Justification = 'Parameter kept for consistent API signature; sites retrieved directly via SPO')]
     param([string]$TenantRootUrl)
 
     Write-Host ""
@@ -220,42 +234,93 @@ function Get-ExistingSiteTargets {
     switch ($scopeChoice) {
         '1' {
             Write-Host "   Retrieving sites..." -ForegroundColor Gray
-            try {
-                $all = Get-SPOSite -Limit All -ErrorAction Stop |
-                       Where-Object { $_.Url -notlike '*-my.sharepoint.com*' }
-                foreach ($s in $all) {
-                    $alias = $s.Url -replace '.*/sites/', ''
-                    $sites += @{
-                        Title    = $s.Title
-                        FullUrl  = $s.Url
-                        UrlAlias = $alias
-                        Owner    = $s.Owner
-                        IsNew    = $false
+            if ($Script:SpoAvailable) {
+                try {
+                    $all = Get-SPOSite -Limit All -ErrorAction Stop |
+                           Where-Object { $_.Url -notlike '*-my.sharepoint.com*' }
+                    foreach ($s in $all) {
+                        $alias = $s.Url -replace '.*/sites/', ''
+                        $sites += @{
+                            Title    = $s.Title
+                            FullUrl  = $s.Url
+                            UrlAlias = $alias
+                            Owner    = $s.Owner
+                            IsNew    = $false
+                        }
                     }
+                    Write-Host "   Found $($sites.Count) site(s)" -ForegroundColor Green
                 }
-                Write-Host "   Found $($sites.Count) site(s)" -ForegroundColor Green
+                catch {
+                    Write-Host "   Failed to retrieve sites: $($_.Exception.Message)" -ForegroundColor Red
+                }
             }
-            catch {
-                Write-Host "   Failed to retrieve sites: $($_.Exception.Message)" -ForegroundColor Red
+            else {
+                # Graph fallback
+                try {
+                    $response = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites?search=*&`$top=50" -Method GET -ErrorAction Stop
+                    foreach ($s in $response.value) {
+                        if ($s.webUrl -notlike '*-my.sharepoint.com*' -and $s.webUrl -like '*/sites/*') {
+                            $alias = $s.webUrl -replace '.*/sites/', ''
+                            $sites += @{
+                                Title    = $s.displayName
+                                FullUrl  = $s.webUrl
+                                UrlAlias = $alias
+                                Owner    = ''
+                                IsNew    = $false
+                            }
+                        }
+                    }
+                    Write-Host "   Found $($sites.Count) site(s) via Graph" -ForegroundColor Green
+                }
+                catch {
+                    Write-Host "   Failed to retrieve sites: $($_.Exception.Message)" -ForegroundColor Red
+                }
             }
         }
         '2' {
             $url = Read-Host "   Site URL (e.g. https://contoso.sharepoint.com/sites/marketing)"
             if ($url -match '^https://') {
                 $alias = $url -replace '.*/sites/', ''
-                $site  = Get-SPOSite -Identity $url -ErrorAction SilentlyContinue
-                if ($null -ne $site) {
-                    $sites += @{
-                        Title    = $site.Title
-                        FullUrl  = $url
-                        UrlAlias = $alias
-                        Owner    = $site.Owner
-                        IsNew    = $false
+                if ($Script:SpoAvailable) {
+                    $site = Get-SPOSite -Identity $url -ErrorAction SilentlyContinue
+                    if ($null -ne $site) {
+                        $sites += @{
+                            Title    = $site.Title
+                            FullUrl  = $url
+                            UrlAlias = $alias
+                            Owner    = $site.Owner
+                            IsNew    = $false
+                        }
+                        Write-Host "   Found: $($site.Title)" -ForegroundColor Green
                     }
-                    Write-Host "   Found: $($site.Title)" -ForegroundColor Green
+                    else {
+                        Write-Host "   Site not found: $url" -ForegroundColor Red
+                    }
                 }
                 else {
-                    Write-Host "   Site not found: $url" -ForegroundColor Red
+                    $graphSite = Get-GraphSiteDetails -SiteUrl $url
+                    if ($null -ne $graphSite) {
+                        $sites += @{
+                            Title    = $graphSite.displayName
+                            FullUrl  = $url
+                            UrlAlias = $alias
+                            Owner    = ''
+                            IsNew    = $false
+                        }
+                        Write-Host "   Found: $($graphSite.displayName)" -ForegroundColor Green
+                    }
+                    else {
+                        # User provided URL but Graph couldn't verify — add with alias as title
+                        $titleGuess = (Get-Culture).TextInfo.ToTitleCase(($alias -replace '-', ' '))
+                        $sites += @{
+                            Title    = $titleGuess
+                            FullUrl  = $url
+                            UrlAlias = $alias
+                            Owner    = ''
+                            IsNew    = $false
+                        }
+                        Write-Host "   Site added (unverified): $url" -ForegroundColor Yellow
+                    }
                 }
             }
             else {
@@ -568,6 +633,18 @@ function Start-SiteGroups {
     # Step 3 - Collect sites
     $sites = @()
     if ($mode -eq '1') {
+        if (-not $Script:SpoAvailable) {
+            Write-Host ""
+            Write-Host "  ⚠️  Site creation requires the SharePoint Online module" -ForegroundColor Yellow
+            Write-Host "     The SPO module is currently unavailable on this session." -ForegroundColor Gray
+            Write-Host "     To create new sites, fix the SPO connection first." -ForegroundColor Gray
+            Write-Host "     Select mode 2 (existing sites) to create groups for sites that already exist." -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            return
+        }
+
         Write-Host ""
         Write-Host "  STEP 3: New Site Details" -ForegroundColor Yellow
         Write-Host ("   " + "-" * 50) -ForegroundColor Gray
@@ -685,20 +762,30 @@ function Start-SiteGroups {
             Write-Host "   Could not resolve site ID - permission assignment skipped" -ForegroundColor Yellow
         }
 
-        # External sharing override
-        Write-Host ""
-        $sharingChoice = Get-SiteSharingChoice -SiteTitle $site.Title
-        if ($null -ne $sharingChoice.Value) {
-            Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $sharingChoice.Value | Out-Null
+        # External sharing override (SPO module required)
+        if ($Script:SpoAvailable) {
+            Write-Host ""
+            $sharingChoice = Get-SiteSharingChoice -SiteTitle $site.Title
+            if ($null -ne $sharingChoice.Value) {
+                Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $sharingChoice.Value | Out-Null
+            }
+            else {
+                Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+            }
         }
         else {
-            Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+            Write-Host "   External sharing settings: skipped (SPO module unavailable)" -ForegroundColor Yellow
         }
 
-        # Site collection admin
-        Write-Host ""
-        Write-Host "   Site collection admin:" -ForegroundColor Yellow
-        Confirm-SiteCollectionAdmin -SiteDefinition $site
+        # Site collection admin (SPO module required)
+        if ($Script:SpoAvailable) {
+            Write-Host ""
+            Write-Host "   Site collection admin:" -ForegroundColor Yellow
+            Confirm-SiteCollectionAdmin -SiteDefinition $site
+        }
+        else {
+            Write-Host "   Site collection admin: skipped (SPO module unavailable)" -ForegroundColor Yellow
+        }
     }
 
     # Summary
