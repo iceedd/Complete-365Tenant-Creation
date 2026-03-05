@@ -1482,20 +1482,20 @@ function Test-ServiceAuthentication {
 }
 
 function Connect-SharePointOnline {
-    # Derives SPO admin URL from the connected tenant and calls Connect-SPOService.
-    # Falls back to PnP.PowerShell token bridge on platforms where Connect-SPOService
-    # fails with 400 (known issue with the SPO module on Linux/macOS).
+    # Derives SPO admin URL from the connected tenant, imports the SPO module,
+    # and calls Connect-SPOService.
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $initialDomain = $org.VerifiedDomains | Where-Object { $_.IsInitial } | Select-Object -ExpandProperty Name
         $tenantName = $initialDomain -replace '\.onmicrosoft\.com$', ''
         $spoAdminUrl = "https://$tenantName-admin.sharepoint.com"
 
-        # Check if SPO module is available
+        # Ensure SPO module is installed and imported
         if (!(Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
             Write-Host "   Installing Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Yellow
             Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
         }
+        Import-Module Microsoft.Online.SharePoint.PowerShell -Force -ErrorAction Stop
 
         # Check if already connected
         try {
@@ -1506,28 +1506,7 @@ function Connect-SharePointOnline {
         catch {}
 
         Write-Host "   Connecting to SharePoint Online ($spoAdminUrl)..." -ForegroundColor Yellow
-
-        # Try standard connection first (works on Windows)
-        try {
-            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-            Write-Host "   SharePoint Online: connected" -ForegroundColor Green
-            return $true
-        }
-        catch {
-            Write-Host "   Direct connection failed ($($_.Exception.Message))" -ForegroundColor Yellow
-            Write-Host "   Using PnP token bridge for cross-platform auth..." -ForegroundColor Yellow
-        }
-
-        # Fallback: PnP.PowerShell handles modern auth on Linux/macOS.
-        # Get its SPO access token and hand it to Connect-SPOService.
-        if (!(Get-Module -ListAvailable -Name 'PnP.PowerShell')) {
-            Write-Host "   Installing PnP.PowerShell..." -ForegroundColor Yellow
-            Install-Module PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        }
-        Import-Module PnP.PowerShell -Force -ErrorAction Stop
-        Connect-PnPOnline -Url $spoAdminUrl -Interactive -ErrorAction Stop
-        $spoToken = Get-PnPAccessToken -ErrorAction Stop
-        Connect-SPOService -Url $spoAdminUrl -AccessToken $spoToken -ErrorAction Stop
+        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
         Write-Host "   SharePoint Online: connected" -ForegroundColor Green
         return $true
     }
