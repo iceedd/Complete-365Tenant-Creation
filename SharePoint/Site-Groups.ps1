@@ -305,6 +305,46 @@ function Invoke-SiteCreation {
 }
 
 # ============================================================================
+# GROUP NAMES & PREVIEW
+# ============================================================================
+
+function Get-SiteGroupNames {
+    param([string]$UrlAlias)
+
+    # Sanitise alias: lowercase, alphanumeric + hyphens, max 40 chars
+    $safe = ($UrlAlias -replace '[^a-zA-Z0-9\-]', '-' -replace '-+', '-').Trim('-').ToLower()
+    if ($safe.Length -gt 40) { $safe = $safe.Substring(0, 40).TrimEnd('-') }
+
+    return @{
+        Owners  = "SPO-$safe-Owners"
+        Members = "SPO-$safe-Members"
+        Guests  = "SPO-$safe-Guests"
+    }
+}
+
+function Show-ProvisioningPreview {
+    param([array]$Sites)
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  PREVIEW: Sites and Groups to Provision" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+
+    foreach ($site in $Sites) {
+        $groupNames = Get-SiteGroupNames -UrlAlias $site.UrlAlias
+        $newLabel   = if ($site.IsNew) { " [NEW SITE]" } else { "" }
+        Write-Host "  Site: $($site.Title)$newLabel" -ForegroundColor White
+        Write-Host "  URL:  $($site.FullUrl)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host ("  {0,-45} {1}" -f $groupNames.Owners,  "-> Full Control") -ForegroundColor Green
+        Write-Host ("  {0,-45} {1}" -f $groupNames.Members, "-> Edit")         -ForegroundColor Cyan
+        Write-Host ("  {0,-45} {1}" -f $groupNames.Guests,  "-> Read")         -ForegroundColor Gray
+        Write-Host ""
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
