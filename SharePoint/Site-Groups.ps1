@@ -394,6 +394,31 @@ function New-EntraSiteGroup {
 }
 
 # ============================================================================
+# GRAPH SITE ID
+# ============================================================================
+
+function Get-GraphSiteId {
+    param([string]$SiteUrl)
+
+    try {
+        $uri      = [System.Uri]$SiteUrl
+        $hostname = $uri.Host
+        $path     = $uri.PathAndQuery.TrimEnd('/')
+
+        $response = Invoke-MgGraphRequest `
+            -Uri    "https://graph.microsoft.com/v1.0/sites/${hostname}:${path}" `
+            -Method GET `
+            -ErrorAction Stop
+
+        return $response.id
+    }
+    catch {
+        Write-Host "     Failed to resolve site ID for $SiteUrl : $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
