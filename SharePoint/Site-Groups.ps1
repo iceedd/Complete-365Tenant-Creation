@@ -56,21 +56,29 @@ $SiteTemplates = @{
 
 function Initialize-ScriptModules {
     Write-Host "   Checking required modules..." -ForegroundColor Yellow
+
     try {
         foreach ($Module in $RequiredModules) {
-            if (!(Get-Module -ListAvailable -Name $Module)) {
-                Write-Host "   Installing $Module..." -ForegroundColor Yellow
-                Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+            try {
+                if (!(Get-Module -ListAvailable -Name $Module)) {
+                    Write-Host "   Installing $Module..." -ForegroundColor Yellow
+                    Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+                }
+                if (!(Get-Module -Name $Module)) {
+                    Import-Module $Module -Force -ErrorAction Stop
+                }
+                Write-Host "   $Module ready" -ForegroundColor Green
             }
-            if (!(Get-Module -Name $Module)) {
-                Import-Module $Module -Force -ErrorAction Stop
+            catch {
+                Write-Host "   Failed to initialize ${Module}: $($_.Exception.Message)" -ForegroundColor Red
+                return $false
             }
-            Write-Host "   $Module ready" -ForegroundColor Green
         }
+        Write-Host "   All modules ready!" -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Host "   Module init failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Module initialization error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -81,7 +89,7 @@ function Initialize-ScriptModules {
 
 try {
     if (!(Initialize-ScriptModules)) {
-        Write-Host "Failed to initialise required modules. Exiting." -ForegroundColor Red
+        Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
         return
     }
     Start-SiteGroups
