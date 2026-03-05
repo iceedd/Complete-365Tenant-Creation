@@ -1505,8 +1505,8 @@ function Connect-SharePointOnline {
         }
         catch {}
 
-        # Clear any stale cached auth before connecting
-        Disconnect-SPOService -ErrorAction SilentlyContinue
+        # Clear any stale cached auth before connecting (ignore if nothing to disconnect)
+        try { Disconnect-SPOService -ErrorAction Stop } catch {}
 
         Write-Host "   Connecting to SharePoint Online ($spoAdminUrl)..." -ForegroundColor Yellow
         Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
