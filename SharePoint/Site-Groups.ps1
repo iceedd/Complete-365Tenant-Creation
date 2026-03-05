@@ -419,6 +419,48 @@ function Get-GraphSiteId {
 }
 
 # ============================================================================
+# SITE PERMISSIONS
+# ============================================================================
+
+function Set-SiteGroupPermission {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Interactive console script; ShouldProcess not applicable')]
+    param(
+        [string]$SiteId,
+        [string]$GroupId,
+        [string]$GroupDisplayName,
+        [string]$Role
+    )
+
+    try {
+        $body = @{
+            roles               = @($Role)
+            grantedToIdentities = @(
+                @{
+                    group = @{
+                        id          = $GroupId
+                        displayName = $GroupDisplayName
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 5
+
+        $null = Invoke-MgGraphRequest `
+            -Uri         "https://graph.microsoft.com/v1.0/sites/$SiteId/permissions" `
+            -Method      POST `
+            -Body        $body `
+            -ContentType "application/json" `
+            -ErrorAction Stop
+
+        Write-Host "     Assigned $GroupDisplayName -> $Role" -ForegroundColor Green
+        return @{ Success = $true }
+    }
+    catch {
+        Write-Host "     Failed to assign $GroupDisplayName : $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
