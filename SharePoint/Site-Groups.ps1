@@ -526,6 +526,221 @@ function Confirm-SiteCollectionAdmin {
 }
 
 # ============================================================================
+# MAIN ORCHESTRATION
+# ============================================================================
+
+function Start-SiteGroups {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Interactive console entry-point; ShouldProcess not applicable')]
+    [CmdletBinding()]
+    param()
+
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SHAREPOINT SITE GROUPS" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  Creates Entra security groups for sites and assigns permissions" -ForegroundColor Gray
+    Write-Host ""
+
+    # Step 1 - Prerequisites
+    Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
+    $prereq = Test-Prerequisites
+    if (!$prereq.Success) {
+        Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        return
+    }
+
+    # Step 2 - Mode selection
+    Write-Host ""
+    Write-Host "  STEP 2: Mode" -ForegroundColor Yellow
+    $mode = Show-ModeSelection
+
+    if ($mode -like 'Q*') {
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        return
+    }
+
+    # Step 3 - Collect sites
+    $sites = @()
+    if ($mode -eq '1') {
+        Write-Host ""
+        Write-Host "  STEP 3: New Site Details" -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+        $addMore = $true
+        while ($addMore) {
+            $site = Get-NewSiteDefinition -TenantRootUrl $prereq.TenantRootUrl
+            if ($null -ne $site) { $sites += $site }
+            Write-Host ""
+            $more = Read-Host "   Add another site? (Y/N)"
+            $addMore = $more -like 'Y*'
+        }
+    }
+    else {
+        Write-Host ""
+        Write-Host "  STEP 3: Select Existing Sites" -ForegroundColor Yellow
+        Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+        $sites = Get-ExistingSiteTargets -TenantRootUrl $prereq.TenantRootUrl
+    }
+
+    if ($sites.Count -eq 0) {
+        Write-Host "  No sites selected. Exiting." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        return
+    }
+
+    # Step 4 - Preview and confirm
+    Write-Host ""
+    Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
+    Show-ProvisioningPreview -Sites $sites
+
+    Write-Host "  [Y] Proceed  [N] Cancel" -ForegroundColor Gray
+    Write-Host ""
+    $confirm = Read-Host "  Proceed? (Y/N)"
+    if ($confirm -notlike 'Y*') {
+        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+        return
+    }
+
+    # Tracking
+    $results = @{
+        SitesCreated  = @()
+        SitesSkipped  = @()
+        SitesFailed   = @()
+        GroupsCreated = @()
+        GroupsSkipped = @()
+        GroupsFailed  = @()
+        PermsFailed   = @()
+    }
+
+    $siteIndex = 0
+    foreach ($site in $sites) {
+        $siteIndex++
+        Write-Host ""
+        Write-Host "  [$siteIndex/$($sites.Count)] $($site.Title)" -ForegroundColor White
+        Write-Host ("  " + "-" * 60) -ForegroundColor Gray
+
+        # Create site if new mode
+        if ($site.IsNew) {
+            Write-Host "   Creating site..." -ForegroundColor Yellow
+            $createResult = Invoke-SiteCreation -SiteDefinition $site
+            if (!$createResult.Success) {
+                $results.SitesFailed += $site.Title
+                Write-Host "   Skipping groups for failed site." -ForegroundColor Yellow
+                continue
+            }
+            if ($createResult.Skipped) { $results.SitesSkipped += $site.Title }
+            else                       { $results.SitesCreated += $site.Title }
+        }
+
+        # Create Entra groups
+        Write-Host "   Creating Entra security groups..." -ForegroundColor Yellow
+        $groupNames = Get-SiteGroupNames -UrlAlias $site.UrlAlias
+        $groupIds   = @{}
+        $groupDesc  = "SharePoint site group for $($site.Title)"
+
+        foreach ($roleName in @('Owners', 'Members', 'Guests')) {
+            $gName  = $groupNames[$roleName]
+            $result = New-EntraSiteGroup -DisplayName $gName -Description $groupDesc
+            if ($result.Success) {
+                $groupIds[$roleName] = $result.GroupId
+                if ($result.Skipped) { $results.GroupsSkipped += $gName }
+                else                 { $results.GroupsCreated += $gName }
+            }
+            else {
+                $results.GroupsFailed += $gName
+            }
+        }
+
+        # Assign groups to site
+        Write-Host "   Assigning permissions..." -ForegroundColor Yellow
+        $siteId = Get-GraphSiteId -SiteUrl $site.FullUrl
+
+        if ($null -ne $siteId) {
+            foreach ($roleName in @('Owners', 'Members', 'Guests')) {
+                if ($groupIds.ContainsKey($roleName)) {
+                    $role       = $PermissionRoleMap[$roleName].Role
+                    $permResult = Set-SiteGroupPermission `
+                        -SiteId           $siteId `
+                        -GroupId          $groupIds[$roleName] `
+                        -GroupDisplayName $groupNames[$roleName] `
+                        -Role             $role
+                    if (!$permResult.Success) {
+                        $results.PermsFailed += "$($groupNames[$roleName]) -> $($site.Title)"
+                    }
+                }
+            }
+        }
+        else {
+            Write-Host "   Could not resolve site ID - permission assignment skipped" -ForegroundColor Yellow
+        }
+
+        # External sharing override
+        Write-Host ""
+        $sharingChoice = Get-SiteSharingChoice -SiteTitle $site.Title
+        if ($null -ne $sharingChoice.Value) {
+            Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $sharingChoice.Value | Out-Null
+        }
+        else {
+            Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+        }
+
+        # Site collection admin
+        Write-Host ""
+        Write-Host "   Site collection admin:" -ForegroundColor Yellow
+        Confirm-SiteCollectionAdmin -SiteDefinition $site
+    }
+
+    # Summary
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host ("=" * 70) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Sites created:      $($results.SitesCreated.Count)"  -ForegroundColor Green
+    Write-Host "  Sites skipped:      $($results.SitesSkipped.Count)"  -ForegroundColor Yellow
+    Write-Host "  Sites failed:       $($results.SitesFailed.Count)"   -ForegroundColor $(if ($results.SitesFailed.Count  -gt 0) { 'Red' } else { 'Green' })
+    Write-Host "  Groups created:     $($results.GroupsCreated.Count)" -ForegroundColor Green
+    Write-Host "  Groups skipped:     $($results.GroupsSkipped.Count)" -ForegroundColor Yellow
+    Write-Host "  Groups failed:      $($results.GroupsFailed.Count)"  -ForegroundColor $(if ($results.GroupsFailed.Count  -gt 0) { 'Red' } else { 'Green' })
+    Write-Host "  Perm assign failed: $($results.PermsFailed.Count)"   -ForegroundColor $(if ($results.PermsFailed.Count   -gt 0) { 'Red' } else { 'Green' })
+    Write-Host ""
+
+    if ($results.GroupsCreated.Count -gt 0) {
+        Write-Host "  Created Groups:" -ForegroundColor Green
+        foreach ($g in $results.GroupsCreated) { Write-Host "    - $g" -ForegroundColor White }
+        Write-Host ""
+    }
+
+    if ($results.PermsFailed.Count -gt 0) {
+        Write-Host "  Permission Assignment Failures:" -ForegroundColor Red
+        foreach ($f in $results.PermsFailed) { Write-Host "    - $f" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  Note: Assign these manually in SharePoint admin centre." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    Write-Host "  IMPORTANT:" -ForegroundColor Yellow
+    Write-Host "    - Groups are created empty - add members via User Provisioning Tool" -ForegroundColor Gray
+    Write-Host "    - New sites may take 2-5 minutes to fully provision" -ForegroundColor Gray
+    Write-Host "    - Visit https://admin.sharepoint.com to manage sites further" -ForegroundColor Gray
+    Write-Host ""
+
+    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
