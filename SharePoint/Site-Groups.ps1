@@ -345,6 +345,55 @@ function Show-ProvisioningPreview {
 }
 
 # ============================================================================
+# ENTRA GROUP CREATION
+# ============================================================================
+
+function New-EntraSiteGroup {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Interactive console script; ShouldProcess not applicable')]
+    param(
+        [string]$DisplayName,
+        [string]$Description
+    )
+
+    # Check if group already exists
+    $encoded  = [System.Uri]::EscapeDataString($DisplayName)
+    $existing = Invoke-MgGraphRequest `
+        -Uri    "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$encoded'" `
+        -Method GET `
+        -ErrorAction SilentlyContinue
+
+    if ($existing -and $existing.value.Count -gt 0) {
+        $existingId = $existing.value[0].id
+        Write-Host "     Group exists (skipped): $DisplayName" -ForegroundColor Yellow
+        return @{ Success = $true; Skipped = $true; GroupId = $existingId }
+    }
+
+    try {
+        $body = @{
+            displayName     = $DisplayName
+            description     = $Description
+            mailEnabled     = $false
+            mailNickname    = ($DisplayName -replace '[^a-zA-Z0-9]', '')
+            securityEnabled = $true
+        } | ConvertTo-Json
+
+        $result = Invoke-MgGraphRequest `
+            -Uri         "https://graph.microsoft.com/v1.0/groups" `
+            -Method      POST `
+            -Body        $body `
+            -ContentType "application/json" `
+            -ErrorAction Stop
+
+        Write-Host "     Created group: $DisplayName" -ForegroundColor Green
+        return @{ Success = $true; Skipped = $false; GroupId = $result.id }
+    }
+    catch {
+        Write-Host "     Failed to create group '$DisplayName': $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
