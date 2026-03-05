@@ -461,6 +461,46 @@ function Set-SiteGroupPermission {
 }
 
 # ============================================================================
+# EXTERNAL SHARING
+# ============================================================================
+
+function Get-SiteSharingChoice {
+    param([string]$SiteTitle)
+
+    Write-Host ""
+    Write-Host "   External sharing for '$SiteTitle':" -ForegroundColor White
+    foreach ($key in $SharingOptions.Keys) {
+        Write-Host ("   {0}. {1}" -f $key, $SharingOptions[$key].Label) -ForegroundColor Gray
+    }
+    Write-Host ""
+    $choice = Read-Host "   Selection"
+
+    $choice = $choice.ToUpper().Trim()
+    if ($SharingOptions.ContainsKey($choice)) {
+        return $SharingOptions[$choice]
+    }
+    return $SharingOptions['K']
+}
+
+function Set-SiteSharingOverride {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Interactive console script; ShouldProcess not applicable')]
+    param(
+        [string]$SiteUrl,
+        [string]$SharingCapability
+    )
+
+    try {
+        Set-SPOSite -Identity $SiteUrl -SharingCapability $SharingCapability -ErrorAction Stop
+        Write-Host "     External sharing set: $SharingCapability" -ForegroundColor Green
+        return @{ Success = $true }
+    }
+    catch {
+        Write-Host "     Failed to set sharing: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
