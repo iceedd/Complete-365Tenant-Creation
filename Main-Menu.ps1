@@ -1490,11 +1490,9 @@ function Connect-SharePointOnline {
         $tenantName = $initialDomain -replace '\.onmicrosoft\.com$', ''
         $spoAdminUrl = "https://$tenantName-admin.sharepoint.com"
 
-        # Ensure SPO module is installed and imported
-        if (!(Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
-            Write-Host "   Installing Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Yellow
-            Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        }
+        # Install/update SPO module and import it
+        Write-Host "   Checking Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Gray
+        Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
         Import-Module Microsoft.Online.SharePoint.PowerShell -Force -ErrorAction Stop
 
         # Check if already connected
