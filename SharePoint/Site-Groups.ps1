@@ -271,6 +271,40 @@ function Get-ExistingSiteTargets {
 }
 
 # ============================================================================
+# SITE CREATION
+# ============================================================================
+
+function Invoke-SiteCreation {
+    param([hashtable]$SiteDefinition)
+
+    try {
+        $existing = Get-SPOSite -Identity $SiteDefinition.FullUrl -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            Write-Host "     Site already exists — skipping creation" -ForegroundColor Yellow
+            return @{ Success = $true; Skipped = $true }
+        }
+
+        $template = $SiteTemplates[$SiteDefinition.Type]
+
+        New-SPOSite `
+            -Url                      $SiteDefinition.FullUrl `
+            -Owner                    $SiteDefinition.Owner `
+            -Title                    $SiteDefinition.Title `
+            -Template                 $template `
+            -StorageQuota             1024 `
+            -StorageQuotaWarningLevel 512 `
+            -ErrorAction              Stop
+
+        Write-Host "     Created: $($SiteDefinition.FullUrl)" -ForegroundColor Green
+        return @{ Success = $true; Skipped = $false }
+    }
+    catch {
+        Write-Host "     Failed to create site: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
