@@ -84,6 +84,66 @@ function Initialize-ScriptModules {
 }
 
 # ============================================================================
+# PREREQUISITES
+# ============================================================================
+
+function Test-Prerequisites {
+    Write-Host ""
+    Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    # SPO connection
+    Write-Host "   Checking SharePoint Online connection..." -ForegroundColor Gray
+    try {
+        $null = Get-SPOTenant -ErrorAction Stop
+        Write-Host "   SharePoint Online: connected" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "   Not connected to SharePoint Online" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        return @{ Success = $false }
+    }
+
+    # Graph connection
+    Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
+    $graphCtx = Get-MgContext -ErrorAction SilentlyContinue
+    if ($null -eq $graphCtx) {
+        Write-Host "   Not connected to Microsoft Graph" -ForegroundColor Red
+        Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        return @{ Success = $false }
+    }
+    Write-Host "   Microsoft Graph: connected ($($graphCtx.Account))" -ForegroundColor Green
+
+    # Detect tenant root URL
+    Write-Host "   Detecting tenant URL..." -ForegroundColor Gray
+    try {
+        $sample = Get-SPOSite -Limit 5 -ErrorAction Stop |
+                  Where-Object { $_.Url -notlike '*-my.sharepoint.com*' } |
+                  Select-Object -First 1
+
+        $tenantRootUrl = if ($null -ne $sample) {
+            $sample.Url -replace '(https://[^/]+).*', '$1'
+        }
+        else {
+            $tenantName = Read-Host "   Enter your tenant name (e.g. 'contoso')"
+            "https://$tenantName.sharepoint.com"
+        }
+        Write-Host "   Tenant root URL: $tenantRootUrl" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "   Failed to detect tenant URL: $($_.Exception.Message)" -ForegroundColor Red
+        return @{ Success = $false }
+    }
+
+    Write-Host ""
+    return @{
+        Success        = $true
+        TenantRootUrl  = $tenantRootUrl
+        TenantHostname = ([System.Uri]$tenantRootUrl).Host
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
