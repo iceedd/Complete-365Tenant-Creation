@@ -1482,7 +1482,9 @@ function Test-ServiceAuthentication {
 }
 
 function Connect-SharePointOnline {
-    # Derives SPO admin URL from the connected tenant and calls Connect-SPOService
+    # Derives SPO admin URL from the connected tenant and calls Connect-SPOService.
+    # Falls back to PnP.PowerShell token bridge on platforms where Connect-SPOService
+    # fails with 400 (known issue with the SPO module on Linux/macOS).
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $initialDomain = $org.VerifiedDomains | Where-Object { $_.IsInitial } | Select-Object -ExpandProperty Name
@@ -1504,7 +1506,28 @@ function Connect-SharePointOnline {
         catch {}
 
         Write-Host "   Connecting to SharePoint Online ($spoAdminUrl)..." -ForegroundColor Yellow
-        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+
+        # Try standard connection first (works on Windows)
+        try {
+            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+            Write-Host "   SharePoint Online: connected" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            Write-Host "   Direct connection failed ($($_.Exception.Message))" -ForegroundColor Yellow
+            Write-Host "   Using PnP token bridge for cross-platform auth..." -ForegroundColor Yellow
+        }
+
+        # Fallback: PnP.PowerShell handles modern auth on Linux/macOS.
+        # Get its SPO access token and hand it to Connect-SPOService.
+        if (!(Get-Module -ListAvailable -Name 'PnP.PowerShell')) {
+            Write-Host "   Installing PnP.PowerShell..." -ForegroundColor Yellow
+            Install-Module PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        }
+        Import-Module PnP.PowerShell -Force -ErrorAction Stop
+        Connect-PnPOnline -Url $spoAdminUrl -Interactive -ErrorAction Stop
+        $spoToken = Get-PnPAccessToken -ErrorAction Stop
+        Connect-SPOService -Url $spoAdminUrl -AccessToken $spoToken -ErrorAction Stop
         Write-Host "   SharePoint Online: connected" -ForegroundColor Green
         return $true
     }
