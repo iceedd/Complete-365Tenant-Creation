@@ -501,6 +501,31 @@ function Set-SiteSharingOverride {
 }
 
 # ============================================================================
+# SITE ADMIN
+# ============================================================================
+
+function Confirm-SiteCollectionAdmin {
+    param([hashtable]$SiteDefinition)
+
+    try {
+        $site = Get-SPOSite -Identity $SiteDefinition.FullUrl -ErrorAction Stop
+        Write-Host "     Site collection admin: $($site.Owner)" -ForegroundColor Gray
+
+        $addAdmin = Read-Host "     Add/change site collection admin? (Y/N)"
+        if ($addAdmin -like 'Y*') {
+            $adminUpn = Read-Host "     Admin UPN"
+            if (![string]::IsNullOrWhiteSpace($adminUpn)) {
+                Set-SPOSite -Identity $SiteDefinition.FullUrl -Owner $adminUpn -ErrorAction Stop
+                Write-Host "     Site collection admin set: $adminUpn" -ForegroundColor Green
+            }
+        }
+    }
+    catch {
+        Write-Host "     Could not confirm admin: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
