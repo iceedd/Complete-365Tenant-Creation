@@ -1605,11 +1605,6 @@ function Set-ServiceScopes {
 
     Write-Host "   Graph permissions ready for $Service" -ForegroundColor Green
 
-    # SharePoint also requires a separate SPO service connection
-    if ($Service -eq "SharePoint") {
-        return Connect-SharePointOnline
-    }
-
     return $true
 }
 
@@ -2050,7 +2045,16 @@ function Show-ExchangeMenu {
 
 function Show-SharePointMenu {
     if (!(Set-ServiceScopes -Service "SharePoint")) { return }
-    
+
+    # Establish SPO service connection (separate from Graph)
+    Write-Host ""
+    if (!(Connect-SharePointOnline)) {
+        Write-Host "   ❌ Could not connect to SharePoint Online." -ForegroundColor Red
+        Write-Host "   Press any key to return to main menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 3 }
+        return
+    }
+
     do {
         Clear-Host
         
