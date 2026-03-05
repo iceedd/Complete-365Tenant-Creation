@@ -144,6 +144,133 @@ function Test-Prerequisites {
 }
 
 # ============================================================================
+# MODE SELECTION & SITE INPUT
+# ============================================================================
+
+function Show-ModeSelection {
+    Write-Host ""
+    Write-Host "   Select mode:" -ForegroundColor White
+    Write-Host "   1. Create new site + groups" -ForegroundColor Gray
+    Write-Host "   2. Target existing site(s)" -ForegroundColor Gray
+    Write-Host "   Q. Cancel" -ForegroundColor Gray
+    Write-Host ""
+    return Read-Host "   Selection"
+}
+
+function Get-NewSiteDefinition {
+    param([string]$TenantRootUrl)
+
+    $title = Read-Host "   Site title (required)"
+    if ([string]::IsNullOrWhiteSpace($title)) {
+        Write-Host "   Title is required" -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    Write-Host "   Site type:" -ForegroundColor White
+    Write-Host "   1. Team Site" -ForegroundColor Gray
+    Write-Host "   2. Communication Site" -ForegroundColor Gray
+    $typeChoice = Read-Host "   Selection (1 or 2)"
+    $siteType   = if ($typeChoice -eq '2') { 'CommunicationSite' } else { 'TeamSite' }
+
+    $suggestedAlias = ($title -replace '[^a-zA-Z0-9]', '-' -replace '-+', '-').Trim('-').ToLower()
+    Write-Host ""
+    Write-Host "   Suggested URL: $TenantRootUrl/sites/$suggestedAlias" -ForegroundColor Gray
+    $aliasInput = Read-Host "   URL alias (Enter to accept)"
+    $urlAlias   = if ([string]::IsNullOrWhiteSpace($aliasInput)) {
+        $suggestedAlias
+    } else {
+        ($aliasInput.Trim() -replace '[^a-zA-Z0-9\-]', '').Trim('-').ToLower()
+    }
+
+    Write-Host ""
+    $owner = Read-Host "   Site owner UPN (e.g. admin@contoso.com)"
+    if ([string]::IsNullOrWhiteSpace($owner)) {
+        Write-Host "   Owner is required" -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    $description = Read-Host "   Description (optional)"
+
+    return @{
+        Title       = $title
+        Type        = $siteType
+        UrlAlias    = $urlAlias
+        FullUrl     = "$TenantRootUrl/sites/$urlAlias"
+        Owner       = $owner
+        Description = $description
+        IsNew       = $true
+    }
+}
+
+function Get-ExistingSiteTargets {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'TenantRootUrl', Justification = 'Parameter kept for consistent API signature; sites retrieved directly via SPO')]
+    param([string]$TenantRootUrl)
+
+    Write-Host ""
+    Write-Host "   Select existing sites:" -ForegroundColor White
+    Write-Host "   1. All site collections (excluding OneDrive)" -ForegroundColor Gray
+    Write-Host "   2. Enter specific site URL" -ForegroundColor Gray
+    Write-Host ""
+    $scopeChoice = Read-Host "   Selection"
+
+    $sites = @()
+
+    switch ($scopeChoice) {
+        '1' {
+            Write-Host "   Retrieving sites..." -ForegroundColor Gray
+            try {
+                $all = Get-SPOSite -Limit All -ErrorAction Stop |
+                       Where-Object { $_.Url -notlike '*-my.sharepoint.com*' }
+                foreach ($s in $all) {
+                    $alias = $s.Url -replace '.*/sites/', ''
+                    $sites += @{
+                        Title    = $s.Title
+                        FullUrl  = $s.Url
+                        UrlAlias = $alias
+                        Owner    = $s.Owner
+                        IsNew    = $false
+                    }
+                }
+                Write-Host "   Found $($sites.Count) site(s)" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Failed to retrieve sites: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        '2' {
+            $url = Read-Host "   Site URL (e.g. https://contoso.sharepoint.com/sites/marketing)"
+            if ($url -match '^https://') {
+                $alias = $url -replace '.*/sites/', ''
+                $site  = Get-SPOSite -Identity $url -ErrorAction SilentlyContinue
+                if ($null -ne $site) {
+                    $sites += @{
+                        Title    = $site.Title
+                        FullUrl  = $url
+                        UrlAlias = $alias
+                        Owner    = $site.Owner
+                        IsNew    = $false
+                    }
+                    Write-Host "   Found: $($site.Title)" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "   Site not found: $url" -ForegroundColor Red
+                }
+            }
+            else {
+                Write-Host "   Invalid URL format" -ForegroundColor Red
+            }
+        }
+        default {
+            Write-Host "   Invalid selection" -ForegroundColor Yellow
+        }
+    }
+
+    return $sites
+}
+
+# ============================================================================
 # ENTRY POINT  (main function added in a later task)
 # ============================================================================
 
