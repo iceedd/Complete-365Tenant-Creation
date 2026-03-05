@@ -9,14 +9,14 @@
 .AUTHOR
     CB & Claude Partnership
 .VERSION
-    1.7
+    1.8
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.7"
+$Script:MenuVersion = "1.8"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1561,6 +1561,7 @@ function Set-ServiceScopes {
         )
         "SharePoint" = @(
             "Sites.ReadWrite.All",
+            "Sites.FullControl.All",
             "Group.ReadWrite.All"
         )
     }
@@ -2064,17 +2065,19 @@ function Show-SharePointMenu {
         Write-Host "🌐 SHAREPOINT ONLINE AUTOMATION" -ForegroundColor Green
         Write-Host "=" * 60 -ForegroundColor Green
         Write-Host "1. 🏢 Site Collection Creation" -ForegroundColor Green
-        Write-Host "2. 👥 Permission Groups" -ForegroundColor Green
+        Write-Host "2. 👥 Permission Groups (audit/repair)" -ForegroundColor Green
         Write-Host "3. 🔗 External Sharing Policies" -ForegroundColor Green
+        Write-Host "4. 🔐 Site Groups (Entra security groups)" -ForegroundColor Green
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
-        
+
         $choice = Read-Host "Select option"
-        
+
         switch ($choice) {
             "1" { Invoke-GitHubScript -ScriptPath "SharePoint/Site-Creation.ps1" }
             "2" { Invoke-GitHubScript -ScriptPath "SharePoint/Permission-Groups.ps1" }
             "3" { Invoke-GitHubScript -ScriptPath "SharePoint/External-Sharing.ps1" }
+            "4" { Invoke-GitHubScript -ScriptPath "SharePoint/Site-Groups.ps1" }
             "0" { break }
             default { Write-Host "❌ Invalid option!" -ForegroundColor Red; Start-Sleep 1 }
         }
