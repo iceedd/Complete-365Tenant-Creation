@@ -1482,38 +1482,49 @@ function Test-ServiceAuthentication {
 }
 
 function Connect-SharePointOnline {
-    # Derives SPO admin URL from the connected tenant, imports the SPO module,
-    # and calls Connect-SPOService.
+    # Verifies SharePoint Online access via Graph (primary), then attempts to
+    # connect the SPO module for scripts that use SPO cmdlets (best-effort).
     try {
         $org = Get-MgOrganization | Select-Object -First 1
         $initialDomain = $org.VerifiedDomains | Where-Object { $_.IsInitial } | Select-Object -ExpandProperty Name
         $tenantName = $initialDomain -replace '\.onmicrosoft\.com$', ''
         $spoAdminUrl = "https://$tenantName-admin.sharepoint.com"
 
-        # Install/update SPO module and import it
-        Write-Host "   Checking Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Gray
-        Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        Import-Module Microsoft.Online.SharePoint.PowerShell -Force -ErrorAction Stop
+        # Store for sub-scripts that need to know the admin URL
+        $Global:SPOAdminUrl  = $spoAdminUrl
+        $Global:SPOTenantName = $tenantName
 
-        # Check if already connected
+        # Primary check: verify SPO is reachable via Graph (already authenticated)
+        Write-Host "   Verifying SharePoint Online access..." -ForegroundColor Yellow
         try {
-            Get-SPOTenant -ErrorAction Stop | Out-Null
-            Write-Host "   SharePoint Online: already connected" -ForegroundColor Green
-            return $true
+            Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites/root" -Method GET -ErrorAction Stop | Out-Null
+            Write-Host "   SharePoint Online: accessible" -ForegroundColor Green
         }
-        catch {}
+        catch {
+            Write-Host "   Cannot reach SharePoint Online via Graph: $($_.Exception.Message)" -ForegroundColor Red
+            return $false
+        }
 
-        # Clear any stale cached auth before connecting (ignore if nothing to disconnect)
-        try { Disconnect-SPOService -ErrorAction Stop } catch {}
+        # Best-effort: also connect the SPO module for scripts that use SPO cmdlets
+        if (!(Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
+            Write-Host "   Installing Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Yellow
+            Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
+        }
+        try {
+            Import-Module Microsoft.Online.SharePoint.PowerShell -Force -ErrorAction Stop
+            try { Disconnect-SPOService -ErrorAction Stop } catch {}
+            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+            Write-Host "   SPO module: connected" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   ⚠️  SPO module unavailable — site creation/sharing cmdlets will not work" -ForegroundColor Yellow
+            Write-Host "      To fix: ensure the 'SharePoint Online Remote PowerShell' app is consented in your tenant" -ForegroundColor Gray
+        }
 
-        Write-Host "   Connecting to SharePoint Online ($spoAdminUrl)..." -ForegroundColor Yellow
-        Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-        Write-Host "   SharePoint Online: connected" -ForegroundColor Green
         return $true
     }
     catch {
         Write-Host "   Failed to connect to SharePoint Online: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "   Connect manually: Connect-SPOService -Url https://[tenant]-admin.sharepoint.com" -ForegroundColor Gray
         return $false
     }
 }
