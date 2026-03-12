@@ -403,7 +403,8 @@ function Import-WAUAdmx {
         }
 
         $uri = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyUploadedDefinitionFiles"
-        $result = Invoke-MgGraphRequest -Uri $uri -Method POST -Body ($uploadBody | ConvertTo-Json -Depth 10)
+        $jsonBody = $uploadBody | ConvertTo-Json -Depth 10
+        $result = Invoke-MgGraphRequest -Uri $uri -Method POST -Body $jsonBody -ContentType "application/json"
 
         Write-Host "     ADMX imported (ID: $($result.id))" -ForegroundColor Green
 
@@ -429,8 +430,15 @@ function Import-WAUAdmx {
         }
     }
     catch {
-        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
-        return @{ Success = $false; Error = $_.Exception.Message }
+        $errMsg = $_.Exception.Message
+        if ($_.ErrorDetails.Message) {
+            try {
+                $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message
+                if ($detail) { $errMsg += " - $detail" }
+            } catch {}
+        }
+        Write-Host "     Failed: $errMsg" -ForegroundColor Red
+        return @{ Success = $false; Error = $errMsg }
     }
 }
 
