@@ -403,7 +403,7 @@ function Import-WAUAdmx {
         }
 
         $uri = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyUploadedDefinitionFiles"
-        $result = Invoke-MgGraphRequest -Uri $uri -Method POST -Body $uploadBody
+        $result = Invoke-MgGraphRequest -Uri $uri -Method POST -Body ($uploadBody | ConvertTo-Json -Depth 10)
 
         Write-Host "     ADMX imported (ID: $($result.id))" -ForegroundColor Green
 
@@ -475,15 +475,13 @@ function New-WAUStoreApp {
                         settings = @{
                             "@odata.type" = "#microsoft.graph.winGetAppAssignmentSettings"
                             notifications = "showAll"
-                            installTimeSettings = $null
-                            restartSettings = $null
                         }
                     }
                 )
             }
 
             $assignUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($newApp.id)/assign"
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $assignmentBody
+            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
             Write-Host "     Assigned to $TargetGroup (Required)" -ForegroundColor Green
         }
 
