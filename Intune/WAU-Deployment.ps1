@@ -135,8 +135,9 @@ function Get-ADMXFiles {
         $baseUrl = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/ADMX"
 
         Write-Host "   Downloading from GitHub..." -ForegroundColor Gray
-        $script:ADMXContent = Invoke-RestMethod -Uri "$baseUrl/$ADMXFileName" -ErrorAction Stop
-        $script:ADMLContent = Invoke-RestMethod -Uri "$baseUrl/$ADMLFileName" -ErrorAction Stop
+        # Use Invoke-WebRequest to get raw string - Invoke-RestMethod auto-parses XML into objects
+        $script:ADMXContent = (Invoke-WebRequest -Uri "$baseUrl/$ADMXFileName" -ErrorAction Stop).Content
+        $script:ADMLContent = (Invoke-WebRequest -Uri "$baseUrl/$ADMLFileName" -ErrorAction Stop).Content
 
         Write-Host "   Downloaded ADMX/ADML from GitHub" -ForegroundColor Green
         return $true
