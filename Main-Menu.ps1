@@ -2396,10 +2396,15 @@ function Start-AutomationHub {
                     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
                 }
             }
-            "9" { 
+            "9" {
                 Clear-ScriptCache
-                Write-Host "🧹 Session state cleared!" -ForegroundColor Green
                 Clear-SessionState
+                Write-Host ""
+                Write-Host "✅ Script cache cleared - sub-scripts will re-download from GitHub on next run." -ForegroundColor Green
+                Write-Host "⚠️  Note: Changes to Main-Menu.ps1 itself require a full PowerShell restart." -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
             }
             "d" { Show-DebugStatusOverride }
             "r" { 
