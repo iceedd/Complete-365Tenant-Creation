@@ -472,10 +472,6 @@ function New-WAUStoreApp {
                             groupId = $GroupId
                         }
                         intent = "required"
-                        settings = @{
-                            "@odata.type" = "#microsoft.graph.winGetAppAssignmentSettings"
-                            notifications = "showAll"
-                        }
                     }
                 )
             }
