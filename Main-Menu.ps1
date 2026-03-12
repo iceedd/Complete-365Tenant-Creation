@@ -1885,7 +1885,14 @@ function Show-IntuneMenu {
         } else {
             Write-Host "5. 🚀 Autopilot Configuration [REQUIRES: Device Groups]" -ForegroundColor Red
         }
-        
+
+        # WAU - Requires Device Groups
+        if (Test-Prerequisites -RequiredStep "AutopilotConfig") {
+            Write-Host "6. 🔄 Winget Auto Update (WAU)" -ForegroundColor Green
+        } else {
+            Write-Host "6. 🔄 Winget Auto Update (WAU) [REQUIRES: Device Groups]" -ForegroundColor Red
+        }
+
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
         
@@ -1927,9 +1934,19 @@ function Show-IntuneMenu {
                     Start-Sleep 2
                 }
             }
-            "5" { 
+            "5" {
                 if (Test-Prerequisites -RequiredStep "AutopilotConfig") {
                     Invoke-GitHubScript -ScriptPath "Intune/Autopilot-Config.ps1"
+                    Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
+                    Initialize-CompletedSteps
+                } else {
+                    Write-Host "❌ Create Device Groups first!" -ForegroundColor Red
+                    Start-Sleep 2
+                }
+            }
+            "6" {
+                if (Test-Prerequisites -RequiredStep "AutopilotConfig") {
+                    Invoke-GitHubScript -ScriptPath "Intune/WAU-Deployment.ps1"
                     Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
                     Initialize-CompletedSteps
                 } else {
