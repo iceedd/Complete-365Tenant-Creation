@@ -585,19 +585,19 @@ function New-WAUConfigPolicy {
             $settingsConfigured = 0
 
             # Map our config to policy display names
-            # Note: For dropdown/text settings, we just enable them - the ADMX defaults will apply
+            # Toggle = simple enabled/disabled, Text = requires presentationValues with a string value
             $settingsMap = @{
-                "DesktopShortcut" = @{ Pattern = "Desktop.*Shortcut"; Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1) }
-                "StartMenuShortcut" = @{ Pattern = "Start.*Menu.*Shortcut"; Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1) }
-                "NotificationLevel" = @{ Pattern = "Notification.*level"; Enabled = $true }  # ADMX default: SuccessOnly
-                "UpdatesAtTime" = @{ Pattern = "Update.*at.*time"; Enabled = $true }         # ADMX default: 12:00
-                "UpdatesInterval" = @{ Pattern = "Update.*frequency|interval"; Enabled = $true }  # ADMX default: Daily
-                "UpdatesAtLogon" = @{ Pattern = "Updates.*at.*logon"; Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1) }
-                "BypassListForUsers" = @{ Pattern = "Bypass.*List"; Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1) }
-                "DoNotUpdate" = @{ Pattern = "Do.*not.*update"; Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1) }
-                "InstallUserContext" = @{ Pattern = "Install.*user.*context"; Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1) }
-                "RunOnMetered" = @{ Pattern = "Run.*on.*metered"; Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1) }
-                "UseWhiteList" = @{ Pattern = "Use.*White.*List"; Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1) }
+                "DesktopShortcut"    = @{ Pattern = "Desktop.*Shortcut";            Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1) }
+                "StartMenuShortcut"  = @{ Pattern = "Start.*Menu.*Shortcut";        Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1) }
+                "UpdatesAtLogon"     = @{ Pattern = "Updates.*at.*logon";           Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1) }
+                "BypassListForUsers" = @{ Pattern = "Bypass.*List";                 Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1) }
+                "DoNotUpdate"        = @{ Pattern = "Do.*not.*update";              Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1) }
+                "InstallUserContext" = @{ Pattern = "Install.*user.*context";       Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1) }
+                "RunOnMetered"       = @{ Pattern = "Run.*on.*metered";             Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1) }
+                "UseWhiteList"       = @{ Pattern = "Use.*White.*List";             Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1) }
+                "NotificationLevel"  = @{ Pattern = "Notification.*level";          Enabled = $true; TextValue = $WAUConfig.Settings.NotificationLevel }
+                "UpdatesAtTime"      = @{ Pattern = "Update.*at.*time";             Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesAtTime }
+                "UpdatesInterval"    = @{ Pattern = "Update.*frequency|interval";   Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesInterval }
             }
 
             foreach ($settingName in $settingsMap.Keys) {
@@ -606,14 +606,30 @@ function New-WAUConfigPolicy {
 
                 if ($matchingDef) {
                     try {
-                        # Just enable the policy - ADMX defaults will apply for dropdowns/text
                         $defValueBody = @{
                             "definition@odata.bind" = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('$($matchingDef.id)')"
                             enabled = $setting.Enabled
                         }
 
+                        # For text/dropdown settings, fetch the presentation and pass the value
+                        if ($setting.TextValue) {
+                            $presUri = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('$($matchingDef.id)')/presentations"
+                            $presentations = Invoke-MgGraphRequest -Uri $presUri -Method GET
+                            $presentation = $presentations.value | Select-Object -First 1
+
+                            if ($presentation) {
+                                $defValueBody.presentationValues = @(
+                                    @{
+                                        "@odata.type" = "#microsoft.graph.groupPolicyPresentationValueText"
+                                        "presentation@odata.bind" = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('$($matchingDef.id)')/presentations('$($presentation.id)')"
+                                        value = $setting.TextValue
+                                    }
+                                )
+                            }
+                        }
+
                         $defValueUri = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyConfigurations/$($newConfig.id)/definitionValues"
-                        $null = Invoke-MgGraphRequest -Uri $defValueUri -Method POST -Body $defValueBody
+                        $null = Invoke-MgGraphRequest -Uri $defValueUri -Method POST -Body ($defValueBody | ConvertTo-Json -Depth 10)
                         $settingsConfigured++
                         Write-Host "       Configured: $($matchingDef.displayName)" -ForegroundColor Gray
                     }
@@ -623,8 +639,7 @@ function New-WAUConfigPolicy {
                 }
             }
 
-            Write-Host "     Configured $settingsConfigured of 11 toggle settings" -ForegroundColor Green
-            Write-Host "     (Dropdown/text settings use ADMX defaults: SuccessOnly, 12:00, Daily)" -ForegroundColor Cyan
+            Write-Host "     Configured $settingsConfigured of 11 settings" -ForegroundColor Green
 
             # Step 4: Enable the Application List policy (values added manually in Intune)
             Write-Host "     Enabling Application List policy..." -ForegroundColor Gray
