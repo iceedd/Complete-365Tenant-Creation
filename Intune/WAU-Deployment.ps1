@@ -380,12 +380,19 @@ function Show-WAUPreview {
 function Import-WAUAdmx {
     try {
         Write-Host "     Encoding ADMX content..." -ForegroundColor Gray
+        # Encode raw bytes directly to avoid string encoding issues
         $admxBytes = [System.Text.Encoding]::UTF8.GetBytes($script:ADMXContent)
         $admxContentB64 = [Convert]::ToBase64String($admxBytes)
+        Write-Host "     ADMX: $($admxBytes.Length) bytes, B64 length: $($admxContentB64.Length)" -ForegroundColor Gray
 
         Write-Host "     Encoding ADML content..." -ForegroundColor Gray
         $admlBytes = [System.Text.Encoding]::UTF8.GetBytes($script:ADMLContent)
         $admlContentB64 = [Convert]::ToBase64String($admlBytes)
+        Write-Host "     ADML: $($admlBytes.Length) bytes" -ForegroundColor Gray
+
+        # Verify content looks like XML
+        $admxPreview = $script:ADMXContent.Substring(0, [Math]::Min(80, $script:ADMXContent.Length))
+        Write-Host "     ADMX preview: $admxPreview" -ForegroundColor DarkGray
 
         Write-Host "     Uploading ADMX to Intune..." -ForegroundColor Gray
 
