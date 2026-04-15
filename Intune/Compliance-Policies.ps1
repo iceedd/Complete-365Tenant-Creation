@@ -8,7 +8,7 @@
     Includes password/passcode requirements, encryption enforcement, OS version compliance,
     and security baseline settings for Android, iOS, macOS, and Windows devices.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode
 #>

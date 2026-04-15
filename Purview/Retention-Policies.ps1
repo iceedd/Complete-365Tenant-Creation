@@ -7,7 +7,7 @@
     Manages data retention policies with prerequisite checks for Purview roles.
     Includes preview mode and auto-fix for common issues.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode and role checks
 #>

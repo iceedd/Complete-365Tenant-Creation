@@ -9,7 +9,7 @@
     3. Deploys WAU app from Microsoft Store (new)
     Includes blacklist for Microsoft apps that should be managed separately.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode
 .NOTES

@@ -7,7 +7,7 @@
     Configures password expiration (never expire), SSPR settings,
     and assigns SSPR to the SSPR Eligible Users group.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Implemented password policies and SSPR configuration
 #>

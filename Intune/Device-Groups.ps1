@@ -7,7 +7,7 @@
     Creates OS-specific dynamic security groups for device management and policy assignment.
     Includes preview mode and confirmation before creation.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode
 #>

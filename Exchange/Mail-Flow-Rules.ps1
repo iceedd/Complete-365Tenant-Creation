@@ -7,7 +7,7 @@
     Configures mail flow rules for email routing, security, and compliance.
     COMING SOON - This feature is under development.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Placeholder
 #>

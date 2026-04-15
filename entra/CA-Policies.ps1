@@ -7,7 +7,7 @@
     Disables Security Defaults and creates comprehensive CA policies with proper exclusions.
     Includes auto-fix for prerequisites like Security Defaults and missing groups.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode and auto-fix
 #>
@@ -127,11 +127,45 @@ function Test-Prerequisites {
         return @{ Success = $false }
     }
 
+    # Check for geo-based CA groups (optional — C007 skipped if missing)
+    Write-Host "   Checking for geo-based CA groups (optional)..." -ForegroundColor Gray
+    $geoUkGroup = Get-MgGroup -Filter "displayName eq 'CA-GEO-UK'" -ErrorAction SilentlyContinue
+    $geoIntlGroup = Get-MgGroup -Filter "displayName eq 'CA-GEO-International'" -ErrorAction SilentlyContinue
+
+    if ($geoUkGroup -and $geoIntlGroup) {
+        Write-Host "   CA-GEO-UK found (ID: $($geoUkGroup.Id))" -ForegroundColor Green
+        Write-Host "   CA-GEO-International found (ID: $($geoIntlGroup.Id))" -ForegroundColor Green
+    }
+    else {
+        Write-Host "   Geo groups not found - C007 (Block Outside UK) will be skipped" -ForegroundColor Yellow
+    }
+
+    # Check for UK named location (optional — C007 skipped if missing)
+    Write-Host "   Checking for UK named location (optional)..." -ForegroundColor Gray
+    $ukLocation = $null
+    try {
+        $locations = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" `
+            -ErrorAction Stop
+        $ukLocation = $locations.value | Where-Object { $_.displayName -eq "UK" } | Select-Object -First 1
+    }
+    catch { }
+
+    if ($ukLocation) {
+        Write-Host "   UK named location found (ID: $($ukLocation.id))" -ForegroundColor Green
+    }
+    else {
+        Write-Host "   UK named location not found - C007 will be skipped" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     return @{
-        Success = $true
-        NoMfaGroupId = $noMfaGroupResult.GroupId
+        Success                  = $true
+        NoMfaGroupId             = $noMfaGroupResult.GroupId
         SecurityDefaultsDisabled = $securityDefaultsResult.IsDisabled
+        GeoUkGroupId             = $geoUkGroup?.Id
+        GeoIntlGroupId           = $geoIntlGroup?.Id
+        UkLocationId             = $ukLocation?.id
     }
 }
 
@@ -274,12 +308,18 @@ function Get-TenantInfo {
 }
 
 function Get-PolicyDefinitions {
-    param([string]$NoMfaGroupId)
+    param(
+        [string]$NoMfaGroupId,
+        [string]$PolicyState = "enabled",
+        [string]$GeoUkGroupId,
+        [string]$GeoIntlGroupId,
+        [string]$UkLocationId
+    )
 
     return @(
         @{
             displayName = "C001 - Block High Risk Users"
-            state = "enabled"
+            state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
@@ -296,7 +336,7 @@ function Get-PolicyDefinitions {
         },
         @{
             displayName = "C002 - MFA Required for All Users"
-            state = "enabled"
+            state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("browser", "mobileAppsAndDesktopClients")
@@ -312,7 +352,7 @@ function Get-PolicyDefinitions {
         },
         @{
             displayName = "C003 - Block Non Corporate Devices"
-            state = "enabled"
+            state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
@@ -329,7 +369,7 @@ function Get-PolicyDefinitions {
         },
         @{
             displayName = "C004 - Require Password Change for High Risk Users"
-            state = "enabled"
+            state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
@@ -346,7 +386,7 @@ function Get-PolicyDefinitions {
         },
         @{
             displayName = "C005 - Require MFA for Risky Sign-Ins"
-            state = "enabled"
+            state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
@@ -360,7 +400,50 @@ function Get-PolicyDefinitions {
                 builtInControls = @("mfa")
                 operator = "OR"
             }
+        },
+        @{
+            displayName = "C006 - Block Legacy Authentication"
+            state = $PolicyState
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("exchangeActiveSync", "other")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("block")
+                operator = "OR"
+            }
         }
+    ) + $(
+        # C007 only added if geo groups and UK named location exist in this tenant
+        if ($GeoUkGroupId -and $GeoIntlGroupId -and $UkLocationId) {
+            @(
+                @{
+                    displayName = "C007 - Block Sign-In Outside UK (UK Users)"
+                    state       = $PolicyState
+                    conditions  = @{
+                        applications   = @{ includeApplications = @("All") }
+                        clientAppTypes = @("all")
+                        users          = @{
+                            includeGroups = @($GeoUkGroupId)
+                            excludeGroups = @($NoMfaGroupId, $GeoIntlGroupId)
+                        }
+                        locations      = @{
+                            includeLocations = @("All")
+                            excludeLocations = @($UkLocationId, "AllTrusted")
+                        }
+                    }
+                    grantControls = @{
+                        builtInControls = @("block")
+                        operator        = "OR"
+                    }
+                }
+            )
+        }
+        else { @() }
     )
 }
 
@@ -472,10 +555,41 @@ function Start-CAPolicyCreation {
         return
     }
 
-    $noMfaGroupId = $prereqResult.NoMfaGroupId
+    $noMfaGroupId    = $prereqResult.NoMfaGroupId
+    $geoUkGroupId    = $prereqResult.GeoUkGroupId
+    $geoIntlGroupId  = $prereqResult.GeoIntlGroupId
+    $ukLocationId    = $prereqResult.UkLocationId
 
-    # Step 2: Load data
-    Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
+    # Step 2: Choose policy mode
+    Write-Host "  STEP 2: Policy Mode" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "   [1] Report-only  - Policies log but do NOT enforce (recommended for new tenants)" -ForegroundColor Cyan
+    Write-Host "   [2] Enabled      - Policies enforce immediately" -ForegroundColor Yellow
+    Write-Host ""
+    $modeChoice = Read-Host "   Select mode (1 or 2)"
+
+    switch ($modeChoice) {
+        "1" {
+            $policyState = "enabledForReportingButNotEnforced"
+            $modeLabel = "Report-only"
+            Write-Host "   Mode: Report-only (monitoring only, no enforcement)" -ForegroundColor Cyan
+        }
+        "2" {
+            $policyState = "enabled"
+            $modeLabel = "Enabled (enforcing)"
+            Write-Host "   Mode: Enabled - policies will enforce immediately" -ForegroundColor Yellow
+        }
+        default {
+            Write-Host "   Invalid selection. Defaulting to Report-only for safety." -ForegroundColor Yellow
+            $policyState = "enabledForReportingButNotEnforced"
+            $modeLabel = "Report-only (default)"
+        }
+    }
+    Write-Host ""
+
+    # Step 3: Load data
+    Write-Host "  STEP 3: Loading Data" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
     $tenantInfo = Get-TenantInfo
@@ -485,12 +599,14 @@ function Start-CAPolicyCreation {
     }
     Write-Host "   Tenant: $($tenantInfo.OrganizationName)" -ForegroundColor Green
 
-    $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId
+    $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId -PolicyState $policyState `
+        -GeoUkGroupId $geoUkGroupId -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId
     Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
 
     # Step 3: Preview
     Write-Host ""
-    Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
+    Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
+    Write-Host "   Mode: $modeLabel" -ForegroundColor Cyan
     Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId
 
     # Confirmation
@@ -507,9 +623,9 @@ function Start-CAPolicyCreation {
         return
     }
 
-    # Step 4: Execute
+    # Step 5: Execute
     Write-Host ""
-    Write-Host "  STEP 4: Creating Policies" -ForegroundColor Yellow
+    Write-Host "  STEP 5: Creating Policies" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
     $results = @{

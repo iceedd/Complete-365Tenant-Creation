@@ -6,7 +6,7 @@
 .DESCRIPTION
     Manages anti-phishing protection, impersonation protection, and mailbox intelligence
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0
 #>

@@ -7,7 +7,7 @@
     Creates web content filtering policies via Intune Settings Catalog.
     Requires Microsoft Defender for Endpoint Plan 2 licensing.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode and license checks
 #>

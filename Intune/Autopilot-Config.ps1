@@ -7,7 +7,7 @@
     Automated Autopilot profile creation and device enrollment settings.
     COMING SOON - This feature is under development.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Placeholder
 #>

@@ -7,7 +7,7 @@
     Universal PowerShell 7 automation hub for Microsoft 365 tenant configuration.
     Downloads latest scripts from GitHub and provides centralized authentication with prerequisite blocking.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     1.8
 #>
@@ -446,7 +446,7 @@ function Test-ConditionalAccessPoliciesExist {
         $policies = Get-MgIdentityConditionalAccessPolicy -ErrorAction SilentlyContinue | 
             Where-Object { 
                 $_.State -eq "enabled" -and 
-                ($_.DisplayName -like "*BITS*" -or 
+                ($_.DisplayName -like "*LYON*" -or 
                  $_.DisplayName -like "*Admin*" -or 
                  $_.DisplayName -like "*MFA*" -or
                  $_.CreatedDateTime -gt (Get-Date).AddDays(-30)) # Recently created policies
@@ -463,13 +463,13 @@ function Test-AdminAccountsExist {
     try {
         # Check for the core admin accounts created by the Admin-Creation script
         $adminAccounts = @(
-            "BITS-Admin-Cloud",
-            "BITS-Admin-HD", 
-            "BITS-Admin-BG01",
-            "BITS-Admin-BG02"
+            "LYON-Admin-Cloud",
+            "LYON-Admin-HD", 
+            "LYON-Admin-BG01",
+            "LYON-Admin-BG02"
         )
         
-        $existingUsers = Get-MgUser -Filter "department eq 'BITS Admin'" -ErrorAction SilentlyContinue
+        $existingUsers = Get-MgUser -Filter "department eq 'LYON Admin'" -ErrorAction SilentlyContinue
         $existingDisplayNames = $existingUsers | Select-Object -ExpandProperty DisplayName
         
         $foundAccounts = 0
@@ -1293,7 +1293,7 @@ function Start-QuickStartFlow {
 function Initialize-CompletedSteps {    
     $Global:CompletedSteps = @{
         SecurityGroups = Test-GroupsExist -GroupNames @(
-            "NoMFA Exclusion Group", "BITS Admin Users", "SSPR Eligible Users",
+            "NoMFA Exclusion Group", "LYON Admin Users", "SSPR Eligible Users",
             "Helpdesk Operator Group"
         )
         DeviceGroups = Test-GroupsExist -GroupNames @(
@@ -1726,7 +1726,14 @@ function Show-EntraMenu {
         } else {
             Write-Host "5. 🔐 Password Policies [REQUIRES: Admin Accounts]" -ForegroundColor Red
         }
-        
+
+        # Authentication Methods - Requires Conditional Access
+        if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
+            Write-Host "6. 🔑 Authentication Methods" -ForegroundColor Green
+        } else {
+            Write-Host "6. 🔑 Authentication Methods [REQUIRES: Conditional Access]" -ForegroundColor Red
+        }
+
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
         
@@ -1807,13 +1814,23 @@ function Show-EntraMenu {
                     Start-Sleep 2
                 }
             }
-            "5" { 
+            "5" {
                 if (Test-Prerequisites -RequiredStep "PasswordPolicies") {
                     Invoke-GitHubScript -ScriptPath "entra/Password-Policies.ps1"
                     Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
                     Initialize-CompletedSteps
                 } else {
                     Write-Host "❌ Create Admin Accounts first!" -ForegroundColor Red
+                    Start-Sleep 2
+                }
+            }
+            "6" {
+                if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
+                    Invoke-GitHubScript -ScriptPath "entra/Auth-Methods.ps1"
+                    Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
+                    Initialize-CompletedSteps
+                } else {
+                    Write-Host "❌ Configure Conditional Access first!" -ForegroundColor Red
                     Start-Sleep 2
                 }
             }
@@ -2482,4 +2499,4 @@ function Start-AutomationHub {
 # Start the automation hub
 Start-AutomationHub
 
-# ▼ CB & Claude | BITS 365 Automation | v1.0 | "Smarter not Harder"
+# ▼ LYON Tech | LYON Tech 365 Automation | v1.0 | "Smarter not Harder"

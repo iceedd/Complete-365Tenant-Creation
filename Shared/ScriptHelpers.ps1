@@ -7,7 +7,7 @@
     Provides standardized functions for logging, prerequisites checking,
     preview mode, execution, and summary display across all scripts.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     1.0
 #>

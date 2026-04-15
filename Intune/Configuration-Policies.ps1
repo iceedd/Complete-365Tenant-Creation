@@ -7,7 +7,7 @@
     Creates 18 production-ready configuration policies using exported settings data.
     Includes preview mode and automatic group assignment.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX with preview mode
 #>

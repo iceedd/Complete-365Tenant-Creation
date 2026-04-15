@@ -8,7 +8,7 @@
     options: Disabled, Existing Guests Only, New and Existing Guests, Anyone.
     Also configures guest expiration and default link settings.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Implemented with multiple sharing options and preview mode
 #>

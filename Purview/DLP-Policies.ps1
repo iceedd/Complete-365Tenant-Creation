@@ -7,7 +7,7 @@
     Creates Data Loss Prevention policies for sensitive information protection.
     COMING SOON - This feature is under development.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Placeholder
 #>

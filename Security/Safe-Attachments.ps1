@@ -6,7 +6,7 @@
 .DESCRIPTION
     Manages email security with safe attachments scanning and URL protection
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0
 #>

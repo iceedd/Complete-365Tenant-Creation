@@ -8,7 +8,7 @@
     Team Sites (STS#3) and Communication Sites (SITEPAGEPUBLISHING#0).
     Previews all sites before creation and reports results.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     1.0 - Implemented Team Site and Communication Site creation
 #>

@@ -7,7 +7,7 @@
     This stub is shown when an outdated Main-Menu.ps1 is running.
     The provisioning tool is integrated directly in Main-Menu.ps1 v1.2+.
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.1 - Update notice
 #>

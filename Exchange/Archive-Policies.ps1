@@ -7,7 +7,7 @@
     Enables archive mailboxes and configures storage quotas for all user mailboxes.
     Warning: 40GB | Prohibit Send: 45GB | Prohibit Send/Receive: 49GB
 .AUTHOR
-    CB & Claude Partnership
+    LYON Tech
 .VERSION
     2.0 - Standardized UX
 #>
