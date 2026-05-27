@@ -8,7 +8,7 @@
     weak methods (SMS, Voice, Email OTP). Configures the registration campaign to exclude
     the NoMFA Exclusion Group (break-glass accounts).
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     1.0
 #>

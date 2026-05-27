@@ -8,7 +8,7 @@
     (Full Control / Edit / Read). Reports on group status and offers to
     create missing standard groups where needed.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     1.0 - Implemented permission group audit and repair
 #>

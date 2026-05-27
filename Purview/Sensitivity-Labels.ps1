@@ -7,7 +7,7 @@
     Creates sensitivity labels for document and email classification.
     COMING SOON - This feature is under development.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0 - Placeholder
 #>

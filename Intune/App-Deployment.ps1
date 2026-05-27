@@ -7,7 +7,7 @@
     Automated application deployment and assignment to device groups.
     COMING SOON - This feature is under development.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0 - Placeholder
 #>

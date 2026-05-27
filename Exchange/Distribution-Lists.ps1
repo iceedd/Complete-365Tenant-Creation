@@ -7,7 +7,7 @@
     Interactive wizard for creating distribution lists using Microsoft Graph REST API.
     Includes preview and validation before creation.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0 - Standardized UX with preview mode
 #>

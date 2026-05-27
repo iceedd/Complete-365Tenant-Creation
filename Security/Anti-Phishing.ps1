@@ -6,7 +6,7 @@
 .DESCRIPTION
     Manages anti-phishing protection, impersonation protection, and mailbox intelligence
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0
 #>

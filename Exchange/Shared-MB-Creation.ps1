@@ -7,7 +7,7 @@
     Interactive wizard for creating shared mailboxes in Exchange Online.
     Includes preview and validation before creation.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0 - Standardized UX
 #>

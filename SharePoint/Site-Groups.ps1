@@ -11,7 +11,7 @@
     Assigns groups to the site via Microsoft Graph.
     Optionally configures per-site external sharing and confirms site collection admin.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     1.0 - Initial implementation
 #>

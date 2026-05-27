@@ -7,7 +7,7 @@
     Disables Security Defaults and creates comprehensive CA policies with proper exclusions.
     Includes auto-fix for prerequisites like Security Defaults and missing groups.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0 - Standardized UX with preview mode and auto-fix
 #>

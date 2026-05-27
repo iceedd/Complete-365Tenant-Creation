@@ -4,14 +4,14 @@
 .SYNOPSIS
     Creates administrative accounts for tenant management
 .DESCRIPTION
-    Creates LYON admin accounts with proper group memberships and Entra ID role assignments.
+    Creates BITS admin accounts with proper group memberships and Entra ID role assignments.
     Includes preview mode and secure password generation.
 
     Accounts Created:
-    - LYON-Admin-Cloud (Intune Admin + Device Local Admin)
-    - LYON-Admin-HD (Line 1 Helpdesk - User/Auth/Exchange/Teams/Intune/SharePoint Admin)
-    - LYON-Admin-BG01 (Break Glass #1 - Global Admin, MFA required)
-    - LYON-Admin-BG02 (Break Glass #2 - Global Admin, NoMFA exempt)
+    - BITS-Admin-Cloud (Intune Admin + Device Local Admin)
+    - BITS-Admin-HD (Line 1 Helpdesk - User/Auth/Exchange/Teams/Intune/SharePoint Admin)
+    - BITS-Admin-BG01 (Break Glass #1 - Global Admin, MFA required)
+    - BITS-Admin-BG02 (Break Glass #2 - Global Admin, NoMFA exempt)
 
     Cloud Admin Roles:
     - Intune Administrator: Full Intune management
@@ -27,7 +27,7 @@
     - SharePoint Administrator: OneDrive/SharePoint issues
     - Intune Help Desk Operator (via Helpdesk Operator Group)
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.3 - Idempotent: existing accounts get roles/groups checked and fixed
         - Auto-assigns Intune Help Desk Operator role to Helpdesk Operator Group
@@ -190,7 +190,7 @@ function Test-Prerequisites {
 
     # Check for required groups
     Write-Host "   Checking for required groups..." -ForegroundColor Gray
-    $requiredGroups = @("LYON Admin Users", "NoMFA Exclusion Group")
+    $requiredGroups = @("BITS Admin Users", "NoMFA Exclusion Group")
     $missingGroups = @()
 
     foreach ($groupName in $requiredGroups) {
@@ -227,11 +227,11 @@ function Get-AdminAccountDefinitions {
     return @(
         @{
             Role = "Cloud"
-            UPN = "LYON-Admin-Cloud@$DefaultDomain"
-            DisplayName = "LYON-Admin-Cloud"
+            UPN = "BITS-Admin-Cloud@$DefaultDomain"
+            DisplayName = "BITS-Admin-Cloud"
             JobTitle = "Cloud Administrator"
             PasswordLength = 12
-            Groups = @("LYON Admin Users", "Helpdesk Operator Group")
+            Groups = @("BITS Admin Users", "Helpdesk Operator Group")
             Description = "Primary cloud admin account"
             # Cloud Admin: Intune management + local admin on devices
             # Gets Intune Help Desk Operator role via Helpdesk Operator Group
@@ -242,11 +242,11 @@ function Get-AdminAccountDefinitions {
         },
         @{
             Role = "HD"
-            UPN = "LYON-Admin-HD@$DefaultDomain"
-            DisplayName = "LYON-Admin-HD"
+            UPN = "BITS-Admin-HD@$DefaultDomain"
+            DisplayName = "BITS-Admin-HD"
             JobTitle = "Helpdesk Administrator"
             PasswordLength = 12
-            Groups = @("LYON Admin Users", "Helpdesk Operator Group")
+            Groups = @("BITS Admin Users", "Helpdesk Operator Group")
             Description = "Line 1 helpdesk support account"
             # HD Admin gets hands-on roles for daily support
             EntraRoles = @(
@@ -260,11 +260,11 @@ function Get-AdminAccountDefinitions {
         },
         @{
             Role = "BG01"
-            UPN = "LYON-Admin-BG01@$DefaultDomain"
-            DisplayName = "LYON-Admin-BG01"
+            UPN = "BITS-Admin-BG01@$DefaultDomain"
+            DisplayName = "BITS-Admin-BG01"
             JobTitle = "Emergency Access Account"
             PasswordLength = 18
-            Groups = @("LYON Admin Users")
+            Groups = @("BITS Admin Users")
             Description = "Break glass #1 (MFA required)"
             # Break glass gets Global Admin for emergencies
             EntraRoles = @(
@@ -273,11 +273,11 @@ function Get-AdminAccountDefinitions {
         },
         @{
             Role = "BG02"
-            UPN = "LYON-Admin-BG02@$DefaultDomain"
-            DisplayName = "LYON-Admin-BG02"
+            UPN = "BITS-Admin-BG02@$DefaultDomain"
+            DisplayName = "BITS-Admin-BG02"
             JobTitle = "Emergency Access Account (NoMFA)"
             PasswordLength = 18
-            Groups = @("LYON Admin Users", "NoMFA Exclusion Group")
+            Groups = @("BITS Admin Users", "NoMFA Exclusion Group")
             Description = "Break glass #2 (NoMFA exempt)"
             # Break glass gets Global Admin for emergencies
             EntraRoles = @(
@@ -324,11 +324,11 @@ function Show-AdminPreview {
 
     Write-Host ""
     Write-Host "  Entra ID Role Assignments:" -ForegroundColor Yellow
-    Write-Host "    LYON-Admin-Cloud:" -ForegroundColor Gray
+    Write-Host "    BITS-Admin-Cloud:" -ForegroundColor Gray
     Write-Host "      - Intune Administrator (full Intune management)" -ForegroundColor Cyan
     Write-Host "      - Azure AD Joined Device Local Administrator (local admin on devices)" -ForegroundColor Cyan
     Write-Host "      - Intune Help Desk Operator role (via Helpdesk Operator Group)" -ForegroundColor Cyan
-    Write-Host "    LYON-Admin-HD (Line 1 Helpdesk):" -ForegroundColor Gray
+    Write-Host "    BITS-Admin-HD (Line 1 Helpdesk):" -ForegroundColor Gray
     Write-Host "      - User Administrator (users, passwords, groups, licenses)" -ForegroundColor Cyan
     Write-Host "      - Authentication Administrator (MFA resets)" -ForegroundColor Cyan
     Write-Host "      - Exchange Administrator (mailboxes, mail flow)" -ForegroundColor Cyan
@@ -336,13 +336,13 @@ function Show-AdminPreview {
     Write-Host "      - Intune Administrator (device management)" -ForegroundColor Cyan
     Write-Host "      - SharePoint Administrator (OneDrive/SharePoint)" -ForegroundColor Cyan
     Write-Host "      - Intune Help Desk Operator role (via Helpdesk Operator Group)" -ForegroundColor Cyan
-    Write-Host "    LYON-Admin-BG01 & BG02:" -ForegroundColor Gray
+    Write-Host "    BITS-Admin-BG01 & BG02:" -ForegroundColor Gray
     Write-Host "      - Global Administrator (emergency access only)" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  Group Memberships:" -ForegroundColor Yellow
-    Write-Host "    - Cloud & HD Admins -> LYON Admin Users + Helpdesk Operator Group" -ForegroundColor Gray
-    Write-Host "    - BG01 -> LYON Admin Users (requires MFA)" -ForegroundColor Gray
-    Write-Host "    - BG02 -> LYON Admin Users + NoMFA Exclusion Group" -ForegroundColor Gray
+    Write-Host "    - Cloud & HD Admins -> BITS Admin Users + Helpdesk Operator Group" -ForegroundColor Gray
+    Write-Host "    - BG01 -> BITS Admin Users (requires MFA)" -ForegroundColor Gray
+    Write-Host "    - BG02 -> BITS Admin Users + NoMFA Exclusion Group" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  Password Generation:" -ForegroundColor Yellow
     Write-Host "    - Standard accounts: 12 characters" -ForegroundColor Gray
@@ -379,10 +379,10 @@ function New-AdminAccount {
         $userParams = @{
             UserPrincipalName = $AccountConfig.UPN
             DisplayName = $AccountConfig.DisplayName
-            GivenName = "LYON Admin"
+            GivenName = "BITS Admin"
             Surname = $AccountConfig.Role
             JobTitle = $AccountConfig.JobTitle
-            Department = "LYON Admin"
+            Department = "BITS Admin"
             AccountEnabled = $true
             PasswordProfile = @{
                 Password = $password
@@ -515,7 +515,7 @@ function Add-UserToGroups {
                         GroupTypes = @("DynamicMembership")
                         MailEnabled = $false
                         MailNickname = "HelpdeskOperatorGroup"
-                        MembershipRule = '(user.displayName -startsWith "LYON-Admin-Cloud") or (user.displayName -startsWith "LYON-Admin-HD")'
+                        MembershipRule = '(user.displayName -startsWith "BITS-Admin-Cloud") or (user.displayName -startsWith "BITS-Admin-HD")'
                         MembershipRuleProcessingState = "On"
                         SecurityEnabled = $true
                     }
@@ -565,7 +565,7 @@ function Start-AdminCreation {
     Write-Host ("=" * 70) -ForegroundColor Cyan
     Write-Host "  ADMIN ACCOUNT CREATION" -ForegroundColor Cyan
     Write-Host ("=" * 70) -ForegroundColor Cyan
-    Write-Host "  Creates LYON administrative accounts for tenant management" -ForegroundColor Gray
+    Write-Host "  Creates BITS administrative accounts for tenant management" -ForegroundColor Gray
     Write-Host ""
 
     # Step 1: Prerequisites

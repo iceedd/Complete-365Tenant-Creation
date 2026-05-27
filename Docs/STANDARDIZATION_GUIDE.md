@@ -8,7 +8,7 @@ This guide outlines the process for standardizing existing Microsoft 365 tenants
 
 ### Entra ID (Identity & Access Management)
 - **Security Groups**: Dynamic and static groups for licensing, MFA exclusions, and admin management
-- **Admin Accounts**: LYON-Admin-* prefixed accounts with proper break-glass access
+- **Admin Accounts**: BITS-Admin-* prefixed accounts with proper break-glass access
 - **Conditional Access**: 5-policy framework (C001-C005) with risk-based controls
 - **Password Policies**: Enhanced password complexity and lifecycle management
 
@@ -60,7 +60,7 @@ This guide outlines the process for standardizing existing Microsoft 365 tenants
 
 2. **Admin Accounts**
    - Audit existing admin accounts
-   - Create standardized LYON-Admin-* accounts if needed
+   - Create standardized BITS-Admin-* accounts if needed
    - Configure proper break-glass procedures
 
 ### Phase 3: Core Services Standardization

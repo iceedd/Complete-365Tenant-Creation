@@ -6,7 +6,7 @@
 .DESCRIPTION
     Manages email security with safe attachments scanning and URL protection
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     2.0
 #>

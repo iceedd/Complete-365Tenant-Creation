@@ -7,7 +7,7 @@
     Creates user security groups for MFA exclusions, admin identification, SSPR, and license-based grouping.
     Includes preview mode and confirmation before creation.
 .AUTHOR
-    LYON Tech
+    BITS
 .VERSION
     3.0 - License groups now use Group-Based Licensing (GBL). Groups are created
           dynamically from tenant SKUs and licenses are attached automatically.
@@ -74,23 +74,23 @@ $SecurityGroups = @(
         MembershipType = "Manual"
     },
     @{
-        Name = "LYON Admin Users"
-        Description = "Dynamic group containing all LYON admin users"
-        MembershipRule = '(user.userPrincipalName -contains "LYON-Admin") or (user.displayName -contains "LYON-Admin")'
+        Name = "BITS Admin Users"
+        Description = "Dynamic group containing all BITS admin users"
+        MembershipRule = '(user.userPrincipalName -contains "BITS-Admin") or (user.displayName -contains "BITS-Admin")'
         GroupType = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
         Name = "SSPR Eligible Users"
-        Description = "All enabled users eligible for Self-Service Password Reset (excludes LYON admins and disabled accounts)"
-        MembershipRule = '(user.accountEnabled -eq true) and (user.userType -eq "Member") and not ((user.userPrincipalName -contains "LYON-Admin") or (user.displayName -contains "LYON-Admin"))'
+        Description = "All enabled users eligible for Self-Service Password Reset (excludes BITS admins and disabled accounts)"
+        MembershipRule = '(user.accountEnabled -eq true) and (user.userType -eq "Member") and not ((user.userPrincipalName -contains "BITS-Admin") or (user.displayName -contains "BITS-Admin"))'
         GroupType = "DynamicMembership"
         MembershipType = "Dynamic"
     },
     @{
         Name = "Helpdesk Operator Group"
         Description = "Dynamic group for Intune Help Desk Operator role - contains Cloud and HD admins"
-        MembershipRule = '(user.displayName -startsWith "LYON-Admin-Cloud") or (user.displayName -startsWith "LYON-Admin-HD")'
+        MembershipRule = '(user.displayName -startsWith "BITS-Admin-Cloud") or (user.displayName -startsWith "BITS-Admin-HD")'
         GroupType = "DynamicMembership"
         MembershipType = "Dynamic"
         AssignIntuneRole = $true
@@ -684,7 +684,7 @@ function Start-SecurityGroupCreation {
 
     # Important notes
     Write-Host "  IMPORTANT:" -ForegroundColor Yellow
-    Write-Host "    - Dynamic groups (LYON Admin, SSPR, Helpdesk) take 5-10 min to populate" -ForegroundColor Gray
+    Write-Host "    - Dynamic groups (BITS Admin, SSPR, Helpdesk) take 5-10 min to populate" -ForegroundColor Gray
     Write-Host "    - NoMFA Exclusion Group is MANUAL - Admin-Creation adds BG02 automatically" -ForegroundColor Gray
     Write-Host "    - License groups use Group-Based Licensing (GBL):" -ForegroundColor Gray
     Write-Host "        Add user to group  ->  M365 assigns license automatically" -ForegroundColor Gray
