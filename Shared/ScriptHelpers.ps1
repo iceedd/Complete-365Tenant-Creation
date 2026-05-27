@@ -720,7 +720,7 @@ function Start-ThrottledLoop {
         $index++
 
         try {
-            $result = & $ScriptBlock
+            $result = $item | ForEach-Object -Process $ScriptBlock
             $results += @{
                 Success = $true
                 Item = $item

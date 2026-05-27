@@ -363,7 +363,7 @@ function Get-PolicyDefinitions {
                 }
             }
             grantControls = @{
-                builtInControls = @("mfa", "compliantDevice", "domainJoinedDevice")
+                builtInControls = @("compliantDevice", "domainJoinedDevice")
                 operator = "OR"
             }
         },

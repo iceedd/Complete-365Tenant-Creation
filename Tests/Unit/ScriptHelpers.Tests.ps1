@@ -380,6 +380,26 @@ Describe 'Start-ThrottledLoop' {
         }
     }
 
+    Context 'passes item to script block' {
+
+        It 'makes the current item available as $_ inside the script block' {
+            $items = @('apple', 'banana')
+            $received = [System.Collections.Generic.List[string]]::new()
+            Start-ThrottledLoop -Items $items -ScriptBlock { $received.Add($_) } -DelayMs 0
+            $received[0] | Should -Be 'apple'
+            $received[1] | Should -Be 'banana'
+        }
+
+        It 'each item is distinct — not null — inside the script block' {
+            $items = @('x', 'y', 'z')
+            $nullCount = 0
+            Start-ThrottledLoop -Items $items -ScriptBlock {
+                if ($null -eq $_) { $nullCount++ }
+            } -DelayMs 0
+            $nullCount | Should -Be 0
+        }
+    }
+
     Context 'throttle delay behavior' {
 
         It 'calls Start-Sleep between items but not after the last item' {
