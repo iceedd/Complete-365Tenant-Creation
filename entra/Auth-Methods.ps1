@@ -90,7 +90,6 @@ function Test-Prerequisites {
         Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
         try {
             $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Disconnect-MgGraph -ErrorAction SilentlyContinue
             Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
             Write-Host "   Permissions updated" -ForegroundColor Green
         }

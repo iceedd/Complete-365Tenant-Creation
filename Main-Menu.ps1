@@ -42,7 +42,7 @@ function Initialize-SharedHelpers {
     try {
         # Try GitHub first
         $url = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/$helperPath"
-        $helperContent = Invoke-RestMethod -Uri $url -TimeoutSec 10 -ErrorAction Stop
+        $helperContent = Invoke-RestMethod -Uri $url -TimeoutSec 30 -ErrorAction Stop
 
         # Execute the helper script to load functions
         $scriptBlock = [ScriptBlock]::Create($helperContent)
@@ -1335,23 +1335,27 @@ function Connect-M365Tenant {
     Write-Host "`n🔐 Connecting to Microsoft 365 Tenant..." -ForegroundColor Cyan
     
     try {
-        # Disconnect any existing connection to force fresh authentication
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
-        
-        # Use a practical set of scopes that cover most common scenarios
+        # Request all scopes needed by every sub-script in a single auth prompt.
+        # Do NOT disconnect first — if already connected to the right tenant,
+        # MSAL will reuse the existing session and avoid a redundant browser prompt.
         $practicalScopes = @(
-            "Directory.Read.All", 
+            "Directory.Read.All",
             "Directory.ReadWrite.All",
             "User.ReadWrite.All",
             "Group.ReadWrite.All",
             "Group.Read.All",
             "Policy.ReadWrite.ConditionalAccess",
             "Policy.Read.All",
-            "RoleManagement.ReadWrite.Directory",
+            "Policy.ReadWrite.AuthenticationMethod",
             "Policy.ReadWrite.SecurityDefaults",
+            "RoleManagement.ReadWrite.Directory",
+            "RoleManagement.Read.Directory",
+            "UserAuthenticationMethod.ReadWrite.All",
             "DeviceManagementConfiguration.ReadWrite.All",
             "DeviceManagementManagedDevices.ReadWrite.All",
-            "DeviceManagementApps.ReadWrite.All"
+            "DeviceManagementApps.ReadWrite.All",
+            "DeviceManagementRBAC.ReadWrite.All",
+            "LicenseAssignment.ReadWrite.All"
         )
         
         Write-Host "🚀 Authenticating with essential permissions..." -ForegroundColor Yellow

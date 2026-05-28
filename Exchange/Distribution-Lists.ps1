@@ -87,7 +87,6 @@ function Test-Prerequisites {
 
         try {
             $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Disconnect-MgGraph -ErrorAction SilentlyContinue
             Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
             Write-Host "   Permissions updated" -ForegroundColor Green
         }

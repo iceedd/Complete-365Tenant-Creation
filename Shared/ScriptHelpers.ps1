@@ -247,7 +247,6 @@ function Test-RequiredScopes {
 
         try {
             $allScopes = ($currentScopes + $missingScopes) | Select-Object -Unique
-            Disconnect-MgGraph -ErrorAction SilentlyContinue
             Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
 
             # Re-check after reconnection
@@ -486,7 +485,6 @@ function Request-MissingScopes {
     $allScopes = ($currentScopes + $AdditionalScopes) | Select-Object -Unique
 
     try {
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
         Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
         Write-Host "   Graph reconnected with expanded permissions" -ForegroundColor Green
         return $true
