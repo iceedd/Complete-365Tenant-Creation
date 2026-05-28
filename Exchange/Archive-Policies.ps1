@@ -152,6 +152,13 @@ function Enable-MailboxArchiving {
     return @{ Stats = $stats; Errors = $errors }
 }
 
+function Compare-MailboxQuota {
+    param($ExchangeQuota, [long]$TargetBytes)
+    if ($null -eq $ExchangeQuota -or $ExchangeQuota.IsUnlimited) { return $false }
+    try { return $ExchangeQuota.ToBytes() -eq $TargetBytes }
+    catch { return $false }
+}
+
 function Set-MailboxQuotas {
     param(
         [array]$Mailboxes,
@@ -169,9 +176,9 @@ function Set-MailboxQuotas {
             $current = Get-Mailbox -Identity $mailbox.UserPrincipalName -ErrorAction Stop
 
             $needsUpdate = (
-                $current.IssueWarningQuota -ne $QuotaConfiguration.WarningQuota -or
-                $current.ProhibitSendQuota -ne $QuotaConfiguration.ProhibitSendQuota -or
-                $current.ProhibitSendReceiveQuota -ne $QuotaConfiguration.ProhibitSendReceiveQuota
+                -not (Compare-MailboxQuota $current.IssueWarningQuota             $QuotaConfiguration.WarningQuota) -or
+                -not (Compare-MailboxQuota $current.ProhibitSendQuota             $QuotaConfiguration.ProhibitSendQuota) -or
+                -not (Compare-MailboxQuota $current.ProhibitSendReceiveQuota      $QuotaConfiguration.ProhibitSendReceiveQuota)
             )
 
             if (!$needsUpdate) {

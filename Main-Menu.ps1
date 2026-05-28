@@ -21,7 +21,7 @@ $Script:MenuVersion = "1.8"
 # Global Variables
 $Global:TenantConnection = $null
 $Global:CurrentScopes = @()
-$Global:GitHubRepo = "cbro09/Complete-365Tenant-Creation"
+$Global:GitHubRepo = "iceedd/Complete-365Tenant-Creation"
 $Global:GitHubBranch = "main" # Change to "dev" for testing
 $Global:ScriptCache = @{}
 $Global:SharedHelpersLoaded = $false
@@ -336,7 +336,7 @@ function Invoke-GitHubScript {
 function Test-GroupsExist {
     param([string[]]$GroupNames)
     try {
-        $existingGroups = Get-MgGroup | Select-Object -ExpandProperty DisplayName
+        $existingGroups = Get-MgGroup -All | Select-Object -ExpandProperty DisplayName
         $missingGroups = @()
         
         foreach ($groupName in $GroupNames) {
@@ -1314,6 +1314,7 @@ function Test-Prerequisites {
     
     switch ($RequiredStep) {
         "ConditionalAccess" { return $Global:CompletedSteps.SecurityGroups }
+        "AuthMethods"       { return $Global:CompletedSteps.ConditionalAccess }
         "AdminCreation" { return $Global:CompletedSteps.SecurityGroups }
         "UserCreation" { return $Global:CompletedSteps.SecurityGroups }
         "PasswordPolicies" { return $Global:CompletedSteps.AdminAccounts }
@@ -1727,8 +1728,8 @@ function Show-EntraMenu {
             Write-Host "5. 🔐 Password Policies [REQUIRES: Admin Accounts]" -ForegroundColor Red
         }
 
-        # Authentication Methods - Requires Conditional Access
-        if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
+        # Authentication Methods - Requires Conditional Access configured
+        if (Test-Prerequisites -RequiredStep "AuthMethods") {
             Write-Host "6. 🔑 Authentication Methods" -ForegroundColor Green
         } else {
             Write-Host "6. 🔑 Authentication Methods [REQUIRES: Conditional Access]" -ForegroundColor Red
@@ -1825,7 +1826,7 @@ function Show-EntraMenu {
                 }
             }
             "6" {
-                if (Test-Prerequisites -RequiredStep "ConditionalAccess") {
+                if (Test-Prerequisites -RequiredStep "AuthMethods") {
                     Invoke-GitHubScript -ScriptPath "entra/Auth-Methods.ps1"
                     Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
                     Initialize-CompletedSteps

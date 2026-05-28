@@ -199,15 +199,17 @@ function Connect-SecurityCompliance {
     Write-Host "   Connecting to Security & Compliance Center..." -ForegroundColor Yellow
 
     try {
-        # Check if already connected
-        $existingSession = Get-ConnectionInformation -ErrorAction SilentlyContinue
+        # Probe for an active IPPS session by calling a Purview cmdlet.
+        # Get-ConnectionInformation only checks Exchange Online connections, not IPPS.
+        $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
+        Write-Host "   Already connected to Security & Compliance" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        # Not connected — attempt fresh IPPS connection
+    }
 
-        if ($existingSession) {
-            Write-Host "   Already connected to Security & Compliance" -ForegroundColor Green
-            return $true
-        }
-
-        # Connect
+    try {
         Connect-IPPSSession -ErrorAction Stop
         Write-Host "   Connected to Security & Compliance Center" -ForegroundColor Green
         return $true

@@ -231,6 +231,33 @@ function Show-WebFilterPreview {
 # POLICY CREATION
 # ============================================================================
 
+function Test-SettingDefinitionsExist {
+    param([array]$Categories)
+
+    $missing = @()
+    foreach ($category in $Categories) {
+        $defId = "device_vendor_msft_defender_configuration_webcontentfiltering_blockcategories_$($category.Id)"
+        try {
+            $uri      = "https://graph.microsoft.com/beta/deviceManagement/configurationSettings?`$filter=id eq '$defId'&`$select=id"
+            $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            if (-not $response.value -or $response.value.Count -eq 0) {
+                $missing += $category.Name
+            }
+        }
+        catch {
+            Write-Host "     Could not validate setting ID for '$($category.Name)' (proceeding)" -ForegroundColor Gray
+        }
+    }
+
+    if ($missing.Count -gt 0) {
+        Write-Host "     WARNING: Setting IDs not found in tenant for: $($missing -join ', ')" -ForegroundColor Yellow
+        Write-Host "     Microsoft may have changed these IDs. Use manual setup if the policy fails." -ForegroundColor Yellow
+        return $false
+    }
+
+    return $true
+}
+
 function New-WebFilterPolicy {
     param([array]$Categories)
 
@@ -243,6 +270,9 @@ function New-WebFilterPolicy {
             Write-Host "     Policy already exists (skipped)" -ForegroundColor Yellow
             return @{ Success = $true; Skipped = $true; Policy = $existing }
         }
+
+        Write-Host "     Validating setting definition IDs..." -ForegroundColor Gray
+        Test-SettingDefinitionsExist -Categories $Categories | Out-Null
 
         Write-Host "     Creating Settings Catalog policy..." -ForegroundColor Gray
 

@@ -491,11 +491,45 @@ function Set-SiteGroupPermission {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Interactive console script; ShouldProcess not applicable')]
     param(
         [string]$SiteId,
+        [string]$SiteUrl,
         [string]$GroupId,
         [string]$GroupDisplayName,
         [string]$Role
     )
 
+    # When SPO module is available use Add-SPOUser so the Entra security group is
+    # added to the site's actual SharePoint permission group (Members/Owners/Visitors).
+    # The Graph /sites/{id}/permissions endpoint only grants app-level permissions
+    # and does not create proper SharePoint group membership.
+    if ($Script:SpoAvailable -and $SiteUrl) {
+        try {
+            $spGroups = Get-SPOSiteGroup -Site $SiteUrl -ErrorAction Stop
+
+            $spGroup = switch ($Role) {
+                'owner' { $spGroups | Where-Object { $_.Roles -contains 'Full Control' } | Select-Object -First 1 }
+                'write' { $spGroups | Where-Object { $_.Roles -contains 'Edit' }         | Select-Object -First 1 }
+                'read'  { $spGroups | Where-Object { $_.Roles -contains 'Read' }         | Select-Object -First 1 }
+            }
+
+            if ($null -eq $spGroup) {
+                Write-Host "     Could not locate SharePoint group for role '$Role' — skipping $GroupDisplayName" -ForegroundColor Yellow
+                return @{ Success = $false; Error = "SharePoint group not found for role $Role" }
+            }
+
+            # Entra security group claims format for SPO
+            $loginName = "c:0t.c|tenant|$GroupId"
+            Add-SPOUser -Site $SiteUrl -Group $spGroup.Title -LoginName $loginName -ErrorAction Stop
+
+            Write-Host "     Assigned $GroupDisplayName -> $($spGroup.Title)" -ForegroundColor Green
+            return @{ Success = $true }
+        }
+        catch {
+            Write-Host "     Failed to assign $GroupDisplayName via SPO: $($_.Exception.Message)" -ForegroundColor Red
+            return @{ Success = $false; Error = $_.Exception.Message }
+        }
+    }
+
+    # Fallback: Graph site permissions (app-level — may not reflect in SharePoint group UI)
     try {
         $body = @{
             roles               = @($Role)
@@ -516,8 +550,8 @@ function Set-SiteGroupPermission {
             -ContentType "application/json" `
             -ErrorAction Stop
 
-        Write-Host "     Assigned $GroupDisplayName -> $Role" -ForegroundColor Green
-        return @{ Success = $true }
+        Write-Host "     Assigned $GroupDisplayName -> $Role (via Graph — verify in SharePoint admin)" -ForegroundColor Yellow
+        return @{ Success = $true; GraphFallback = $true }
     }
     catch {
         Write-Host "     Failed to assign $GroupDisplayName : $($_.Exception.Message)" -ForegroundColor Red
@@ -749,6 +783,7 @@ function Start-SiteGroups {
                     $role       = $PermissionRoleMap[$roleName].Role
                     $permResult = Set-SiteGroupPermission `
                         -SiteId           $siteId `
+                        -SiteUrl          $site.FullUrl `
                         -GroupId          $groupIds[$roleName] `
                         -GroupDisplayName $groupNames[$roleName] `
                         -Role             $role
@@ -821,6 +856,12 @@ function Start-SiteGroups {
     Write-Host "    - Groups are created empty - add members via User Provisioning Tool" -ForegroundColor Gray
     Write-Host "    - New sites may take 2-5 minutes to fully provision" -ForegroundColor Gray
     Write-Host "    - Visit https://admin.sharepoint.com to manage sites further" -ForegroundColor Gray
+    if (-not $Script:SpoAvailable) {
+        Write-Host ""
+        Write-Host "  NOTE: SPO module was unavailable — permissions were assigned via Graph (app-level)." -ForegroundColor Yellow
+        Write-Host "    Verify group membership in SharePoint admin centre and reassign via" -ForegroundColor Gray
+        Write-Host "    site Settings > Site permissions if groups do not appear as members." -ForegroundColor Gray
+    }
     Write-Host ""
 
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray

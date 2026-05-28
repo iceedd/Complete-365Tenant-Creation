@@ -188,6 +188,11 @@ function Test-Prerequisites {
         return @{ Success = $false }
     }
 
+    # Detect usage location from tenant country code, fall back to GB
+    $usageLocation = if (-not [string]::IsNullOrEmpty($organization.CountryLetterCode)) {
+        $organization.CountryLetterCode
+    } else { "GB" }
+
     # Check for required groups
     Write-Host "   Checking for required groups..." -ForegroundColor Gray
     $requiredGroups = @("BITS Admin Users", "NoMFA Exclusion Group")
@@ -214,6 +219,7 @@ function Test-Prerequisites {
         DefaultDomain = $defaultDomain
         OrganizationName = $organization.DisplayName
         MissingGroups = $missingGroups
+        UsageLocation = $usageLocation
     }
 }
 
@@ -222,7 +228,10 @@ function Test-Prerequisites {
 # ============================================================================
 
 function Get-AdminAccountDefinitions {
-    param([string]$DefaultDomain)
+    param(
+        [string]$DefaultDomain,
+        [string]$UsageLocation = "GB"
+    )
 
     return @(
         @{
@@ -231,13 +240,12 @@ function Get-AdminAccountDefinitions {
             DisplayName = "BITS-Admin-Cloud"
             JobTitle = "Cloud Administrator"
             PasswordLength = 12
+            UsageLocation = $UsageLocation
             Groups = @("BITS Admin Users", "Helpdesk Operator Group")
             Description = "Primary cloud admin account"
-            # Cloud Admin: Intune management + local admin on devices
-            # Gets Intune Help Desk Operator role via Helpdesk Operator Group
             EntraRoles = @(
-                "Intune Administrator"                       # Full Intune management
-                "Azure AD Joined Device Local Administrator" # Local admin on AAD joined devices
+                "Intune Administrator"
+                "Azure AD Joined Device Local Administrator"
             )
         },
         @{
@@ -246,16 +254,16 @@ function Get-AdminAccountDefinitions {
             DisplayName = "BITS-Admin-HD"
             JobTitle = "Helpdesk Administrator"
             PasswordLength = 12
+            UsageLocation = $UsageLocation
             Groups = @("BITS Admin Users", "Helpdesk Operator Group")
             Description = "Line 1 helpdesk support account"
-            # HD Admin gets hands-on roles for daily support
             EntraRoles = @(
-                "User Administrator"           # Manage users, passwords, groups, licenses
-                "Authentication Administrator" # Reset MFA for non-admins
-                "Exchange Administrator"       # Mailbox management
-                "Teams Administrator"          # Teams support
-                "Intune Administrator"         # Device management
-                "SharePoint Administrator"     # OneDrive/SharePoint issues
+                "User Administrator"
+                "Authentication Administrator"
+                "Exchange Administrator"
+                "Teams Administrator"
+                "Intune Administrator"
+                "SharePoint Administrator"
             )
         },
         @{
@@ -264,9 +272,9 @@ function Get-AdminAccountDefinitions {
             DisplayName = "BITS-Admin-BG01"
             JobTitle = "Emergency Access Account"
             PasswordLength = 18
+            UsageLocation = $UsageLocation
             Groups = @("BITS Admin Users")
             Description = "Break glass #1 (MFA required)"
-            # Break glass gets Global Admin for emergencies
             EntraRoles = @(
                 "Global Administrator"
             )
@@ -277,9 +285,9 @@ function Get-AdminAccountDefinitions {
             DisplayName = "BITS-Admin-BG02"
             JobTitle = "Emergency Access Account (NoMFA)"
             PasswordLength = 18
+            UsageLocation = $UsageLocation
             Groups = @("BITS Admin Users", "NoMFA Exclusion Group")
             Description = "Break glass #2 (NoMFA exempt)"
-            # Break glass gets Global Admin for emergencies
             EntraRoles = @(
                 "Global Administrator"
             )
@@ -389,7 +397,7 @@ function New-AdminAccount {
                 ForceChangePasswordNextSignIn = $false
             }
             MailNickname = $AccountConfig.DisplayName -replace '[^a-zA-Z0-9]', ''
-            UsageLocation = "GB"
+            UsageLocation = $AccountConfig.UsageLocation
         }
 
         $newUser = New-MgUser -BodyParameter $userParams -ErrorAction Stop
@@ -582,7 +590,7 @@ function Start-AdminCreation {
     }
 
     # Get account definitions
-    $accounts = Get-AdminAccountDefinitions -DefaultDomain $prereqResult.DefaultDomain
+    $accounts = Get-AdminAccountDefinitions -DefaultDomain $prereqResult.DefaultDomain -UsageLocation $prereqResult.UsageLocation
 
     # Step 2: Preview
     Write-Host ""

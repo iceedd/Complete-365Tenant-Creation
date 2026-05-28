@@ -200,6 +200,9 @@ function Test-Prerequisites {
 }
 
 function Get-PolicyDefinitions {
+    if (-not $Global:GitHubRepo)   { $Global:GitHubRepo   = "iceedd/Complete-365Tenant-Creation" }
+    if (-not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
+
     try {
         # Try GitHub download first
         try {
