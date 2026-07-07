@@ -1,0 +1,61 @@
+name: E2E Test (M365 test tenant)
+
+# Creates and deletes real objects in the test tenant, so this does NOT run
+# on every PR: trigger manually from the Actions tab, or let the weekly
+# scheduled run catch regressions.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1' # Mondays 03:00 UTC
+
+concurrency:
+  group: m365-e2e-test
+  cancel-in-progress: false
+
+jobs:
+  e2e-security-groups:
+    name: Security-Groups end-to-end
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Security-Groups E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-SecurityGroupsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
