@@ -1989,9 +1989,15 @@ function Show-ExchangeMenu {
     Write-Host "🔄 Checking Exchange Online connection..." -ForegroundColor Gray
 
     try {
-        # Check if ExchangeOnlineManagement module is available
-        if (!(Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+        # ExchangeOnlineManagement 3.7.0+ is required for -DisableWAM (see below)
+        $minEXOVersion = [Version]"3.7.0"
+        $installedEXO = Get-Module -ListAvailable -Name ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1
+
+        if (!$installedEXO) {
             Write-Host "📦 Installing ExchangeOnlineManagement module..." -ForegroundColor Yellow
+            Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+        } elseif ($installedEXO.Version -lt $minEXOVersion) {
+            Write-Host "📦 Updating ExchangeOnlineManagement module (found $($installedEXO.Version), need $minEXOVersion+)..." -ForegroundColor Yellow
             Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
         }
 
@@ -2003,7 +2009,10 @@ function Show-ExchangeMenu {
         $exoConnection = Get-ConnectionInformation -ErrorAction SilentlyContinue
         if (!$exoConnection -or $exoConnection.State -ne "Connected") {
             Write-Host "🔐 Connecting to Exchange Online..." -ForegroundColor Yellow
-            Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
+            # -DisableWAM avoids a known MSAL/Web Account Manager broker crash
+            # (System.NullReferenceException in RuntimeBroker..ctor) that occurs when
+            # Connect-ExchangeOnline runs in the same session as Connect-MgGraph.
+            Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop
             Write-Host "✅ Connected to Exchange Online" -ForegroundColor Green
         } else {
             Write-Host "✅ Exchange Online: Connected as $($exoConnection.UserPrincipalName)" -ForegroundColor Green
