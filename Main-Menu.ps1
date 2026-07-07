@@ -1989,8 +1989,8 @@ function Show-ExchangeMenu {
     Write-Host "🔄 Checking Exchange Online connection..." -ForegroundColor Gray
 
     try {
-        # ExchangeOnlineManagement 3.7.0+ is required for -DisableWAM (see below)
-        $minEXOVersion = [Version]"3.7.0"
+        # ExchangeOnlineManagement 3.7.2+ is required for -DisableWAM (see below)
+        $minEXOVersion = [Version]"3.7.2"
         $installedEXO = Get-Module -ListAvailable -Name ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1
 
         if (!$installedEXO) {
@@ -2001,8 +2001,11 @@ function Show-ExchangeMenu {
             Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
         }
 
-        if (!(Get-Module -Name ExchangeOnlineManagement)) {
-            Import-Module ExchangeOnlineManagement -Force -ErrorAction Stop
+        # Import (or re-import) if not loaded, or if an older version is loaded —
+        # otherwise a stale pre-3.7.2 module in the session won't have -DisableWAM
+        $loadedEXO = Get-Module -Name ExchangeOnlineManagement
+        if (!$loadedEXO -or $loadedEXO.Version -lt $minEXOVersion) {
+            Import-Module ExchangeOnlineManagement -MinimumVersion $minEXOVersion -Force -ErrorAction Stop
         }
 
         # Check if already connected using modern method
@@ -2359,14 +2362,16 @@ function Invoke-SelfUpdate {
             $content | Set-Content -Path $PSCommandPath -Encoding UTF8 -Force
             Write-Host "   Updated to v$remoteVersion. Restarting..." -ForegroundColor Green
             Start-Sleep 1
-            Start-Process -FilePath "pwsh" -ArgumentList @("-NoLogo", "-File", "`"$PSCommandPath`"") -WorkingDirectory (Split-Path $PSCommandPath -Parent) -NoNewWindow
+            # -Wait keeps this (old) process alive but idle until the new copy exits,
+            # so the launching shell doesn't reclaim the console while the menu runs
+            Start-Process -FilePath "pwsh" -ArgumentList @("-NoLogo", "-File", "`"$PSCommandPath`"") -WorkingDirectory (Split-Path $PSCommandPath -Parent) -NoNewWindow -Wait
             exit
         }
         else {
             # Running via IEX/launcher — can't auto-overwrite, show manual instructions
             Write-Host "   ACTION REQUIRED: Re-download Main-Menu.ps1 to get the latest version." -ForegroundColor Yellow
             Write-Host "   Run in PowerShell:" -ForegroundColor White
-            Write-Host "   Invoke-RestMethod 'https://raw.githubusercontent.com/cbro09/Complete-365Tenant-Creation/main/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
+            Write-Host "   Invoke-RestMethod 'https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
             Write-Host ""
             Write-Host "   Press any key to continue with current version..." -ForegroundColor Gray
             try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 3 }
