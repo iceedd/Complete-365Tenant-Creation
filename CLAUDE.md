@@ -5,100 +5,99 @@ Microsoft 365 tenant automation project with PowerShell scripts for configuring 
 
 ## Project Structure
 ```
-├── Main-Menu.ps1                 # Main entry point with interactive menu system
-├── entra/                        # Entra ID (Identity & Access) scripts
-├── Intune/                       # Device management scripts  
-├── Exchange/                     # Email & collaboration scripts
-├── SharePoint/                   # File sharing & sites scripts
-├── Security/                     # Threat protection scripts
-├── Purview/                      # Data governance scripts
-├── test-auth.ps1                 # Authentication testing utilities
-├── test-simple-auth.ps1          # Simple auth test
-└── STANDARDIZATION_GUIDE.md      # Guide for standardizing existing tenants
+├── Main-Menu.ps1                   # Main entry point with interactive menu system
+├── entra/                          # Entra ID (Identity & Access) scripts
+├── Intune/                         # Device management scripts (+ policy JSON, ADMX)
+├── Exchange/                       # Email & collaboration scripts
+├── SharePoint/                     # File sharing & sites scripts
+├── Security/                       # Threat protection scripts
+├── Purview/                        # Data governance scripts
+├── Shared/ScriptHelpers.ps1        # Shared helper functions (logging, retry, scopes)
+├── Build/Build.ps1                 # Local PSScriptAnalyzer lint runner
+├── Tests/Unit/                     # Pester unit tests (ScriptHelpers coverage)
+├── Tests/Integration/              # Manual auth tests (test-auth.ps1, test-simple-auth.ps1)
+├── Tests/Smoke/                    # App-only live API smoke test (runs in CI)
+├── .github/workflows/ci.yml        # Lint + unit tests (push to main/dev/feature/claude, PRs)
+├── .github/workflows/smoke-test.yml # Live test-tenant smoke test (PRs to main)
+└── Docs/STANDARDIZATION_GUIDE.md   # Guide for standardizing existing tenants
 ```
 
-## Current Project Status
-Based on recent commits and analysis:
-- **Authentication System**: Recently fixed authentication token access issues (commit 814c86f) ✅
-- **EDR Policy Tracking**: Improved to ensure manual setup isn't forgotten (commit ad87a4e) ✅
-- **Compliance Policies**: Fixed Microsoft Graph SDK assignment bug with REST API workaround (commit 07759a2) ✅
-- **Documentation**: Added comprehensive EDR manual setup guide to STANDARDIZATION_GUIDE.md ✅
-- **Script Analysis**: Claude Code settings updated to allow `rg` commands for analysis (commit c8c333e) ✅
-- **Status**: Production-ready with all known issues resolved
+## How Scripts Are Delivered
+- `Main-Menu.ps1` self-updates from GitHub `main` on startup (version compared via `.VERSION` header) and relaunches automatically when newer.
+- Sub-scripts are downloaded from GitHub `main` at runtime by `Invoke-GitHubScript` and cached **in memory for the session only** (menu option 9 clears the cache mid-session).
+- Consequence: fixes only reach users once merged to `main`.
 
-## Key Commands for This Project
+## CI / Verification
+- **ci.yml**: PSScriptAnalyzer (windows-latest, settings in `PSScriptAnalyzerSettings.psd1`) + Pester unit tests (ubuntu). Triggers: push to `main`/`dev`/`feature/**`/`claude/**`, PRs to `main`.
+- **smoke-test.yml**: on PRs to `main`, connects to a dedicated test tenant with certificate-based app-only auth (M365_* repository secrets) on windows-latest and exercises the read-only API surface the scripts depend on (Graph, Exchange Online, Intune, SharePoint, IPPS). It does NOT execute the interactive scripts themselves.
+- Local lint: `./Build/Build.ps1` (installs PSScriptAnalyzer if needed).
 
-### Testing & Analysis
+## Key Commands
 ```powershell
-# Test authentication system
-./test-auth.ps1                   # Comprehensive auth testing
-./test-simple-auth.ps1            # Simple connection test
-
-# Run main menu system
-./Main-Menu.ps1                   # Interactive tenant configuration hub
-
-# Check git status and recent changes
-git status                        # Current working tree status
-git log --oneline -10             # Recent commits
+./Main-Menu.ps1                          # Interactive tenant configuration hub
+./Build/Build.ps1                        # Lint all scripts locally
+./Tests/Integration/test-auth.ps1        # Manual comprehensive auth test (real tenant)
+./Tests/Integration/test-simple-auth.ps1 # Manual simple connection test
 ```
 
 ### Common Issues & Solutions
-1. **Authentication Issues**: Use test-auth.ps1 to diagnose Graph connectivity
+1. **Authentication Issues**: Use Tests/Integration/test-auth.ps1 to diagnose Graph connectivity
 2. **Module Dependencies**: Main-Menu.ps1 auto-installs required modules
-3. **Script Updates**: Scripts are downloaded from GitHub on-demand
-4. **Permission Issues**: Scripts require Global Administrator access
+3. **WAM broker crash** (`NullReferenceException` in `RuntimeBroker`): Connect-ExchangeOnline / Connect-IPPSSession conflict with Connect-MgGraph in the same session. Fixed by `-DisableWAM`, which requires ExchangeOnlineManagement **3.7.2+** (version-guarded in Main-Menu.ps1 and Purview/Retention-Policies.ps1)
+4. **Permission Issues**: Scripts require Global Administrator access (delegated) — CI smoke tests use app-only permissions instead
 
 ### Development Workflow
-1. Test authentication with test scripts
-2. Use Main-Menu.ps1 for interactive configuration
-3. Check logs and status frequently
-4. Follow prerequisite chains (Security Groups → Admin Accounts → Conditional Access)
-
-## Recent Changes (January 2025)
-- **Auto-Scope Expansion**: Fixed "run twice" issue - scripts now auto-request permissions on first run
-- **Compliance Policies SDK Bug Fix**: Implemented REST API workaround for Microsoft Graph SDK assignment failures
-- **EDR Policy Documentation**: Added detailed manual setup guide with step-by-step instructions
-- **Authentication System**: Multiple fixes for token access and multi-service authentication
-- **Authentication Status Checker**: Added debug option to verify connection status across all services
-- **Smart Recommendations**: Improved logic to guide users through setup workflow
+1. Branch, edit, lint locally (`./Build/Build.ps1`)
+2. Push — CI lints on `claude/**`/`feature/**` branches
+3. PR to `main` — lint + unit tests + live smoke test must pass
+4. Merge — fixes go live immediately (runtime script delivery from `main`)
+5. Follow prerequisite chains (Security Groups → Admin Accounts → Conditional Access)
 
 ## Known Issues & Limitations
 
-### ~~First-Run Scope Issues~~ (FIXED - January 2025)
-- **Previous Issue**: Scripts failed on first run, required running twice
-- **Cause**: Main menu connected with basic scopes, scripts needed additional permissions
-- **Solution**: Implemented auto-scope expansion in Set-ServiceScopes()
-- **Status**: ✅ Fixed - Scripts now auto-request permissions on first run
+### Placeholder Scripts (COMING SOON)
+Five menu options are placeholders that print manual-setup guidance and exit
+(marked "(COMING SOON)" in the menus): Purview DLP-Policies, Purview
+Sensitivity-Labels, Intune App-Deployment, Intune Autopilot-Config, Exchange
+Mail-Flow-Rules.
+
+### Interactive-Only Scripts
+Sub-scripts use Read-Host prompts and cannot run unattended, so CI smoke tests
+cover the API surface, not script logic end-to-end. A non-interactive mode
+(-ConfigFile / -NonInteractive) is planned to enable full E2E testing against
+the test tenant.
 
 ### Microsoft Graph SDK Bug (2025)
-- **Issue**: Compliance policy assignments fail with Invoke-MgGraphRequest
-- **Solution**: Implemented REST API workaround using Invoke-RestMethod
-- **Location**: Intune/Compliance-Policies.ps1 lines 227-256
+- **Issue**: Compliance policy assignments fail via the SDK cmdlets
+- **Solution**: REST/Invoke-MgGraphRequest workaround in Intune/Compliance-Policies.ps1
 - **Status**: ✅ Fixed with fallback mechanism
 
 ### EDR Policy (Manual Setup Required)
 - **Issue**: EDR policies cannot be automated via Graph API
 - **Solution**: Must be configured manually in Microsoft Defender portal
-- **Documentation**: See STANDARDIZATION_GUIDE.md → Manual Setup Requirements
+- **Documentation**: See Docs/STANDARDIZATION_GUIDE.md → Manual Setup Requirements
 - **Tracking**: System tracks EDR status and shows 80%/20% completion split
 
 ### P2 License Detection
-- **Coverage**: Detects 23+ Microsoft license SKUs
+- **Coverage**: Detects 23+ Microsoft license SKUs in Main-Menu.ps1 (Test-EntraP2License)
 - **Note**: New license types may require periodic updates
-- **Location**: Main-Menu.ps1 lines 46-134
+
+### Beta Graph Endpoints
+Intune scripts (and some Entra role/licensing calls) use `graph.microsoft.com/beta`,
+which Microsoft can change without notice. Some calls have v1.0 equivalents and
+should migrate over time.
 
 ## Maintenance Checklist
-- ✅ All known bugs fixed
-- ✅ Authentication system verified
-- ✅ Documentation up to date
-- ✅ GitHub script delivery working
-- ⚠️ Monitor for new Microsoft Graph API changes
+- ⚠️ Monitor for new Microsoft Graph API changes (beta endpoints especially)
 - ⚠️ Update P2 license detection as Microsoft releases new SKUs
+- ⚠️ Renew the smoke-test certificate yearly (Claude-SmokeTest app registration)
+- ⚠️ Keep ExchangeOnlineManagement minimum version guards in sync with module releases
 
 ## PowerShell Version Requirements
 - Requires PowerShell 7.0+ (specified in #Requires directives)
 - Uses Microsoft.Graph PowerShell modules
+- ExchangeOnlineManagement 3.7.2+ (for -DisableWAM)
 - Interactive menu system with arrow key navigation
 
 ## Security Context
-This project creates and manages administrative configurations for Microsoft 365 tenants. All scripts are defensive in nature, focused on proper security configuration and compliance setup.
+This project creates and manages administrative configurations for Microsoft 365 tenants. All scripts are defensive in nature, focused on proper security configuration and compliance setup. CI smoke tests run against a dedicated test tenant only — never a production tenant.
