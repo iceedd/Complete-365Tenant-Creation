@@ -9,14 +9,14 @@
 .AUTHOR
     BITS
 .VERSION
-    1.8
+    1.9
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.8"
+$Script:MenuVersion = "1.9"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -2351,21 +2351,15 @@ function Invoke-SelfUpdate {
 
         Write-Host ""
         Write-Host "   UPDATE AVAILABLE  v$localVersion  ->  v$remoteVersion" -ForegroundColor Yellow
-        Write-Host "   A newer Main-Menu.ps1 is available on GitHub." -ForegroundColor White
+        Write-Host "   Updating and restarting automatically..." -ForegroundColor White
         Write-Host ""
 
-        # If we know where the script lives, offer to auto-update
+        # If we know where the script lives, auto-update and relaunch — no prompt needed
         if ($PSCommandPath) {
-            $answer = Read-Host "   Update and restart now? (Y/N)"
-            if ($answer -notlike "Y*") {
-                Write-Host "   Skipping — you will be prompted again next run" -ForegroundColor Gray
-                return
-            }
             $content | Set-Content -Path $PSCommandPath -Encoding UTF8 -Force
-            Write-Host "   Updated to v$remoteVersion. Please re-run the script." -ForegroundColor Green
-            Write-Host ""
-            Write-Host "   Press any key to exit..." -ForegroundColor Gray
-            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            Write-Host "   Updated to v$remoteVersion. Restarting..." -ForegroundColor Green
+            Start-Sleep 1
+            Start-Process -FilePath "pwsh" -ArgumentList @("-NoLogo", "-File", "`"$PSCommandPath`"") -WorkingDirectory (Split-Path $PSCommandPath -Parent) -NoNewWindow
             exit
         }
         else {
