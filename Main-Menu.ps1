@@ -9,14 +9,14 @@
 .AUTHOR
     BITS
 .VERSION
-    1.9
+    2.0
 #>
 
 # Force TLS 1.2 for all HTTPS connections (required for GitHub)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "1.9"
+$Script:MenuVersion = "2.0"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1896,16 +1896,16 @@ function Show-IntuneMenu {
         
         # App Deployment - Requires Device Groups AND Compliance Policies
         if (Test-Prerequisites -RequiredStep "AppDeployment") {
-            Write-Host "4. 📦 Application Deployment" -ForegroundColor Green
+            Write-Host "4. 📦 Application Deployment (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         } else {
-            Write-Host "4. 📦 Application Deployment [REQUIRES: Device Groups + Compliance Policies]" -ForegroundColor Red
+            Write-Host "4. 📦 Application Deployment (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         }
         
         # Autopilot - Requires Device Groups
         if (Test-Prerequisites -RequiredStep "AutopilotConfig") {
-            Write-Host "5. 🚀 Autopilot Configuration" -ForegroundColor Green
+            Write-Host "5. 🚀 Autopilot Configuration (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         } else {
-            Write-Host "5. 🚀 Autopilot Configuration [REQUIRES: Device Groups]" -ForegroundColor Red
+            Write-Host "5. 🚀 Autopilot Configuration (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         }
 
         # WAU - Requires Device Groups
@@ -1982,10 +1982,10 @@ function Show-IntuneMenu {
     } while ($choice -ne "0")
 }
 
-function Show-ExchangeMenu {
-    if (!(Set-ServiceScopes -Service "Exchange")) { return }
-
-    # Ensure Exchange Online connection
+function Connect-ExchangeOnlineService {
+    # Ensures the ExchangeOnlineManagement module (3.7.2+) is available and an
+    # Exchange Online connection is active. Used by the Exchange and Security
+    # menus (Safe Attachments / Anti-Phishing run EXO cmdlets).
     Write-Host "🔄 Checking Exchange Online connection..." -ForegroundColor Gray
 
     try {
@@ -2020,9 +2020,18 @@ function Show-ExchangeMenu {
         } else {
             Write-Host "✅ Exchange Online: Connected as $($exoConnection.UserPrincipalName)" -ForegroundColor Green
         }
+        return $true
     }
     catch {
         Write-Host "❌ Failed to connect to Exchange Online: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Show-ExchangeMenu {
+    if (!(Set-ServiceScopes -Service "Exchange")) { return }
+
+    if (!(Connect-ExchangeOnlineService)) {
         Write-Host "   Press any key to return to main menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
         return
@@ -2064,7 +2073,7 @@ function Show-ExchangeMenu {
         }
         
         # Mail Flow Rules - Always available
-        Write-Host "4. 📨 Mail Flow Rules" -ForegroundColor Green
+        Write-Host "4. 📨 Mail Flow Rules (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
@@ -2179,8 +2188,24 @@ function Show-SecurityMenu {
         
         switch ($choice) {
             "1" { Invoke-GitHubScript -ScriptPath "Security/Web-Filtering.ps1" }
-            "2" { Invoke-GitHubScript -ScriptPath "Security/Safe-Attachments.ps1" }
-            "3" { Invoke-GitHubScript -ScriptPath "Security/Anti-Phishing.ps1" }
+            "2" {
+                # Safe Attachments runs Exchange Online cmdlets — connect first
+                if (Connect-ExchangeOnlineService) {
+                    Invoke-GitHubScript -ScriptPath "Security/Safe-Attachments.ps1"
+                } else {
+                    Write-Host "   Press any key to continue..." -ForegroundColor Gray
+                    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+                }
+            }
+            "3" {
+                # Anti-Phishing runs Exchange Online cmdlets — connect first
+                if (Connect-ExchangeOnlineService) {
+                    Invoke-GitHubScript -ScriptPath "Security/Anti-Phishing.ps1"
+                } else {
+                    Write-Host "   Press any key to continue..." -ForegroundColor Gray
+                    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+                }
+            }
             "0" { break }
             default { Write-Host "❌ Invalid option!" -ForegroundColor Red; Start-Sleep 1 }
         }
@@ -2204,8 +2229,8 @@ function Show-PurviewMenu {
         Write-Host "🔒 PURVIEW COMPLIANCE AUTOMATION" -ForegroundColor DarkCyan
         Write-Host "=" * 60 -ForegroundColor DarkCyan
         Write-Host "1. 📋 Retention Policies" -ForegroundColor Green
-        Write-Host "2. 🛡️ Data Loss Prevention" -ForegroundColor Green
-        Write-Host "3. 🏷️ Sensitivity Labels" -ForegroundColor Green
+        Write-Host "2. 🛡️ Data Loss Prevention (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
+        Write-Host "3. 🏷️ Sensitivity Labels (COMING SOON - manual setup for now)" -ForegroundColor DarkGray
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
         

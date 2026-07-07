@@ -41,15 +41,27 @@ $PurviewRoles = @{
 function Initialize-ScriptModules {
     Write-Host "   Checking required modules..." -ForegroundColor Yellow
 
+    # ExchangeOnlineManagement 3.7.2+ is required for -DisableWAM on Connect-IPPSSession
+    $minEXOVersion = [Version]"3.7.2"
+
     try {
         foreach ($Module in $RequiredModules) {
             try {
-                if (!(Get-Module -ListAvailable -Name $Module)) {
+                $needsMinVersion = ($Module -eq 'ExchangeOnlineManagement')
+                $installed = Get-Module -ListAvailable -Name $Module | Sort-Object Version -Descending | Select-Object -First 1
+
+                if (!$installed -or ($needsMinVersion -and $installed.Version -lt $minEXOVersion)) {
                     Write-Host "   Installing $Module..." -ForegroundColor Yellow
                     Install-Module $Module -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
                 }
-                if (!(Get-Module -Name $Module)) {
-                    Import-Module $Module -Force -ErrorAction Stop
+
+                $loaded = Get-Module -Name $Module
+                if (!$loaded -or ($needsMinVersion -and $loaded.Version -lt $minEXOVersion)) {
+                    if ($needsMinVersion) {
+                        Import-Module $Module -MinimumVersion $minEXOVersion -Force -ErrorAction Stop
+                    } else {
+                        Import-Module $Module -Force -ErrorAction Stop
+                    }
                 }
                 Write-Host "   $Module ready" -ForegroundColor Green
             }
@@ -209,7 +221,10 @@ function Connect-SecurityCompliance {
     }
 
     try {
-        Connect-IPPSSession -ErrorAction Stop
+        # -DisableWAM avoids the MSAL/Web Account Manager broker crash
+        # (NullReferenceException in RuntimeBroker) when Graph is connected
+        # in the same session. Requires ExchangeOnlineManagement 3.7.2+.
+        Connect-IPPSSession -DisableWAM -ErrorAction Stop
         Write-Host "   Connected to Security & Compliance Center" -ForegroundColor Green
         return $true
     }

@@ -22,7 +22,7 @@ Write-Host "  User Creation is now built in to Main-Menu.ps1 v1.2+." -Foreground
 Write-Host ""
 Write-Host "  To update, run this in PowerShell:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  Invoke-RestMethod 'https://raw.githubusercontent.com/cbro09/Complete-365Tenant-Creation/main/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
+Write-Host "  Invoke-RestMethod 'https://raw.githubusercontent.com/iceedd/Complete-365Tenant-Creation/main/Main-Menu.ps1' | Out-File Main-Menu.ps1 -Encoding UTF8" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Then re-run .\Main-Menu.ps1" -ForegroundColor White
 Write-Host ""

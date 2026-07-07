@@ -511,9 +511,11 @@ function New-ConditionalAccessPolicy {
             return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
         }
 
-        # Ensure NoMFA group is in exclusions
+        # Ensure NoMFA group is in exclusions — append rather than overwrite so
+        # policies with additional exclude groups (e.g. C007's geo group) keep them
         if ($NoMfaGroupId -and $PolicyConfig.conditions.users.excludeGroups -notcontains $NoMfaGroupId) {
-            $PolicyConfig.conditions.users.excludeGroups = @($NoMfaGroupId)
+            $existingExcludes = @($PolicyConfig.conditions.users.excludeGroups) | Where-Object { $_ }
+            $PolicyConfig.conditions.users.excludeGroups = @($existingExcludes) + $NoMfaGroupId
         }
 
         # Create policy
