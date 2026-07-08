@@ -1,0 +1,6 @@
+{
+  "NamePrefix": "E2E-",
+  "GroupNamePrefix": "E2E-",
+  "AssignEntraRoles": true,
+  "AssignIntuneRoles": true
+}

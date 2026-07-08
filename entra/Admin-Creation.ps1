@@ -29,13 +29,64 @@
 .AUTHOR
     BITS
 .VERSION
-    2.3 - Idempotent: existing accounts get roles/groups checked and fixed
-        - Auto-assigns Intune Help Desk Operator role to Helpdesk Operator Group
+    2.4 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing. 2.3 made existing-account role/group checks idempotent.
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation and all "press any key" pauses,
+    never attempt interactive re-consent, and never print generated passwords
+    to the console (CI logs persist — plaintext secrets don't belong there).
+    Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix      (string) prefixed to every account UPN/DisplayName, e.g. "E2E-"
+      GroupNamePrefix (string) prefixed to the group names this script references
+                       (BITS Admin Users, Helpdesk Operator Group, NoMFA Exclusion
+                       Group) — lets E2E tests point at throwaway prefixed groups
+                       created by a prior Security-Groups E2E run
+      AssignEntraRoles (bool) assign Entra ID directory roles (default true)
+      AssignIntuneRoles (bool) assign Intune Help Desk Operator role (default true)
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary (created/skipped/failed —
+    never passwords), so a CI runner can assert on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    NamePrefix        = ''
+    GroupNamePrefix   = ''
+    AssignEntraRoles  = $true
+    AssignIntuneRoles = $true
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -149,20 +200,31 @@ function Test-Prerequisites {
 
     # Check and request scopes
     Write-Host "   Checking required permissions..." -ForegroundColor Gray
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode, which the E2E test harness enables
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -194,7 +256,8 @@ function Test-Prerequisites {
 
     # Check for required groups
     Write-Host "   Checking for required groups..." -ForegroundColor Gray
-    $requiredGroups = @("BITS Admin Users", "NoMFA Exclusion Group")
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    $requiredGroups = @("${groupPrefix}BITS Admin Users", "${groupPrefix}NoMFA Exclusion Group")
     $missingGroups = @()
 
     foreach ($groupName in $requiredGroups) {
@@ -232,7 +295,10 @@ function Get-AdminAccountDefinitions {
         [string]$UsageLocation = "GB"
     )
 
-    return @(
+    $namePrefix  = $script:RunConfig.NamePrefix
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+
+    $accounts = @(
         @{
             Role = "Cloud"
             UPN = "BITS-Admin-Cloud@$DefaultDomain"
@@ -292,6 +358,20 @@ function Get-AdminAccountDefinitions {
             )
         }
     )
+
+    # Apply configured prefixes (test isolation: E2E runs use "E2E-" so created
+    # accounts and the groups they reference are identifiable and safely deletable).
+    # UPN is rebuilt from the still-unprefixed DisplayName before DisplayName itself
+    # is prefixed, so the local part and display name stay in sync.
+    if ($namePrefix -or $groupPrefix) {
+        foreach ($account in $accounts) {
+            $account.UPN         = "$namePrefix$($account.DisplayName)@$DefaultDomain"
+            $account.DisplayName = "$namePrefix$($account.DisplayName)"
+            $account.Groups      = @($account.Groups | ForEach-Object { "$groupPrefix$_" })
+        }
+    }
+
+    return $accounts
 }
 
 # ============================================================================
@@ -514,15 +594,16 @@ function Add-UserToGroups {
 
         if (!$group) {
             # Try to create the group if it's the Helpdesk Operator Group
-            if ($groupName -eq "Helpdesk Operator Group") {
+            if ($groupName -eq "$($script:RunConfig.GroupNamePrefix)Helpdesk Operator Group") {
                 try {
+                    $namePrefix = $script:RunConfig.NamePrefix
                     $groupParams = @{
                         DisplayName = $groupName
                         Description = "Dynamic group for Intune Help Desk Operator role"
                         GroupTypes = @("DynamicMembership")
                         MailEnabled = $false
-                        MailNickname = "HelpdeskOperatorGroup"
-                        MembershipRule = '(user.displayName -startsWith "BITS-Admin-Cloud") or (user.displayName -startsWith "BITS-Admin-HD")'
+                        MailNickname = ($groupName -replace '[^a-zA-Z0-9]', '')
+                        MembershipRule = "(user.displayName -startsWith `"${namePrefix}BITS-Admin-Cloud`") or (user.displayName -startsWith `"${namePrefix}BITS-Admin-HD`")"
                         MembershipRuleProcessingState = "On"
                         SecurityEnabled = $true
                     }
@@ -582,9 +663,14 @@ function Start-AdminCreation {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -596,18 +682,23 @@ function Start-AdminCreation {
     Write-Host "  STEP 2: Preview" -ForegroundColor Yellow
     Show-AdminPreview -Accounts $accounts -DefaultDomain $prereqResult.DefaultDomain
 
-    # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create these admin accounts? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create these admin accounts? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Execute
@@ -642,7 +733,7 @@ function Start-AdminCreation {
             Add-UserToGroups -User $result.User -GroupNames $account.Groups
 
             # Assign Entra ID roles (for both new and existing accounts)
-            if ($account.EntraRoles -and $account.EntraRoles.Count -gt 0) {
+            if ($account.EntraRoles -and $account.EntraRoles.Count -gt 0 -and $script:RunConfig.AssignEntraRoles) {
                 Write-Host "     Assigning Entra ID roles..." -ForegroundColor Gray
                 Add-UserToEntraRoles -User $result.User -RoleNames $account.EntraRoles
             }
@@ -655,14 +746,17 @@ function Start-AdminCreation {
     }
 
     # Assign Intune Help Desk Operator role to Helpdesk Operator Group
-    Write-Host ""
-    Write-Host "   Configuring Intune RBAC..." -ForegroundColor White
-    $helpdeskGroup = Get-MgGroup -Filter "displayName eq 'Helpdesk Operator Group'" -ErrorAction SilentlyContinue
-    if ($helpdeskGroup) {
-        $null = Add-IntuneHelpDeskOperatorRole -GroupId $helpdeskGroup.Id
-    }
-    else {
-        Write-Host "     Helpdesk Operator Group not found - skipping Intune role" -ForegroundColor Yellow
+    if ($script:RunConfig.AssignIntuneRoles) {
+        Write-Host ""
+        Write-Host "   Configuring Intune RBAC..." -ForegroundColor White
+        $helpdeskGroupName = "$($script:RunConfig.GroupNamePrefix)Helpdesk Operator Group"
+        $helpdeskGroup = Get-MgGroup -Filter "displayName eq '$helpdeskGroupName'" -ErrorAction SilentlyContinue
+        if ($helpdeskGroup) {
+            $null = Add-IntuneHelpDeskOperatorRole -GroupId $helpdeskGroup.Id
+        }
+        else {
+            Write-Host "     $helpdeskGroupName not found - skipping Intune role" -ForegroundColor Yellow
+        }
     }
 
     # Step 4: Summary
@@ -685,8 +779,9 @@ function Start-AdminCreation {
         Write-Host ""
     }
 
-    # Show passwords (critical section)
-    if ($results.Passwords.Count -gt 0) {
+    # Show passwords (critical section) — never in unattended mode: CI logs
+    # persist, and automated verification doesn't need the plaintext value
+    if (!$script:NonInteractive -and $results.Passwords.Count -gt 0) {
         Write-Host ("=" * 70) -ForegroundColor Red
         Write-Host "  GENERATED PASSWORDS - SAVE THESE NOW!" -ForegroundColor Red
         Write-Host ("=" * 70) -ForegroundColor Red
@@ -726,8 +821,22 @@ function Start-AdminCreation {
     Write-Host "    - Consider setting up sign-in alerts for BG accounts (Azure Monitor or manual review)" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners — never includes passwords
+    if ($ResultPath) {
+        @{
+            Success = ($results.Failed.Count -eq 0)
+            Created = @($results.Created)
+            Skipped = @($results.Skipped)
+            Failed  = @($results.Failed)
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================
