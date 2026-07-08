@@ -70,6 +70,15 @@ try {
     & (Join-Path $RepoRoot 'entra/Security-Groups.ps1') `
         -NonInteractive -ConfigFile $ConfigPath -ResultPath $ResultPath
 
+    # Graph directory reads lag writes by several seconds. The first live run
+    # showed this directly: 4 of 6 just-created groups came back "not found"
+    # from Get-MgGroup immediately after creation, then were found seconds
+    # later. Wait here, before ANY Graph read of the newly created groups —
+    # both the tenant verification below and the idempotency re-run depend on
+    # reads seeing what was just written.
+    Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
+    Start-Sleep -Seconds 30
+
     # ========================================================================
     # Assert on the script's own reported results
     # ========================================================================
@@ -110,11 +119,6 @@ try {
     # ========================================================================
     # Idempotency: a second run must skip everything and create nothing
     # ========================================================================
-    # Graph directory queries lag writes by a few seconds; without this wait the
-    # second run's existence checks can miss just-created groups and double-create
-    Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
-    Start-Sleep -Seconds 30
-
     Write-Host "`n== Verifying idempotency (second run skips all) ==" -ForegroundColor Cyan
     & (Join-Path $RepoRoot 'entra/Security-Groups.ps1') `
         -NonInteractive -ConfigFile $ConfigPath -ResultPath $ResultPath
