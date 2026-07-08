@@ -110,6 +110,11 @@ try {
     # ========================================================================
     # Idempotency: a second run must skip everything and create nothing
     # ========================================================================
+    # Graph directory queries lag writes by a few seconds; without this wait the
+    # second run's existence checks can miss just-created groups and double-create
+    Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
+    Start-Sleep -Seconds 30
+
     Write-Host "`n== Verifying idempotency (second run skips all) ==" -ForegroundColor Cyan
     & (Join-Path $RepoRoot 'entra/Security-Groups.ps1') `
         -NonInteractive -ConfigFile $ConfigPath -ResultPath $ResultPath

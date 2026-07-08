@@ -586,8 +586,10 @@ function New-SecurityGroupItem {
 
         if ($existingGroup) {
             Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
-            # For license groups, still verify the license is attached in case it was missed
-            if ($GroupConfig.SkuId) {
+            # For license groups, still verify the license is attached in case it was missed.
+            # ContainsKey (not dot access) — static groups lack the key, and dot access
+            # on a missing hashtable key throws under callers running Set-StrictMode.
+            if ($GroupConfig.ContainsKey('SkuId') -and $GroupConfig.SkuId) {
                 $null = Set-GroupLicenseAssignment -GroupId $existingGroup.Id -SkuId $GroupConfig.SkuId
             }
             return @{ Success = $true; Skipped = $true; Group = $existingGroup }
@@ -620,7 +622,7 @@ function New-SecurityGroupItem {
         Write-Host "     Created (ID: $($newGroup.Id))" -ForegroundColor Green
 
         # For license groups, wait briefly for Azure AD replication before attaching SKU
-        if ($GroupConfig.SkuId) {
+        if ($GroupConfig.ContainsKey('SkuId') -and $GroupConfig.SkuId) {
             Write-Host "     Waiting for group to provision..." -ForegroundColor Gray
             Start-Sleep -Seconds 5
             $null = Set-GroupLicenseAssignment -GroupId $newGroup.Id -SkuId $GroupConfig.SkuId
@@ -716,8 +718,10 @@ function Start-SecurityGroupCreation {
                 $results.Created += @{ Name = $group.Name; Id = $result.Group.Id }
             }
 
-            # Assign Intune Help Desk Operator role if this is the Helpdesk Operator Group
-            if ($group.AssignIntuneRole -and $result.Group.Id -and $script:RunConfig.AssignIntuneRoles) {
+            # Assign Intune Help Desk Operator role if this is the Helpdesk Operator Group.
+            # ContainsKey guard: only that group's hashtable has the key, and dot access
+            # on a missing key throws under callers running Set-StrictMode.
+            if ($group.ContainsKey('AssignIntuneRole') -and $group.AssignIntuneRole -and $result.Group.Id -and $script:RunConfig.AssignIntuneRoles) {
                 $null = Add-IntuneHelpDeskOperatorRole -GroupId $result.Group.Id
             }
         }
