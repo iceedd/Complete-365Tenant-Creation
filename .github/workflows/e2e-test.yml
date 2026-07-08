@@ -59,3 +59,57 @@ jobs:
           if ($env:CERT_THUMBPRINT) {
             Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
           }
+
+  e2e-admin-creation:
+    name: Admin-Creation end-to-end
+    runs-on: windows-latest
+    # Runs after e2e-security-groups rather than in parallel — both tests
+    # create/delete "E2E-" prefixed objects in the same tenant, and this one
+    # also invokes Security-Groups.ps1 itself as a setup step, so running
+    # them concurrently risks the two runs colliding on the same objects.
+    needs: e2e-security-groups
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Users -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Admin-Creation E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-AdminCreationE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }

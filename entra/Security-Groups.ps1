@@ -215,7 +215,10 @@ function Test-Prerequisites {
 
     # Check and request scopes
     Write-Host "   Checking required permissions..." -ForegroundColor Gray
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode, which the E2E test harness enables
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
         # App-only tokens carry fixed app-role permissions and unattended runs
