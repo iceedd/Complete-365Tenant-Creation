@@ -633,11 +633,16 @@ function Add-UserToGroups {
             Write-Host "       Added to $groupName" -ForegroundColor Green
         }
         catch {
-            if ($_.Exception.Message -like "*already exists*") {
+            # Graph's actual duplicate-member error is "...already exist for the
+            # following modified properties: 'members'." (no trailing "s") — the
+            # E2E idempotency run hit this exact mismatch, since the "*already
+            # exists*" pattern never matched and every re-add fell through to the
+            # generic failure branch below
+            if ($_.Exception.Message -like "*already exist*") {
                 Write-Host "       Already in $groupName" -ForegroundColor Gray
             }
             else {
-                Write-Host "       Failed to add to $groupName" -ForegroundColor Yellow
+                Write-Host "       Failed to add to ${groupName}: $($_.Exception.Message)" -ForegroundColor Yellow
             }
         }
     }
