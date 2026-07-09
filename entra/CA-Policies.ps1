@@ -9,12 +9,70 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode and auto-fix
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing. 2.0 standardized UX with preview mode and auto-fix.
+.PARAMETER NonInteractive
+    Run unattended: skip all Y/N confirmations and "press any key" pauses,
+    never attempt interactive re-consent, and never prompt for policy mode
+    (uses the ConfigFile's PolicyMode instead). Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix                  (string) prefixed to every policy displayName
+      GroupNamePrefix             (string) prefixed to the group names this
+                                   script looks up (NoMFA Exclusion Group,
+                                   CA-GEO-UK, CA-GEO-International)
+      PolicyMode                  ("ReportOnly"|"Enabled") default ReportOnly —
+                                   E2E tests must never use Enabled: most
+                                   policies target "All" users in a shared
+                                   tenant, so Enabled would actually enforce
+                                   block/MFA rules for real traffic
+      AutoDisableSecurityDefaults (bool) default true — required to make any
+                                   progress, since CA policies cannot be
+                                   created while Security Defaults is enabled
+      AutoCreateNoMfaGroup        (bool) default true
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary (created/skipped/failed),
+    so a CI runner can assert on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    NamePrefix                  = ''
+    GroupNamePrefix             = ''
+    PolicyMode                  = 'ReportOnly'
+    AutoDisableSecurityDefaults = $true
+    AutoCreateNoMfaGroup        = $true
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -90,20 +148,31 @@ function Test-Prerequisites {
 
     # Check and request scopes
     Write-Host "   Checking required permissions..." -ForegroundColor Gray
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode, which the E2E test harness enables
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -128,8 +197,9 @@ function Test-Prerequisites {
 
     # Check for geo-based CA groups (optional — C007 skipped if missing)
     Write-Host "   Checking for geo-based CA groups (optional)..." -ForegroundColor Gray
-    $geoUkGroup = Get-MgGroup -Filter "displayName eq 'CA-GEO-UK'" -ErrorAction SilentlyContinue
-    $geoIntlGroup = Get-MgGroup -Filter "displayName eq 'CA-GEO-International'" -ErrorAction SilentlyContinue
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    $geoUkGroup = Get-MgGroup -Filter "displayName eq '${groupPrefix}CA-GEO-UK'" -ErrorAction SilentlyContinue
+    $geoIntlGroup = Get-MgGroup -Filter "displayName eq '${groupPrefix}CA-GEO-International'" -ErrorAction SilentlyContinue
 
     if ($geoUkGroup -and $geoIntlGroup) {
         Write-Host "   CA-GEO-UK found (ID: $($geoUkGroup.Id))" -ForegroundColor Green
@@ -158,13 +228,16 @@ function Test-Prerequisites {
     }
 
     Write-Host ""
+    # Explicit if/else rather than ?. — under Set-StrictMode (as the E2E test
+    # harness enables), $geoUkGroup?.Id is parsed as a variable literally named
+    # "geoUkGroup?", which was never set, and throws instead of returning $null
     return @{
         Success                  = $true
         NoMfaGroupId             = $noMfaGroupResult.GroupId
         SecurityDefaultsDisabled = $securityDefaultsResult.IsDisabled
-        GeoUkGroupId             = $geoUkGroup?.Id
-        GeoIntlGroupId           = $geoIntlGroup?.Id
-        UkLocationId             = $ukLocation?.id
+        GeoUkGroupId             = if ($geoUkGroup) { $geoUkGroup.Id } else { $null }
+        GeoIntlGroupId           = if ($geoIntlGroup) { $geoIntlGroup.Id } else { $null }
+        UkLocationId             = if ($ukLocation) { $ukLocation.id } else { $null }
     }
 }
 
@@ -183,12 +256,22 @@ function Test-SecurityDefaults {
             Write-Host "   Conditional Access policies CANNOT be created while Security Defaults is enabled." -ForegroundColor Yellow
             Write-Host "   Security Defaults must be disabled first." -ForegroundColor Yellow
             Write-Host ""
-            Write-Host "   [Y] Disable Security Defaults now  [N] Cancel" -ForegroundColor Gray
-            $confirm = Read-Host "   Disable Security Defaults? (Y/N)"
 
-            if ($confirm -notlike "Y*") {
-                Write-Host "   Cancelled - Security Defaults remains enabled" -ForegroundColor Yellow
-                return @{ Success = $false; IsDisabled = $false }
+            if ($script:NonInteractive) {
+                if (!$script:RunConfig.AutoDisableSecurityDefaults) {
+                    Write-Host "   AutoDisableSecurityDefaults is false - cannot proceed" -ForegroundColor Yellow
+                    return @{ Success = $false; IsDisabled = $false }
+                }
+                Write-Host "   Non-interactive mode: disabling Security Defaults automatically" -ForegroundColor Gray
+            }
+            else {
+                Write-Host "   [Y] Disable Security Defaults now  [N] Cancel" -ForegroundColor Gray
+                $confirm = Read-Host "   Disable Security Defaults? (Y/N)"
+
+                if ($confirm -notlike "Y*") {
+                    Write-Host "   Cancelled - Security Defaults remains enabled" -ForegroundColor Yellow
+                    return @{ Success = $false; IsDisabled = $false }
+                }
             }
 
             # Disable Security Defaults via REST (more reliable than cmdlet)
@@ -240,39 +323,51 @@ function Test-NoMfaGroup {
     #>
 
     try {
-        $group = Get-MgGroup -Filter "displayName eq 'NoMFA Exclusion Group'" -ErrorAction SilentlyContinue
+        $groupPrefix = $script:RunConfig.GroupNamePrefix
+        $groupName = "${groupPrefix}NoMFA Exclusion Group"
+        $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
 
         if ($group) {
-            Write-Host "   NoMFA Exclusion Group found (ID: $($group.Id))" -ForegroundColor Green
+            Write-Host "   $groupName found (ID: $($group.Id))" -ForegroundColor Green
             return @{ Success = $true; GroupId = $group.Id }
         }
 
         # Group doesn't exist - offer to create
-        Write-Host "   NoMFA Exclusion Group not found" -ForegroundColor Yellow
+        Write-Host "   $groupName not found" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "   This group is required to exclude break-glass accounts from MFA policies." -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "   [Y] Create NoMFA Exclusion Group now  [N] Cancel" -ForegroundColor Gray
-        $confirm = Read-Host "   Create the group? (Y/N)"
 
-        if ($confirm -notlike "Y*") {
-            Write-Host "   Cancelled - run Security Groups script first" -ForegroundColor Yellow
-            return @{ Success = $false }
+        if ($script:NonInteractive) {
+            if (!$script:RunConfig.AutoCreateNoMfaGroup) {
+                Write-Host "   AutoCreateNoMfaGroup is false - cannot proceed" -ForegroundColor Yellow
+                return @{ Success = $false }
+            }
+            Write-Host "   Non-interactive mode: creating $groupName automatically" -ForegroundColor Gray
+        }
+        else {
+            Write-Host "   [Y] Create $groupName now  [N] Cancel" -ForegroundColor Gray
+            $confirm = Read-Host "   Create the group? (Y/N)"
+
+            if ($confirm -notlike "Y*") {
+                Write-Host "   Cancelled - run Security Groups script first" -ForegroundColor Yellow
+                return @{ Success = $false }
+            }
         }
 
         # Create the group
-        Write-Host "   Creating NoMFA Exclusion Group..." -ForegroundColor Yellow
+        Write-Host "   Creating $groupName..." -ForegroundColor Yellow
 
         $groupParams = @{
-            DisplayName = "NoMFA Exclusion Group"
+            DisplayName = $groupName
             Description = "Members excluded from MFA requirements - USE FOR BREAK-GLASS ACCOUNTS ONLY"
             MailEnabled = $false
-            MailNickname = "NoMFA-Exclusion"
+            MailNickname = ($groupName -replace '[^a-zA-Z0-9]', '')
             SecurityEnabled = $true
         }
 
         $newGroup = New-MgGroup -BodyParameter $groupParams -ErrorAction Stop
-        Write-Host "   Created NoMFA Exclusion Group (ID: $($newGroup.Id))" -ForegroundColor Green
+        Write-Host "   Created $groupName (ID: $($newGroup.Id))" -ForegroundColor Green
         Write-Host "   IMPORTANT: Add break-glass accounts to this group!" -ForegroundColor Yellow
 
         return @{ Success = $true; GroupId = $newGroup.Id; Created = $true }
@@ -315,7 +410,9 @@ function Get-PolicyDefinitions {
         [string]$UkLocationId
     )
 
-    return @(
+    $namePrefix = $script:RunConfig.NamePrefix
+
+    $policies = @(
         @{
             displayName = "C001 - Block High Risk Users"
             state = $PolicyState
@@ -444,6 +541,14 @@ function Get-PolicyDefinitions {
         }
         else { @() }
     )
+
+    if ($namePrefix) {
+        foreach ($policy in $policies) {
+            $policy.displayName = "$namePrefix$($policy.displayName)"
+        }
+    }
+
+    return $policies
 }
 
 # ============================================================================
@@ -550,9 +655,14 @@ function Start-CAPolicyCreation {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -565,26 +675,40 @@ function Start-CAPolicyCreation {
     Write-Host "  STEP 2: Policy Mode" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
     Write-Host ""
-    Write-Host "   [1] Report-only  - Policies log but do NOT enforce (recommended for new tenants)" -ForegroundColor Cyan
-    Write-Host "   [2] Enabled      - Policies enforce immediately" -ForegroundColor Yellow
-    Write-Host ""
-    $modeChoice = Read-Host "   Select mode (1 or 2)"
 
-    switch ($modeChoice) {
-        "1" {
-            $policyState = "enabledForReportingButNotEnforced"
-            $modeLabel = "Report-only"
-            Write-Host "   Mode: Report-only (monitoring only, no enforcement)" -ForegroundColor Cyan
-        }
-        "2" {
+    if ($script:NonInteractive) {
+        if ($script:RunConfig.PolicyMode -eq 'Enabled') {
             $policyState = "enabled"
             $modeLabel = "Enabled (enforcing)"
-            Write-Host "   Mode: Enabled - policies will enforce immediately" -ForegroundColor Yellow
         }
-        default {
-            Write-Host "   Invalid selection. Defaulting to Report-only for safety." -ForegroundColor Yellow
+        else {
             $policyState = "enabledForReportingButNotEnforced"
-            $modeLabel = "Report-only (default)"
+            $modeLabel = "Report-only"
+        }
+        Write-Host "   Non-interactive mode: using PolicyMode '$($script:RunConfig.PolicyMode)' -> $modeLabel" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "   [1] Report-only  - Policies log but do NOT enforce (recommended for new tenants)" -ForegroundColor Cyan
+        Write-Host "   [2] Enabled      - Policies enforce immediately" -ForegroundColor Yellow
+        Write-Host ""
+        $modeChoice = Read-Host "   Select mode (1 or 2)"
+
+        switch ($modeChoice) {
+            "1" {
+                $policyState = "enabledForReportingButNotEnforced"
+                $modeLabel = "Report-only"
+                Write-Host "   Mode: Report-only (monitoring only, no enforcement)" -ForegroundColor Cyan
+            }
+            "2" {
+                $policyState = "enabled"
+                $modeLabel = "Enabled (enforcing)"
+                Write-Host "   Mode: Enabled - policies will enforce immediately" -ForegroundColor Yellow
+            }
+            default {
+                Write-Host "   Invalid selection. Defaulting to Report-only for safety." -ForegroundColor Yellow
+                $policyState = "enabledForReportingButNotEnforced"
+                $modeLabel = "Report-only (default)"
+            }
         }
     }
     Write-Host ""
@@ -610,18 +734,23 @@ function Start-CAPolicyCreation {
     Write-Host "   Mode: $modeLabel" -ForegroundColor Cyan
     Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId
 
-    # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create these CA policies? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create these CA policies? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 5: Execute
@@ -697,8 +826,22 @@ function Start-CAPolicyCreation {
     Write-Host "    4. Test with pilot users" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners
+    if ($ResultPath) {
+        @{
+            Success = ($results.Failed.Count -eq 0)
+            Created = @($results.Created)
+            Skipped = @($results.Skipped)
+            Failed  = @($results.Failed)
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================

@@ -1,0 +1,7 @@
+{
+  "NamePrefix": "E2E-",
+  "GroupNamePrefix": "E2E-",
+  "PolicyMode": "ReportOnly",
+  "AutoDisableSecurityDefaults": true,
+  "AutoCreateNoMfaGroup": true
+}
