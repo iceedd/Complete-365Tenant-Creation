@@ -196,6 +196,27 @@ finally {
     try {
         $e2eUsers = @(Get-MgUser -Filter "startsWith(displayName, '$E2EPrefix')" -All -ErrorAction Stop)
         foreach ($user in $e2eUsers) {
+            # Deleting a user who holds a directory role requires the app itself
+            # to hold Global Admin/Privileged Auth Admin/User Admin — this app
+            # deliberately only holds Exchange Administrator, so the delete would
+            # be denied for any account still holding a role. Strip role
+            # assignments first so deletion never depends on the app's own
+            # privilege level. (One run's cleanup showed BG01/BG02 deleting fine
+            # while Cloud/HD failed with Authorization_RequestDenied — that was
+            # role-assignment replication lag letting BG01/BG02 slip through
+            # before enforcement caught up, not a reliable path to rely on.)
+            try {
+                $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($user.Id)'"
+                $assignments = Invoke-MgGraphRequest -Uri $assignUri -Method GET -ErrorAction Stop
+                foreach ($assignment in @($assignments.value)) {
+                    Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments/$($assignment.id)" -Method DELETE -ErrorAction Stop
+                    Write-Host "  Removed role assignment $($assignment.id) from $($user.DisplayName)" -ForegroundColor Gray
+                }
+            }
+            catch {
+                Write-Host "  WARNING: could not remove role assignments for $($user.DisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+
             try {
                 Remove-MgUser -UserId $user.Id -Confirm:$false -ErrorAction Stop
                 Write-Host "  Deleted user $($user.DisplayName)" -ForegroundColor Gray
