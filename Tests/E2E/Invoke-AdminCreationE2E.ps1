@@ -195,16 +195,18 @@ finally {
     Write-Host "`n== Cleaning up E2E accounts ==" -ForegroundColor Cyan
     try {
         $e2eUsers = @(Get-MgUser -Filter "startsWith(displayName, '$E2EPrefix')" -All -ErrorAction Stop)
+
+        # Deleting a user who holds a directory role requires the app itself to
+        # hold Global Admin/Privileged Auth Admin/User Admin — this app
+        # deliberately only holds Exchange Administrator, so the delete would be
+        # denied for any account still holding a role. Strip role assignments
+        # from every account first (phase 1), wait for the removal to propagate
+        # to the deletion-authorization check, then delete (phase 2) — the first
+        # attempt at this deleted the role assignments and tried to delete the
+        # user within ~150ms, which is well inside Graph's directory
+        # role-enforcement propagation window and got Authorization_RequestDenied
+        # for every account whose roles had just been stripped.
         foreach ($user in $e2eUsers) {
-            # Deleting a user who holds a directory role requires the app itself
-            # to hold Global Admin/Privileged Auth Admin/User Admin — this app
-            # deliberately only holds Exchange Administrator, so the delete would
-            # be denied for any account still holding a role. Strip role
-            # assignments first so deletion never depends on the app's own
-            # privilege level. (One run's cleanup showed BG01/BG02 deleting fine
-            # while Cloud/HD failed with Authorization_RequestDenied — that was
-            # role-assignment replication lag letting BG01/BG02 slip through
-            # before enforcement caught up, not a reliable path to rely on.)
             try {
                 $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($user.Id)'"
                 $assignments = Invoke-MgGraphRequest -Uri $assignUri -Method GET -ErrorAction Stop
@@ -216,7 +218,14 @@ finally {
             catch {
                 Write-Host "  WARNING: could not remove role assignments for $($user.DisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
             }
+        }
 
+        if ($e2eUsers.Count -gt 0) {
+            Write-Host "  Waiting 30s for role-removal to propagate before deleting users..." -ForegroundColor Gray
+            Start-Sleep -Seconds 30
+        }
+
+        foreach ($user in $e2eUsers) {
             try {
                 Remove-MgUser -UserId $user.Id -Confirm:$false -ErrorAction Stop
                 Write-Host "  Deleted user $($user.DisplayName)" -ForegroundColor Gray
