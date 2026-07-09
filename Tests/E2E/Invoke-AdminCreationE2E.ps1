@@ -84,8 +84,19 @@ function Test-EntraRoleAssignment {
     param([string]$PrincipalId, [string]$RoleName)
     $roleId = $EntraRoleIds[$RoleName]
     $uri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$PrincipalId' and roleDefinitionId eq '$roleId'"
-    $result = Invoke-MgGraphRequest -Uri $uri -Method GET -ErrorAction Stop
-    return @($result.value).Count -gt 0
+
+    # roleManagement/directory/roleAssignments reads have consistently lagged
+    # writes more than every other Graph endpoint hit in this project — a live
+    # run showed 9 of 10 assignments reporting "not found" here immediately
+    # after the same 30s wait that was already sufficient for user/group/
+    # JobTitle checks in the same pass, with the script's own idempotency
+    # re-run moments later confirming every one of them was actually there.
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        $result = Invoke-MgGraphRequest -Uri $uri -Method GET -ErrorAction Stop
+        if (@($result.value).Count -gt 0) { return $true }
+        if ($attempt -lt 4) { Start-Sleep -Seconds 15 }
+    }
+    return $false
 }
 
 # ============================================================================
