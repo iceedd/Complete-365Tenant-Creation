@@ -565,7 +565,9 @@ function Add-UserToEntraRoles {
                 continue
             }
 
-            # Assign the role (using direct API)
+            # Assign the role (using direct API). A just-created user's principalId
+            # can briefly 404 here before directory replication catches up, so retry
+            # a few times rather than treating it as a permanent failure.
             $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
             $roleAssignment = @{
                 "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
@@ -574,8 +576,17 @@ function Add-UserToEntraRoles {
                 directoryScopeId = "/"
             }
 
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
-            Write-Host "       Assigned: $roleName" -ForegroundColor Green
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+                try {
+                    $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
+                    Write-Host "       Assigned: $roleName" -ForegroundColor Green
+                    break
+                }
+                catch {
+                    if ($attempt -eq 4) { throw }
+                    Start-Sleep -Seconds 5
+                }
+            }
         }
         catch {
             Write-Host "       Failed to assign $roleName : $($_.Exception.Message)" -ForegroundColor Yellow
