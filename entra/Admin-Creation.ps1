@@ -544,8 +544,21 @@ function Add-IntuneHelpDeskOperatorRole {
 function Add-UserToEntraRoles {
     param(
         [object]$User,
-        [array]$RoleNames
+        [array]$RoleNames,
+        [bool]$IsNewUser = $false
     )
+
+    # A just-created user's principalId isn't immediately visible to the
+    # roleAssignments write endpoint, and — critically — Invoke-MgGraphRequest
+    # was observed to throw an uncatchable error for that specific 404: neither
+    # -ErrorAction Stop + try/catch, nor -ErrorAction SilentlyContinue +
+    # -ErrorVariable, could stop it from aborting the entire script. Since the
+    # failure can't be caught or retried after the fact, the only reliable fix
+    # is to avoid ever calling the endpoint before replication has caught up.
+    if ($IsNewUser -and $RoleNames -and $RoleNames.Count -gt 0) {
+        Write-Host "       Waiting for directory replication before role assignment..." -ForegroundColor Gray
+        Start-Sleep -Seconds 60
+    }
 
     foreach ($roleName in $RoleNames) {
         if (!$EntraRoles.ContainsKey($roleName)) {
@@ -555,30 +568,31 @@ function Add-UserToEntraRoles {
 
         $roleId = $EntraRoles[$roleName]
 
-        try {
-            # Check if already assigned (using direct API to avoid module conflicts)
-            $checkUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($User.Id)' and roleDefinitionId eq '$roleId'"
-            $existingAssignment = Invoke-MgGraphRequest -Uri $checkUri -Method GET -ErrorAction SilentlyContinue
+        # Check if already assigned (using direct API to avoid module conflicts)
+        $checkUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($User.Id)' and roleDefinitionId eq '$roleId'"
+        $existingAssignment = Invoke-MgGraphRequest -Uri $checkUri -Method GET -ErrorAction SilentlyContinue
 
-            if ($existingAssignment.value.Count -gt 0) {
-                Write-Host "       Already has: $roleName" -ForegroundColor Gray
-                continue
-            }
+        if ($existingAssignment.value.Count -gt 0) {
+            Write-Host "       Already has: $roleName" -ForegroundColor Gray
+            continue
+        }
 
-            # Assign the role (using direct API)
-            $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
-            $roleAssignment = @{
-                "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
-                principalId = $User.Id
-                roleDefinitionId = $roleId
-                directoryScopeId = "/"
-            }
+        # Assign the role (using direct API)
+        $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
+        $roleAssignment = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            principalId = $User.Id
+            roleDefinitionId = $roleId
+            directoryScopeId = "/"
+        }
 
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
+        $postError = $null
+        $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction SilentlyContinue -ErrorVariable postError
+        if (!$postError) {
             Write-Host "       Assigned: $roleName" -ForegroundColor Green
         }
-        catch {
-            Write-Host "       Failed to assign $roleName : $($_.Exception.Message)" -ForegroundColor Yellow
+        else {
+            Write-Host "       Failed to assign $roleName : $($postError[0].Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -740,7 +754,7 @@ function Start-AdminCreation {
             # Assign Entra ID roles (for both new and existing accounts)
             if ($account.EntraRoles -and $account.EntraRoles.Count -gt 0 -and $script:RunConfig.AssignEntraRoles) {
                 Write-Host "     Assigning Entra ID roles..." -ForegroundColor Gray
-                Add-UserToEntraRoles -User $result.User -RoleNames $account.EntraRoles
+                Add-UserToEntraRoles -User $result.User -RoleNames $account.EntraRoles -IsNewUser (!$result.Skipped)
             }
         }
         else {

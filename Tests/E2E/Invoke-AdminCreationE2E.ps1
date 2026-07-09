@@ -84,8 +84,19 @@ function Test-EntraRoleAssignment {
     param([string]$PrincipalId, [string]$RoleName)
     $roleId = $EntraRoleIds[$RoleName]
     $uri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$PrincipalId' and roleDefinitionId eq '$roleId'"
-    $result = Invoke-MgGraphRequest -Uri $uri -Method GET -ErrorAction Stop
-    return @($result.value).Count -gt 0
+
+    # roleManagement/directory/roleAssignments reads have consistently lagged
+    # writes more than every other Graph endpoint hit in this project — a live
+    # run showed 9 of 10 assignments reporting "not found" here immediately
+    # after the same 30s wait that was already sufficient for user/group/
+    # JobTitle checks in the same pass, with the script's own idempotency
+    # re-run moments later confirming every one of them was actually there.
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        $result = Invoke-MgGraphRequest -Uri $uri -Method GET -ErrorAction Stop
+        if (@($result.value).Count -gt 0) { return $true }
+        if ($attempt -lt 4) { Start-Sleep -Seconds 15 }
+    }
+    return $false
 }
 
 # ============================================================================
@@ -206,14 +217,28 @@ finally {
         # user within ~150ms, which is well inside Graph's directory
         # role-enforcement propagation window and got Authorization_RequestDenied
         # for every account whose roles had just been stripped.
+        function Remove-DirectoryRoleAssignments {
+            param([string]$UserId, [string]$DisplayName)
+            # Returns the number of assignments removed. A GET returning zero
+            # here isn't proof the account is role-less — the same read-lag
+            # affecting every other Graph list endpoint in this project can
+            # make a just-assigned role invisible to this exact query for a
+            # few seconds, so callers that need to know "truly none left"
+            # should retry rather than trust a single empty result.
+            $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$UserId'"
+            $assignments = Invoke-MgGraphRequest -Uri $assignUri -Method GET -ErrorAction Stop
+            $removed = 0
+            foreach ($assignment in @($assignments.value)) {
+                Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments/$($assignment.id)" -Method DELETE -ErrorAction Stop
+                Write-Host "  Removed role assignment $($assignment.id) from $DisplayName" -ForegroundColor Gray
+                $removed++
+            }
+            return $removed
+        }
+
         foreach ($user in $e2eUsers) {
             try {
-                $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($user.Id)'"
-                $assignments = Invoke-MgGraphRequest -Uri $assignUri -Method GET -ErrorAction Stop
-                foreach ($assignment in @($assignments.value)) {
-                    Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments/$($assignment.id)" -Method DELETE -ErrorAction Stop
-                    Write-Host "  Removed role assignment $($assignment.id) from $($user.DisplayName)" -ForegroundColor Gray
-                }
+                $null = Remove-DirectoryRoleAssignments -UserId $user.Id -DisplayName $user.DisplayName
             }
             catch {
                 Write-Host "  WARNING: could not remove role assignments for $($user.DisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
@@ -226,12 +251,29 @@ finally {
         }
 
         foreach ($user in $e2eUsers) {
-            try {
-                Remove-MgUser -UserId $user.Id -Confirm:$false -ErrorAction Stop
-                Write-Host "  Deleted user $($user.DisplayName)" -ForegroundColor Gray
-            }
-            catch {
-                Write-Host "  WARNING: could not delete user $($user.DisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
+            $deleted = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Remove-MgUser -UserId $user.Id -Confirm:$false -ErrorAction Stop
+                    Write-Host "  Deleted user $($user.DisplayName)" -ForegroundColor Gray
+                    $deleted = $true
+                    break
+                }
+                catch {
+                    if ($attempt -eq 3) {
+                        Write-Host "  WARNING: could not delete user $($user.DisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
+                        break
+                    }
+                    # Authorization_RequestDenied here almost always means a role
+                    # assignment the first pass's GET query didn't see yet — the
+                    # live run this was built against showed exactly one account
+                    # out of four with zero assignments found on the first pass,
+                    # still holding a role at delete time. Re-check and strip
+                    # before the next attempt instead of just waiting blindly.
+                    Write-Host "  Delete denied for $($user.DisplayName), rechecking role assignments (attempt $attempt/3)..." -ForegroundColor Yellow
+                    try { $null = Remove-DirectoryRoleAssignments -UserId $user.Id -DisplayName $user.DisplayName } catch { }
+                    Start-Sleep -Seconds 20
+                }
             }
         }
         Write-Host "  Removed $($e2eUsers.Count) user(s)" -ForegroundColor Green
