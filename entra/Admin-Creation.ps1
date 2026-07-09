@@ -576,16 +576,25 @@ function Add-UserToEntraRoles {
                 directoryScopeId = "/"
             }
 
+            $assigned = $false
+            $lastError = $null
             for ($attempt = 1; $attempt -le 4; $attempt++) {
                 try {
                     $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
                     Write-Host "       Assigned: $roleName" -ForegroundColor Green
+                    $assigned = $true
                     break
                 }
                 catch {
-                    if ($attempt -eq 4) { throw }
-                    Start-Sleep -Seconds 5
+                    $lastError = $_
+                    if ($attempt -lt 4) {
+                        Write-Host "       Attempt $attempt/4 assigning ${roleName} failed: $($_.Exception.Message) — retrying in 5s" -ForegroundColor DarkYellow
+                        Start-Sleep -Seconds 5
+                    }
                 }
+            }
+            if (!$assigned) {
+                Write-Host "       Failed to assign $roleName : $($lastError.Exception.Message)" -ForegroundColor Yellow
             }
         }
         catch {
