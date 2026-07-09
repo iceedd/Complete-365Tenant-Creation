@@ -575,22 +575,29 @@ function Add-UserToEntraRoles {
             directoryScopeId = "/"
         }
 
+        # NOTE: deliberately NOT using -ErrorAction Stop + try/catch here. Under
+        # this script's inherited $ErrorActionPreference='Stop' (set by the E2E
+        # caller), the HTTP error from this specific call was observed to unwind
+        # past every enclosing try/catch straight to the script's top-level
+        # handler, aborting the whole run on the first transient 404 instead of
+        # being caught here. -ErrorVariable sidesteps exception propagation
+        # entirely so the retry loop actually gets a chance to run.
         $assigned = $false
         $attemptNum = 0
         while (!$assigned -and $attemptNum -lt 4) {
             $attemptNum++
-            try {
-                $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
+            $postError = $null
+            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction SilentlyContinue -ErrorVariable postError
+            if (!$postError) {
                 Write-Host "       Assigned: $roleName" -ForegroundColor Green
                 $assigned = $true
             }
-            catch {
-                Write-Host "       RETRY-DEBUG role=$roleName attempt=$attemptNum error=$($_.Exception.Message)" -ForegroundColor Yellow
+            else {
                 if ($attemptNum -lt 4) {
                     Start-Sleep -Seconds 5
                 }
                 else {
-                    Write-Host "       Failed to assign $roleName : $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "       Failed to assign $roleName : $($postError[0].Exception.Message)" -ForegroundColor Yellow
                 }
             }
         }
