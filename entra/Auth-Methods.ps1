@@ -188,8 +188,11 @@ function Get-CurrentAuthMethods {
     try {
         foreach ($method in $AuthMethodConfig) {
             try {
+                # hardwareOath is beta-only (Microsoft Learn marks it "(preview)"
+                # and documents it solely under graph-rest-beta) — v1.0 404s/400s
+                $apiVersion = if ($method.Id -eq 'hardwareOath') { 'beta' } else { 'v1.0' }
                 $current = Invoke-MgGraphRequest -Method GET `
-                    -Uri "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$($method.Id)" `
+                    -Uri "https://graph.microsoft.com/$apiVersion/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$($method.Id)" `
                     -ErrorAction Stop
 
                 $currentStates[$method.Id] = $current.state
@@ -274,8 +277,11 @@ function Set-AuthenticationMethods {
                 state         = $method.TargetState
             } | ConvertTo-Json
 
-            Invoke-MgGraphRequest -Method PATCH `
-                -Uri "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$($method.Id)" `
+            # hardwareOath is beta-only (Microsoft Learn marks it "(preview)"
+            # and documents it solely under graph-rest-beta) — v1.0 404s/400s
+            $apiVersion = if ($method.Id -eq 'hardwareOath') { 'beta' } else { 'v1.0' }
+            $null = Invoke-MgGraphRequest -Method PATCH `
+                -Uri "https://graph.microsoft.com/$apiVersion/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$($method.Id)" `
                 -Body $body `
                 -ContentType "application/json" `
                 -ErrorAction Stop
@@ -328,7 +334,7 @@ function Set-RegistrationCampaign {
             }
         } | ConvertTo-Json -Depth 10
 
-        Invoke-MgGraphRequest -Method PATCH `
+        $null = Invoke-MgGraphRequest -Method PATCH `
             -Uri "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy" `
             -Body $body `
             -ContentType "application/json" `

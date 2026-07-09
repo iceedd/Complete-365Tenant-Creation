@@ -120,8 +120,11 @@ try {
     Write-Host "`n== Verifying authentication method states in tenant ==" -ForegroundColor Cyan
     foreach ($methodId in $ExpectedMethodStates.Keys) {
         $expected = $ExpectedMethodStates[$methodId]
+        # hardwareOath is beta-only (Microsoft Learn marks it "(preview)" and
+        # documents it solely under graph-rest-beta) — v1.0 doesn't serve it
+        $apiVersion = if ($methodId -eq 'hardwareOath') { 'beta' } else { 'v1.0' }
         $current = Invoke-MgGraphRequest -Method GET `
-            -Uri "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$methodId" `
+            -Uri "https://graph.microsoft.com/$apiVersion/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$methodId" `
             -ErrorAction Stop
         Write-Result ($current.state -eq $expected) "$methodId is '$expected' (actual: $($current.state))"
     }
