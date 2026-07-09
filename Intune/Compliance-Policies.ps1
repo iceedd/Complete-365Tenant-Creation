@@ -100,7 +100,10 @@ function Test-Prerequisites {
 
     # Check scopes
     Write-Host "   Checking required permissions..." -ForegroundColor Gray
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
         Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
@@ -270,7 +273,10 @@ function Show-PolicyPreview {
 
         $targetGroups = if ($PolicyAssignments.ContainsKey($policy.displayName)) {
             $groupNames = $PolicyAssignments[$policy.displayName]
-            $validGroups = $groupNames | Where-Object { $GroupCache[$_] }
+            # @() wrap: Where-Object returns $null when nothing matches and a bare
+            # scalar (no .Count) when exactly one item matches — either case
+            # throws under Set-StrictMode
+            $validGroups = @($groupNames | Where-Object { $GroupCache[$_] })
             if ($validGroups.Count -gt 0) {
                 ($validGroups | ForEach-Object { $_.Substring(0, [Math]::Min(12, $_.Length)) }) -join ", "
             }
