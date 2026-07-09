@@ -544,8 +544,21 @@ function Add-IntuneHelpDeskOperatorRole {
 function Add-UserToEntraRoles {
     param(
         [object]$User,
-        [array]$RoleNames
+        [array]$RoleNames,
+        [bool]$IsNewUser = $false
     )
+
+    # A just-created user's principalId isn't immediately visible to the
+    # roleAssignments write endpoint, and — critically — Invoke-MgGraphRequest
+    # was observed to throw an uncatchable error for that specific 404: neither
+    # -ErrorAction Stop + try/catch, nor -ErrorAction SilentlyContinue +
+    # -ErrorVariable, could stop it from aborting the entire script. Since the
+    # failure can't be caught or retried after the fact, the only reliable fix
+    # is to avoid ever calling the endpoint before replication has caught up.
+    if ($IsNewUser -and $RoleNames -and $RoleNames.Count -gt 0) {
+        Write-Host "       Waiting for directory replication before role assignment..." -ForegroundColor Gray
+        Start-Sleep -Seconds 60
+    }
 
     foreach ($roleName in $RoleNames) {
         if (!$EntraRoles.ContainsKey($roleName)) {
@@ -564,9 +577,7 @@ function Add-UserToEntraRoles {
             continue
         }
 
-        # Assign the role (using direct API). A just-created user's principalId
-        # can briefly 404 here before directory replication catches up, so retry
-        # a few times rather than treating it as a permanent failure.
+        # Assign the role (using direct API)
         $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
         $roleAssignment = @{
             "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
@@ -575,31 +586,13 @@ function Add-UserToEntraRoles {
             directoryScopeId = "/"
         }
 
-        # NOTE: deliberately NOT using -ErrorAction Stop + try/catch here. Under
-        # this script's inherited $ErrorActionPreference='Stop' (set by the E2E
-        # caller), the HTTP error from this specific call was observed to unwind
-        # past every enclosing try/catch straight to the script's top-level
-        # handler, aborting the whole run on the first transient 404 instead of
-        # being caught here. -ErrorVariable sidesteps exception propagation
-        # entirely so the retry loop actually gets a chance to run.
-        $assigned = $false
-        $attemptNum = 0
-        while (!$assigned -and $attemptNum -lt 4) {
-            $attemptNum++
-            $postError = $null
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction SilentlyContinue -ErrorVariable postError
-            if (!$postError) {
-                Write-Host "       Assigned: $roleName" -ForegroundColor Green
-                $assigned = $true
-            }
-            else {
-                if ($attemptNum -lt 4) {
-                    Start-Sleep -Seconds 5
-                }
-                else {
-                    Write-Host "       Failed to assign $roleName : $($postError[0].Exception.Message)" -ForegroundColor Yellow
-                }
-            }
+        $postError = $null
+        $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction SilentlyContinue -ErrorVariable postError
+        if (!$postError) {
+            Write-Host "       Assigned: $roleName" -ForegroundColor Green
+        }
+        else {
+            Write-Host "       Failed to assign $roleName : $($postError[0].Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -761,7 +754,7 @@ function Start-AdminCreation {
             # Assign Entra ID roles (for both new and existing accounts)
             if ($account.EntraRoles -and $account.EntraRoles.Count -gt 0 -and $script:RunConfig.AssignEntraRoles) {
                 Write-Host "     Assigning Entra ID roles..." -ForegroundColor Gray
-                Add-UserToEntraRoles -User $result.User -RoleNames $account.EntraRoles
+                Add-UserToEntraRoles -User $result.User -RoleNames $account.EntraRoles -IsNewUser (!$result.Skipped)
             }
         }
         else {
