@@ -555,50 +555,44 @@ function Add-UserToEntraRoles {
 
         $roleId = $EntraRoles[$roleName]
 
-        try {
-            # Check if already assigned (using direct API to avoid module conflicts)
-            $checkUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($User.Id)' and roleDefinitionId eq '$roleId'"
-            $existingAssignment = Invoke-MgGraphRequest -Uri $checkUri -Method GET -ErrorAction SilentlyContinue
+        # Check if already assigned (using direct API to avoid module conflicts)
+        $checkUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($User.Id)' and roleDefinitionId eq '$roleId'"
+        $existingAssignment = Invoke-MgGraphRequest -Uri $checkUri -Method GET -ErrorAction SilentlyContinue
 
-            if ($existingAssignment.value.Count -gt 0) {
-                Write-Host "       Already has: $roleName" -ForegroundColor Gray
-                continue
-            }
-
-            # Assign the role (using direct API). A just-created user's principalId
-            # can briefly 404 here before directory replication catches up, so retry
-            # a few times rather than treating it as a permanent failure.
-            $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
-            $roleAssignment = @{
-                "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
-                principalId = $User.Id
-                roleDefinitionId = $roleId
-                directoryScopeId = "/"
-            }
-
-            $assigned = $false
-            $lastError = $null
-            for ($attempt = 1; $attempt -le 4; $attempt++) {
-                try {
-                    $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
-                    Write-Host "       Assigned: $roleName" -ForegroundColor Green
-                    $assigned = $true
-                    break
-                }
-                catch {
-                    $lastError = $_
-                    if ($attempt -lt 4) {
-                        Write-Host "       Attempt $attempt/4 assigning ${roleName} failed: $($_.Exception.Message) — retrying in 5s" -ForegroundColor DarkYellow
-                        Start-Sleep -Seconds 5
-                    }
-                }
-            }
-            if (!$assigned) {
-                Write-Host "       Failed to assign $roleName : $($lastError.Exception.Message)" -ForegroundColor Yellow
-            }
+        if ($existingAssignment.value.Count -gt 0) {
+            Write-Host "       Already has: $roleName" -ForegroundColor Gray
+            continue
         }
-        catch {
-            Write-Host "       Failed to assign $roleName : $($_.Exception.Message)" -ForegroundColor Yellow
+
+        # Assign the role (using direct API). A just-created user's principalId
+        # can briefly 404 here before directory replication catches up, so retry
+        # a few times rather than treating it as a permanent failure.
+        $assignUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
+        $roleAssignment = @{
+            "@odata.type" = "#microsoft.graph.unifiedRoleAssignment"
+            principalId = $User.Id
+            roleDefinitionId = $roleId
+            directoryScopeId = "/"
+        }
+
+        $assigned = $false
+        $attemptNum = 0
+        while (!$assigned -and $attemptNum -lt 4) {
+            $attemptNum++
+            try {
+                $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body $roleAssignment -ErrorAction Stop
+                Write-Host "       Assigned: $roleName" -ForegroundColor Green
+                $assigned = $true
+            }
+            catch {
+                Write-Host "       RETRY-DEBUG role=$roleName attempt=$attemptNum error=$($_.Exception.Message)" -ForegroundColor Yellow
+                if ($attemptNum -lt 4) {
+                    Start-Sleep -Seconds 5
+                }
+                else {
+                    Write-Host "       Failed to assign $roleName : $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+            }
         }
     }
 }
