@@ -240,7 +240,10 @@ function Test-RequiredScopes {
     }
 
     $currentScopes = $context.Scopes
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $currentScopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $currentScopes })
 
     if ($missingScopes.Count -gt 0 -and $AutoRequest) {
         Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
@@ -252,7 +255,10 @@ function Test-RequiredScopes {
             # Re-check after reconnection
             $context = Get-MgContext
             $currentScopes = $context.Scopes
-            $missingScopes = $RequiredScopes | Where-Object { $_ -notin $currentScopes }
+            # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+            # (no .Count) when exactly one item matches — either case throws under
+            # Set-StrictMode
+            $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $currentScopes })
 
             Write-Host "   Permissions updated" -ForegroundColor Green
         }

@@ -77,7 +77,10 @@ function Test-Prerequisites {
     Write-Host "   Retrieving accepted domains..." -ForegroundColor Gray
     try {
         $domains = Get-AcceptedDomain -ErrorAction Stop
-        $acceptedDomains = $domains | Where-Object { $_.DomainType -eq "Authoritative" } | Select-Object -ExpandProperty DomainName
+        # @() wrap: Where-Object/-ExpandProperty return $null when nothing
+        # matches and a bare scalar (no .Count) when exactly one item matches —
+        # either case throws under Set-StrictMode
+        $acceptedDomains = @($domains | Where-Object { $_.DomainType -eq "Authoritative" } | Select-Object -ExpandProperty DomainName)
         if ($acceptedDomains.Count -gt 0) {
             Write-Host "   Found $($acceptedDomains.Count) accepted domain(s)" -ForegroundColor Green
         }

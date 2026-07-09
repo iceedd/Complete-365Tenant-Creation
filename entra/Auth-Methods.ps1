@@ -84,7 +84,10 @@ function Test-Prerequisites {
     Write-Host "   Connected as: $($context.Account)" -ForegroundColor Green
 
     # Check scopes
-    $missingScopes = $RequiredScopes | Where-Object { $_ -notin $context.Scopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode
+    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
     if ($missingScopes.Count -gt 0) {
         Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
         Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow

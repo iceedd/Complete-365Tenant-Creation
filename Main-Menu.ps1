@@ -386,9 +386,12 @@ function Test-ConfigPoliciesExist {
         $optionalPolicies = @("EDR Policy")
         
         # Check how many core policies exist
-        $coreExists = $corePolicies | Where-Object { $_ -in $existingPolicies }
+        # @() wrap: Where-Object returns $null when nothing matches and a bare
+        # scalar (no .Count) when exactly one item matches — either case
+        # throws under Set-StrictMode
+        $coreExists = @($corePolicies | Where-Object { $_ -in $existingPolicies })
         # Check if optional policies exist (bonus points but not required)
-        $optionalExists = $optionalPolicies | Where-Object { $_ -in $existingPolicies }
+        $optionalExists = @($optionalPolicies | Where-Object { $_ -in $existingPolicies })
         
         # Calculate completion including EDR as important but manual
         # Core policies = 80% completion, EDR = 20% completion for accurate tracking
@@ -402,8 +405,8 @@ function Test-ConfigPoliciesExist {
         $isComplete = $overallCompletion -ge 0.9
         
         if (-not $isComplete) {
-            $missingCore = $corePolicies | Where-Object { $_ -notin $existingPolicies }
-            $missingOptional = $optionalPolicies | Where-Object { $_ -notin $existingPolicies }
+            $missingCore = @($corePolicies | Where-Object { $_ -notin $existingPolicies })
+            $missingOptional = @($optionalPolicies | Where-Object { $_ -notin $existingPolicies })
             
             if ($missingCore.Count -gt 0) {
                 Write-Host "  ⚠️ Missing core config policies: $($missingCore -join ', ')" -ForegroundColor Yellow
@@ -1596,7 +1599,10 @@ function Set-ServiceScopes {
 
     # Check if we have all required scopes
     $currentScopes = $currentContext.Scopes
-    $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
+    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
+    # (no .Count) when exactly one item matches — either case throws under
+    # Set-StrictMode
+    $missingScopes = @($requiredScopes | Where-Object { $_ -notin $currentScopes })
 
     if ($missingScopes.Count -gt 0) {
         Write-Host "⚠️ Additional permissions needed for $Service" -ForegroundColor Yellow
