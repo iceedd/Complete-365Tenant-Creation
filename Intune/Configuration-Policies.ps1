@@ -9,12 +9,63 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation, LAPS admin name prompt, and
+    all "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix      (string) prefixed to every policy's name, e.g. "E2E-"
+                      — lets E2E tests create/verify/delete only throwaway
+                      prefixed policies
+      GroupNamePrefix (string) prefixed to the device group names this
+                      script assigns policies to — lets E2E tests point at
+                      throwaway prefixed groups created by a prior
+                      Device-Groups E2E run
+      LapsAdminName   (string) local admin account name for LAPS, used
+                      instead of prompting. Defaults to "Localadmin".
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    NamePrefix      = ''
+    GroupNamePrefix = ''
+    LapsAdminName   = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -50,6 +101,18 @@ $PolicyAssignments = @{
     "Tamper Protection" = @("Windows Devices (Autopilot)")
     "Web Sign-in Policy" = @("Windows Devices (Autopilot)")
     "NGP Windows Default Policy" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+}
+
+# Apply configured prefixes (test isolation: E2E runs use "E2E-" so created
+# policies and the groups they reference are identifiable and safely
+# deletable). Policy names loaded from JSON are prefixed to match these keys
+# immediately after loading (see Start-ConfigurationPolicyCreation).
+if ($script:RunConfig.NamePrefix -or $script:RunConfig.GroupNamePrefix) {
+    $prefixedAssignments = @{}
+    foreach ($key in $PolicyAssignments.Keys) {
+        $prefixedAssignments["$($script:RunConfig.NamePrefix)$key"] = @($PolicyAssignments[$key] | ForEach-Object { "$($script:RunConfig.GroupNamePrefix)$_" })
+    }
+    $PolicyAssignments = $prefixedAssignments
 }
 
 # ============================================================================
@@ -131,17 +194,25 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -166,6 +237,16 @@ function Test-Prerequisites {
         return @{ Success = $false }
     }
     Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
+
+    # Apply configured name prefix (test isolation: E2E runs use "E2E-" so
+    # created policies are identifiable and safely deletable). This must
+    # match the prefixed keys $PolicyAssignments was rebuilt with at script
+    # load time, so downstream lookups by name keep working.
+    if ($script:RunConfig.NamePrefix) {
+        foreach ($policy in $policies) {
+            $policy.name = "$($script:RunConfig.NamePrefix)$($policy.name)"
+        }
+    }
 
     # Check device groups
     Write-Host "   Checking device groups..." -ForegroundColor Gray
@@ -202,8 +283,8 @@ function Test-Prerequisites {
 }
 
 function Get-PolicyDefinitions {
-    if (-not $Global:GitHubRepo)   { $Global:GitHubRepo   = "iceedd/Complete-365Tenant-Creation" }
-    if (-not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
+    if (-not (Test-Path variable:Global:GitHubRepo) -or -not $Global:GitHubRepo) { $Global:GitHubRepo = "iceedd/Complete-365Tenant-Creation" }
+    if (-not (Test-Path variable:Global:GitHubBranch) -or -not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
 
     try {
         # Try GitHub download first
@@ -405,9 +486,14 @@ function Start-ConfigurationPolicyCreation {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -415,12 +501,21 @@ function Start-ConfigurationPolicyCreation {
     Write-Host ""
     Write-Host "  STEP 2: Configuration" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
-    Write-Host "   Enter the local admin account name for LAPS" -ForegroundColor Gray
-    Write-Host "   (This will be the local admin on all Windows devices)" -ForegroundColor Gray
-    Write-Host ""
-    $lapsAdminName = Read-Host "   LAPS admin name (default: Localadmin)"
-    if ([string]::IsNullOrWhiteSpace($lapsAdminName)) {
+
+    if ($script:RunConfig.LapsAdminName) {
+        $lapsAdminName = $script:RunConfig.LapsAdminName
+    }
+    elseif ($script:NonInteractive) {
         $lapsAdminName = "Localadmin"
+    }
+    else {
+        Write-Host "   Enter the local admin account name for LAPS" -ForegroundColor Gray
+        Write-Host "   (This will be the local admin on all Windows devices)" -ForegroundColor Gray
+        Write-Host ""
+        $lapsAdminName = Read-Host "   LAPS admin name (default: Localadmin)"
+        if ([string]::IsNullOrWhiteSpace($lapsAdminName)) {
+            $lapsAdminName = "Localadmin"
+        }
     }
     Write-Host "   Using LAPS admin: $lapsAdminName" -ForegroundColor Green
 
@@ -429,18 +524,23 @@ function Start-ConfigurationPolicyCreation {
     Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
     Show-PolicyPreview -Policies $prereqResult.Policies -TenantInfo $prereqResult.TenantInfo
 
-    # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create these configuration policies? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create these configuration policies? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 4: Execute
@@ -517,8 +617,22 @@ function Start-ConfigurationPolicyCreation {
     Write-Host "    4. Run Compliance Policies script" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners
+    if ($ResultPath) {
+        @{
+            Success = ($results.Failed.Count -eq 0)
+            Created = @($results.Created)
+            Skipped = @($results.Skipped)
+            Failed  = @($results.Failed)
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================
