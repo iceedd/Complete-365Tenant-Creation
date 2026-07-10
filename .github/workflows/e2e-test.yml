@@ -24,6 +24,7 @@ on:
           - ca-policies
           - auth-methods
           - password-policies
+          - device-groups
   schedule:
     - cron: '0 3 * * 1' # Mondays 03:00 UTC
 
@@ -298,6 +299,61 @@ jobs:
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
         run: |
           ./Tests/E2E/Invoke-PasswordPoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-device-groups:
+    name: Device-Groups end-to-end
+    runs-on: windows-latest
+    # Chained after e2e-password-policies — this test's cleanup query
+    # broad-matches any "E2E-" prefixed group tenant-wide (not just ones it
+    # created), so it must not run concurrently with the other five.
+    needs: e2e-password-policies
+    if: |
+      always() &&
+      (needs.e2e-password-policies.result == 'success' || needs.e2e-password-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'device-groups')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Device-Groups E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-DeviceGroupsE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
             -AppId $env:M365_APP_ID `
             -CertificateThumbprint $env:CERT_THUMBPRINT
