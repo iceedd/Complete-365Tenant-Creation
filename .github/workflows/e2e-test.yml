@@ -5,6 +5,25 @@ name: E2E Test (M365 test tenant)
 # scheduled run catch regressions.
 on:
   workflow_dispatch:
+    inputs:
+      only_job:
+        description: >-
+          Run only this one job (for fast iteration while developing a single
+          script's E2E test). Each job's own script already sets up its
+          prerequisites and cleans up after itself — the needs: chaining
+          below exists solely to stop two jobs from mutating the same
+          "E2E-" prefixed objects in the shared test tenant at once, so
+          running a single job in isolation is safe. Leave as "all" (the
+          default) for full regression coverage before merging.
+        type: choice
+        default: all
+        options:
+          - all
+          - security-groups
+          - admin-creation
+          - ca-policies
+          - auth-methods
+          - password-policies
   schedule:
     - cron: '0 3 * * 1' # Mondays 03:00 UTC
 
@@ -15,6 +34,7 @@ concurrency:
 jobs:
   e2e-security-groups:
     name: Security-Groups end-to-end
+    if: github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'security-groups'
     runs-on: windows-latest
 
     steps:
@@ -68,6 +88,10 @@ jobs:
     # also invokes Security-Groups.ps1 itself as a setup step, so running
     # them concurrently risks the two runs colliding on the same objects.
     needs: e2e-security-groups
+    if: |
+      always() &&
+      (needs.e2e-security-groups.result == 'success' || needs.e2e-security-groups.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'admin-creation')
 
     steps:
       - name: Checkout
@@ -122,6 +146,10 @@ jobs:
     # objects in the same tenant, so it must not run concurrently with
     # the other two.
     needs: e2e-admin-creation
+    if: |
+      always() &&
+      (needs.e2e-admin-creation.result == 'success' || needs.e2e-admin-creation.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'ca-policies')
 
     steps:
       - name: Checkout
@@ -176,6 +204,10 @@ jobs:
     # objects in the same tenant, so it must not run concurrently with
     # the other three.
     needs: e2e-ca-policies
+    if: |
+      always() &&
+      (needs.e2e-ca-policies.result == 'success' || needs.e2e-ca-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'auth-methods')
 
     steps:
       - name: Checkout
@@ -228,6 +260,10 @@ jobs:
     # objects in the same tenant, so it must not run concurrently with
     # the other four.
     needs: e2e-auth-methods
+    if: |
+      always() &&
+      (needs.e2e-auth-methods.result == 'success' || needs.e2e-auth-methods.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'password-policies')
 
     steps:
       - name: Checkout
