@@ -95,7 +95,12 @@ try {
         Write-Result $false "Script produced no results file — it likely aborted early"
     }
     else {
-        $result = Get-Content $PwdResultPath -Raw | ConvertFrom-Json
+        # -AsHashtable: PasswordExpiration's shape differs per outcome (Changed
+        # vs AlreadySet vs Error keys aren't all present at once) — parsing as
+        # PSCustomObject (the default) throws under Set-StrictMode when a key
+        # absent from THIS particular shape is accessed, whereas a hashtable
+        # returns $null for a missing key like any other PowerShell hashtable
+        $result = Get-Content $PwdResultPath -Raw | ConvertFrom-Json -AsHashtable
         Write-Result ([bool]$result.Success) "Script reported success"
         Write-Result ([bool]$result.PasswordExpiration.Success) "Password expiration configured ($(if ($result.PasswordExpiration.Changed) { 'changed' } elseif ($result.PasswordExpiration.AlreadySet) { 'already set' } else { 'unknown' }))"
     }
@@ -117,7 +122,7 @@ try {
     & (Join-Path $RepoRoot 'entra/Password-Policies.ps1') `
         -NonInteractive -ConfigFile $PwdConfigPath -ResultPath $PwdResultPath
 
-    $second = Get-Content $PwdResultPath -Raw | ConvertFrom-Json
+    $second = Get-Content $PwdResultPath -Raw | ConvertFrom-Json -AsHashtable
     Write-Result ([bool]$second.Success -and [bool]$second.PasswordExpiration.AlreadySet) `
         "Second run reported AlreadySet (no redundant change)"
 }
