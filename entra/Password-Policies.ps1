@@ -201,7 +201,7 @@ function Set-PasswordNeverExpire {
 
         if (!$primaryDomain) {
             Write-Host "     Could not find primary domain" -ForegroundColor Yellow
-            return @{ Success = $false; Error = "Primary domain not found" }
+            return @{ Success = $false; Error = "Primary domain not found"; AlreadySet = $false; Changed = $false }
         }
 
         # Check current password policy
@@ -211,7 +211,7 @@ function Set-PasswordNeverExpire {
 
         if ($currentPolicy -eq 2147483647 -or $null -eq $currentPolicy) {
             Write-Host "     Passwords already set to never expire" -ForegroundColor Green
-            return @{ Success = $true; AlreadySet = $true }
+            return @{ Success = $true; AlreadySet = $true; Changed = $false }
         }
 
         # Set password to never expire (2147483647 = never)
@@ -223,12 +223,12 @@ function Set-PasswordNeverExpire {
         $null = Update-MgDomain -DomainId $primaryDomain.Id -BodyParameter $params -ErrorAction Stop
 
         Write-Host "     Password expiration set to: Never" -ForegroundColor Green
-        return @{ Success = $true; Changed = $true }
+        return @{ Success = $true; Changed = $true; AlreadySet = $false }
     }
     catch {
         Write-Host "     Failed to set password expiration: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "     You may need to configure this via Microsoft 365 Admin Center" -ForegroundColor Gray
-        return @{ Success = $false; Error = $_.Exception.Message }
+        return @{ Success = $false; Error = $_.Exception.Message; AlreadySet = $false; Changed = $false }
     }
 }
 
