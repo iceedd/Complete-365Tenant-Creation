@@ -11,16 +11,65 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
 .NOTES
     - App: Winget-AutoUpdate-aaS from Microsoft Store (Store ID: XP89BSK82W9J28)
     - ADMX/ADML from: https://github.com/Weatherlights/Winget-AutoUpdate-Intune
     - Uses Administrative Templates profile type (same as manual import in Intune)
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation and all "press any key" pauses.
+    Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix      (string) prefixed to the WAU app name and config
+                      policy name, e.g. "E2E-" — lets E2E tests
+                      create/verify/delete only throwaway prefixed objects.
+                      The imported ADMX file itself is NOT prefixed — it's a
+                      single shared tenant-wide resource, same as real usage.
+      GroupNamePrefix (string) prefixed to the target device group name —
+                      lets E2E tests point at a throwaway prefixed group
+                      created by a prior Device-Groups E2E run
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    NamePrefix      = ''
+    GroupNamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -84,6 +133,18 @@ $WAUConfig = @{
 # Target device group
 $TargetGroup = "Windows Devices (Autopilot)"
 
+# Apply configured prefixes (test isolation: E2E runs use "E2E-" so created
+# objects are identifiable and safely deletable). The ADMX file itself is
+# NOT prefixed — it's a single shared tenant-wide resource, same in test as
+# in real usage.
+if ($script:RunConfig.NamePrefix) {
+    $WAUStoreApp.Name = "$($script:RunConfig.NamePrefix)$($WAUStoreApp.Name)"
+    $WAUConfig.PolicyName = "$($script:RunConfig.NamePrefix)$($WAUConfig.PolicyName)"
+}
+if ($script:RunConfig.GroupNamePrefix) {
+    $TargetGroup = "$($script:RunConfig.GroupNamePrefix)$TargetGroup"
+}
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -131,6 +192,9 @@ function Get-ADMXFiles {
 
     # Try GitHub first
     try {
+        if (-not (Test-Path variable:Global:GitHubRepo) -or -not $Global:GitHubRepo) { $Global:GitHubRepo = "iceedd/Complete-365Tenant-Creation" }
+        if (-not (Test-Path variable:Global:GitHubBranch) -or -not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
+
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $baseUrl = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/ADMX"
 
@@ -199,17 +263,25 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -718,9 +790,14 @@ function Start-WAUDeployment {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -729,18 +806,23 @@ function Start-WAUDeployment {
     Write-Host "  STEP 2: Preview" -ForegroundColor Yellow
     Show-WAUPreview
 
-    # Confirmation
-    Write-Host "  [Y] Deploy WAU with configuration  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Deploy Winget Auto Update? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Deploy WAU with configuration  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Deploy Winget Auto Update? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Deploy
@@ -862,8 +944,24 @@ function Start-WAUDeployment {
     Write-Host "    4. Monitor WAU logs: C:\ProgramData\Winget-AutoUpdate\Logs" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners
+    if ($ResultPath) {
+        @{
+            Success        = ($results.AdmxImported -and $results.AppDeployed -and $results.ConfigDeployed -and $results.Errors.Count -eq 0)
+            AdmxImported   = $results.AdmxImported
+            AdmxId         = $results.AdmxId
+            AppDeployed    = $results.AppDeployed
+            ConfigDeployed = $results.ConfigDeployed
+            Errors         = @($results.Errors)
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================
