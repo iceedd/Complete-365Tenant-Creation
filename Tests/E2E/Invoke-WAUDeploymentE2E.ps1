@@ -138,8 +138,14 @@ try {
         $assignedConfigGroupIds = @($configAssignments.value | ForEach-Object { $_.target.groupId })
         Write-Result ($assignedConfigGroupIds -contains $group.Id) "$ExpectedPolicyName is assigned to $ExpectedGroupName"
 
+        # 11 mapped settings (8 toggles + 3 text/dropdown) + the Application
+        # List policy = 12 possible definition values. Require at least 11:
+        # a low count here (e.g. 4, seen before this test caught a real bug)
+        # means the toggle-only settings are silently failing to apply — a
+        # hashtable-key/strict-mode bug, not a "some patterns didn't match"
+        # situation, so don't accept a loose ">0" threshold.
         $defValues = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/groupPolicyConfigurations/$($config.id)/definitionValues" -Method GET -ErrorAction Stop
-        Write-Result (@($defValues.value).Count -gt 0) "$ExpectedPolicyName has configured setting definition values (found $(@($defValues.value).Count))"
+        Write-Result (@($defValues.value).Count -ge 11) "$ExpectedPolicyName has configured setting definition values (found $(@($defValues.value).Count), expected >= 11 of 12)"
     }
 
     # ========================================================================

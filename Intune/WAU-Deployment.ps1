@@ -660,15 +660,21 @@ function New-WAUConfigPolicy {
 
             # Map our config to policy display names
             # Toggle = simple enabled/disabled, Text = requires presentationValues with a string value
+            # TextValue is always present (defaulting to $null for toggle-only
+            # settings) — under Set-StrictMode, accessing a hashtable key that
+            # was never set at all throws "property ... cannot be found",
+            # which previously caused every toggle-only setting below to be
+            # silently skipped (see the catch block's "Skipped $settingName"
+            # message) even though the summary claimed all 12 were configured.
             $settingsMap = @{
-                "DesktopShortcut"    = @{ Pattern = "Desktop.*Shortcut";            Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1) }
-                "StartMenuShortcut"  = @{ Pattern = "Start.*Menu.*Shortcut";        Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1) }
-                "UpdatesAtLogon"     = @{ Pattern = "Updates.*at.*logon";           Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1) }
-                "BypassListForUsers" = @{ Pattern = "Bypass.*List";                 Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1) }
-                "DoNotUpdate"        = @{ Pattern = "Do.*not.*update";              Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1) }
-                "InstallUserContext" = @{ Pattern = "Install.*user.*context";       Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1) }
-                "RunOnMetered"       = @{ Pattern = "Run.*on.*metered";             Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1) }
-                "UseWhiteList"       = @{ Pattern = "Use.*White.*List";             Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1) }
+                "DesktopShortcut"    = @{ Pattern = "Desktop.*Shortcut";            Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1);    TextValue = $null }
+                "StartMenuShortcut"  = @{ Pattern = "Start.*Menu.*Shortcut";        Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1);  TextValue = $null }
+                "UpdatesAtLogon"     = @{ Pattern = "Updates.*at.*logon";           Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1);      TextValue = $null }
+                "BypassListForUsers" = @{ Pattern = "Bypass.*List";                 Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1);  TextValue = $null }
+                "DoNotUpdate"        = @{ Pattern = "Do.*not.*update";              Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1);         TextValue = $null }
+                "InstallUserContext" = @{ Pattern = "Install.*user.*context";       Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1);  TextValue = $null }
+                "RunOnMetered"       = @{ Pattern = "Run.*on.*metered";             Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1);        TextValue = $null }
+                "UseWhiteList"       = @{ Pattern = "Use.*White.*List";             Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1);        TextValue = $null }
                 "NotificationLevel"  = @{ Pattern = "Notification.*level";          Enabled = $true; TextValue = $WAUConfig.Settings.NotificationLevel }
                 "UpdatesAtTime"      = @{ Pattern = "Update.*at.*time";             Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesAtTime }
                 "UpdatesInterval"    = @{ Pattern = "Update.*frequency|interval";   Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesInterval }
