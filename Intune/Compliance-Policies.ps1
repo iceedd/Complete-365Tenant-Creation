@@ -264,8 +264,8 @@ function Get-PolicyDefinitions {
         Load compliance policy definitions from GitHub or local fallback
     #>
 
-    if (-not $Global:GitHubRepo)   { $Global:GitHubRepo   = "iceedd/Complete-365Tenant-Creation" }
-    if (-not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
+    if (-not (Test-Path variable:Global:GitHubRepo) -or -not $Global:GitHubRepo) { $Global:GitHubRepo = "iceedd/Complete-365Tenant-Creation" }
+    if (-not (Test-Path variable:Global:GitHubBranch) -or -not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
 
     try {
         # Try GitHub download first
