@@ -593,8 +593,8 @@ function Start-ConfigurationPolicyCreation {
         }
         Write-Host ""
 
-        # Check for EDR policy failure
-        if ($results.Failed | Where-Object { $_.Name -eq "EDR Policy" }) {
+        # Check for EDR policy failure (name carries the configured prefix, if any)
+        if ($results.Failed | Where-Object { $_.Name -eq "$($script:RunConfig.NamePrefix)EDR Policy" }) {
             Write-Host "  EDR POLICY MANUAL SETUP REQUIRED:" -ForegroundColor Yellow
             Write-Host "    1. Go to Intune Admin Center" -ForegroundColor Gray
             Write-Host "    2. Endpoint Security > Microsoft Defender for Endpoint" -ForegroundColor Gray
