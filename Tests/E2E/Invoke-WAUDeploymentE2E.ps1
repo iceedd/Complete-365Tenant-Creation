@@ -204,7 +204,10 @@ finally {
         $admxFiles = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/groupPolicyUploadedDefinitionFiles" -Method GET -ErrorAction Stop
         foreach ($admx in @($admxFiles.value | Where-Object { $_.fileName -eq $AdmxFileName })) {
             try {
-                $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/groupPolicyUploadedDefinitionFiles/$($admx.id)" -Method DELETE -ErrorAction Stop
+                # Plain DELETE 400s on this resource type — Graph exposes a
+                # dedicated "remove" action instead (it also tears down the
+                # associated groupPolicyDefinitions/presentations cleanly).
+                $null = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/groupPolicyUploadedDefinitionFiles/$($admx.id)/remove" -Method POST -ErrorAction Stop
                 Write-Host "  Deleted ADMX $($admx.fileName)" -ForegroundColor Gray
             }
             catch {
