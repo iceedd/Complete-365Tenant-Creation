@@ -13,7 +13,25 @@
 .AUTHOR
     BITS
 .VERSION
-    1.0 - Initial implementation
+    1.1 - Initial implementation. Adds non-interactive mode
+          (-NonInteractive/-ConfigFile) for unattended E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip mode selection, all prompts, and "press any key"
+    pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Required in non-interactive mode. JSON file with:
+      Mode ('new' or 'existing')
+      NewSite (required when Mode is 'new'): Title, Type ('TeamSite' or
+        'CommunicationSite'), UrlAlias (optional), Owner (required UPN),
+        Description (optional)
+      ExistingSiteUrl (required when Mode is 'existing'): full site URL
+      SharingCapability (optional): one of Disabled,
+        ExistingExternalUserSharingOnly, ExternalUserSharingOnly,
+        ExternalUserAndGuestSharing — omit to keep the tenant default
+      AdminUpn (optional): UPN to set as site collection admin
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
 
 # Suppress rules that are incompatible with this interactive console script style.
@@ -23,11 +41,44 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseBOMForUnicodeEncodedFile', '')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '', Justification = 'Config stubs consumed by later tasks')]
-param()
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    Mode              = ''
+    NewSite           = $null
+    ExistingSiteUrl   = ''
+    SharingCapability = $null
+    AdminUpn          = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 # SPO module enables site creation, sharing settings, and admin management.
 # Graph-based operations (Entra groups, permissions) work without it.
@@ -280,48 +331,8 @@ function Get-ExistingSiteTargets {
         '2' {
             $url = Read-Host "   Site URL (e.g. https://contoso.sharepoint.com/sites/marketing)"
             if ($url -match '^https://') {
-                $alias = $url -replace '.*/sites/', ''
-                if ($Script:SpoAvailable) {
-                    $site = Get-SPOSite -Identity $url -ErrorAction SilentlyContinue
-                    if ($null -ne $site) {
-                        $sites += @{
-                            Title    = $site.Title
-                            FullUrl  = $url
-                            UrlAlias = $alias
-                            Owner    = $site.Owner
-                            IsNew    = $false
-                        }
-                        Write-Host "   Found: $($site.Title)" -ForegroundColor Green
-                    }
-                    else {
-                        Write-Host "   Site not found: $url" -ForegroundColor Red
-                    }
-                }
-                else {
-                    $graphSite = Get-GraphSiteDetails -SiteUrl $url
-                    if ($null -ne $graphSite) {
-                        $sites += @{
-                            Title    = $graphSite.displayName
-                            FullUrl  = $url
-                            UrlAlias = $alias
-                            Owner    = ''
-                            IsNew    = $false
-                        }
-                        Write-Host "   Found: $($graphSite.displayName)" -ForegroundColor Green
-                    }
-                    else {
-                        # User provided URL but Graph couldn't verify — add with alias as title
-                        $titleGuess = (Get-Culture).TextInfo.ToTitleCase(($alias -replace '-', ' '))
-                        $sites += @{
-                            Title    = $titleGuess
-                            FullUrl  = $url
-                            UrlAlias = $alias
-                            Owner    = ''
-                            IsNew    = $false
-                        }
-                        Write-Host "   Site added (unverified): $url" -ForegroundColor Yellow
-                    }
-                }
+                $found = Get-SiteByUrl -Url $url
+                if ($null -ne $found) { $sites += $found }
             }
             else {
                 Write-Host "   Invalid URL format" -ForegroundColor Red
@@ -333,6 +344,58 @@ function Get-ExistingSiteTargets {
     }
 
     return $sites
+}
+
+function Get-SiteByUrl {
+    <#
+    .SYNOPSIS
+        Looks up a single existing site by URL — via SPO if available,
+        falling back to Graph, falling back to an unverified entry built
+        from the URL alias. Shared by the interactive "enter a specific
+        URL" flow and non-interactive mode.
+    #>
+    param([string]$Url)
+
+    $alias = $Url -replace '.*/sites/', ''
+
+    if ($Script:SpoAvailable) {
+        $site = Get-SPOSite -Identity $Url -ErrorAction SilentlyContinue
+        if ($null -ne $site) {
+            Write-Host "   Found: $($site.Title)" -ForegroundColor Green
+            return @{
+                Title    = $site.Title
+                FullUrl  = $Url
+                UrlAlias = $alias
+                Owner    = $site.Owner
+                IsNew    = $false
+            }
+        }
+        Write-Host "   Site not found: $Url" -ForegroundColor Red
+        return $null
+    }
+
+    $graphSite = Get-GraphSiteDetails -SiteUrl $Url
+    if ($null -ne $graphSite) {
+        Write-Host "   Found: $($graphSite.displayName)" -ForegroundColor Green
+        return @{
+            Title    = $graphSite.displayName
+            FullUrl  = $Url
+            UrlAlias = $alias
+            Owner    = ''
+            IsNew    = $false
+        }
+    }
+
+    # URL provided but Graph couldn't verify — add with alias as title
+    $titleGuess = (Get-Culture).TextInfo.ToTitleCase(($alias -replace '-', ' '))
+    Write-Host "   Site added (unverified): $Url" -ForegroundColor Yellow
+    return @{
+        Title    = $titleGuess
+        FullUrl  = $Url
+        UrlAlias = $alias
+        Owner    = ''
+        IsNew    = $false
+    }
 }
 
 # ============================================================================
@@ -646,6 +709,8 @@ function Start-SiteGroups {
     if (!$prereq.Success) {
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
         return
@@ -654,14 +719,22 @@ function Start-SiteGroups {
     # Step 2 - Mode selection
     Write-Host ""
     Write-Host "  STEP 2: Mode" -ForegroundColor Yellow
-    $mode = Show-ModeSelection
 
-    if ($mode -like 'Q*') {
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
-        return
+    if ($script:NonInteractive) {
+        $mode = if ($script:RunConfig.Mode -eq 'existing') { '2' } else { '1' }
+        Write-Host "   Mode: $($script:RunConfig.Mode) (non-interactive)" -ForegroundColor Gray
+    }
+    else {
+        $mode = Show-ModeSelection
+
+        if ($mode -like 'Q*') {
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            return
+        }
     }
 
     # Step 3 - Collect sites
@@ -674,6 +747,8 @@ function Start-SiteGroups {
             Write-Host "     To create new sites, fix the SPO connection first." -ForegroundColor Gray
             Write-Host "     Select mode 2 (existing sites) to create groups for sites that already exist." -ForegroundColor Gray
             Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "SharePoint Online module unavailable" }
+            if ($script:NonInteractive) { return }
             Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
             try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
             return
@@ -683,25 +758,54 @@ function Start-SiteGroups {
         Write-Host "  STEP 3: New Site Details" -ForegroundColor Yellow
         Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
-        $addMore = $true
-        while ($addMore) {
-            $site = Get-NewSiteDefinition -TenantRootUrl $prereq.TenantRootUrl
-            if ($null -ne $site) { $sites += $site }
-            Write-Host ""
-            $more = Read-Host "   Add another site? (Y/N)"
-            $addMore = $more -like 'Y*'
+        if ($script:NonInteractive) {
+            $newSiteConfig = $script:RunConfig.NewSite
+            $urlAlias = if ($newSiteConfig.ContainsKey('UrlAlias') -and $newSiteConfig.UrlAlias) {
+                $newSiteConfig.UrlAlias
+            }
+            else {
+                ($newSiteConfig.Title -replace '[^a-zA-Z0-9]', '-' -replace '-+', '-').Trim('-').ToLower()
+            }
+            $sites += @{
+                Title       = $newSiteConfig.Title
+                Type        = $newSiteConfig.Type
+                UrlAlias    = $urlAlias
+                FullUrl     = "$($prereq.TenantRootUrl)/sites/$urlAlias"
+                Owner       = $newSiteConfig.Owner
+                Description = if ($newSiteConfig.ContainsKey('Description')) { $newSiteConfig.Description } else { '' }
+                IsNew       = $true
+            }
+        }
+        else {
+            $addMore = $true
+            while ($addMore) {
+                $site = Get-NewSiteDefinition -TenantRootUrl $prereq.TenantRootUrl
+                if ($null -ne $site) { $sites += $site }
+                Write-Host ""
+                $more = Read-Host "   Add another site? (Y/N)"
+                $addMore = $more -like 'Y*'
+            }
         }
     }
     else {
         Write-Host ""
         Write-Host "  STEP 3: Select Existing Sites" -ForegroundColor Yellow
         Write-Host ("   " + "-" * 50) -ForegroundColor Gray
-        $sites = Get-ExistingSiteTargets -TenantRootUrl $prereq.TenantRootUrl
+
+        if ($script:NonInteractive) {
+            $found = Get-SiteByUrl -Url $script:RunConfig.ExistingSiteUrl
+            if ($null -ne $found) { $sites += $found }
+        }
+        else {
+            $sites = Get-ExistingSiteTargets -TenantRootUrl $prereq.TenantRootUrl
+        }
     }
 
     if ($sites.Count -eq 0) {
         Write-Host "  No sites selected. Exiting." -ForegroundColor Yellow
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "No sites selected" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
         return
@@ -712,15 +816,18 @@ function Start-SiteGroups {
     Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
     Show-ProvisioningPreview -Sites $sites
 
-    Write-Host "  [Y] Proceed  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Proceed? (Y/N)"
-    if ($confirm -notlike 'Y*') {
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Proceed  [N] Cancel" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
-        return
+        $confirm = Read-Host "  Proceed? (Y/N)"
+        if ($confirm -notlike 'Y*') {
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
+            return
+        }
     }
 
     # Tracking
@@ -800,12 +907,22 @@ function Start-SiteGroups {
         # External sharing override (SPO module required)
         if ($Script:SpoAvailable) {
             Write-Host ""
-            $sharingChoice = Get-SiteSharingChoice -SiteTitle $site.Title
-            if ($null -ne $sharingChoice.Value) {
-                Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $sharingChoice.Value | Out-Null
+            if ($script:NonInteractive) {
+                if ($script:RunConfig.SharingCapability) {
+                    Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $script:RunConfig.SharingCapability | Out-Null
+                }
+                else {
+                    Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+                }
             }
             else {
-                Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+                $sharingChoice = Get-SiteSharingChoice -SiteTitle $site.Title
+                if ($null -ne $sharingChoice.Value) {
+                    Set-SiteSharingOverride -SiteUrl $site.FullUrl -SharingCapability $sharingChoice.Value | Out-Null
+                }
+                else {
+                    Write-Host "   External sharing: keeping tenant default" -ForegroundColor Gray
+                }
             }
         }
         else {
@@ -816,7 +933,23 @@ function Start-SiteGroups {
         if ($Script:SpoAvailable) {
             Write-Host ""
             Write-Host "   Site collection admin:" -ForegroundColor Yellow
-            Confirm-SiteCollectionAdmin -SiteDefinition $site
+            if ($script:NonInteractive) {
+                if ($script:RunConfig.AdminUpn) {
+                    try {
+                        Set-SPOSite -Identity $site.FullUrl -Owner $script:RunConfig.AdminUpn -ErrorAction Stop
+                        Write-Host "     Site collection admin set: $($script:RunConfig.AdminUpn)" -ForegroundColor Green
+                    }
+                    catch {
+                        Write-Host "     Could not set admin: $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                }
+                else {
+                    Write-Host "     Keeping existing site collection admin" -ForegroundColor Gray
+                }
+            }
+            else {
+                Confirm-SiteCollectionAdmin -SiteDefinition $site
+            }
         }
         else {
             Write-Host "   Site collection admin: skipped (SPO module unavailable)" -ForegroundColor Yellow
@@ -864,21 +997,42 @@ function Start-SiteGroups {
     }
     Write-Host ""
 
+    Write-Result-File -Result @{
+        Success       = ($results.SitesFailed.Count -eq 0 -and $results.GroupsFailed.Count -eq 0 -and $results.PermsFailed.Count -eq 0)
+        SitesCreated  = $results.SitesCreated
+        SitesSkipped  = $results.SitesSkipped
+        SitesFailed   = $results.SitesFailed
+        GroupsCreated = $results.GroupsCreated
+        GroupsSkipped = $results.GroupsSkipped
+        GroupsFailed  = $results.GroupsFailed
+        PermsFailed   = $results.PermsFailed
+    }
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep 2 }
 }
 
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultPath -Encoding UTF8
+}
+
 # ============================================================================
-# ENTRY POINT  (main function added in a later task)
+# ENTRY POINT
 # ============================================================================
 
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
     Start-SiteGroups
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }
