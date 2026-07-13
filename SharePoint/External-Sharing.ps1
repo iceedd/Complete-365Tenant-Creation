@@ -10,12 +10,67 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Implemented with multiple sharing options and preview mode
+    2.1 - Implemented with multiple sharing options and preview mode. Adds
+          non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip preset/menu selection, all prompts, and "press any
+    key" pauses, applying exactly the settings in -ConfigFile (always
+    routed through the "custom" path, bypassing presets). Used by CI E2E
+    tests.
+.PARAMETER ConfigFile
+    Required in non-interactive mode. JSON file with (all optional — omit a
+    key, or set it to null, to keep the tenant's current value for that
+    setting):
+      SharingLevel: one of Disabled, ExistingExternalUserSharingOnly,
+        ExternalUserSharingOnly, ExternalUserAndGuestSharing
+      GuestExpirationEnabled (bool), GuestExpirationDays (int)
+      DefaultLinkType: one of Internal, Direct, AnonymousAccess
+      DefaultLinkPermission: one of View, Edit
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON. $null for any
+# key means "keep the tenant's current value for that setting".
+$script:RunConfig = @{
+    SharingLevel           = $null
+    GuestExpirationEnabled = $null
+    GuestExpirationDays    = $null
+    DefaultLinkType        = $null
+    DefaultLinkPermission  = $null
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Online.SharePoint.PowerShell'
@@ -517,6 +572,8 @@ function Start-ExternalSharing {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please connect and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -533,52 +590,88 @@ function Start-ExternalSharing {
     Write-Host "    Default Link Type:  $($prereqResult.DefaultLinkType)" -ForegroundColor Gray
     Write-Host "    Default Permission: $($prereqResult.DefaultLinkPermission)" -ForegroundColor Gray
 
-    Show-QuickPresets
-
-    Write-Host "  Select a preset (1-4) or 'Q' to quit:" -ForegroundColor Gray
-    $presetChoice = Read-Host "  Selection"
-
-    if ($presetChoice -like "Q*") {
+    if ($script:NonInteractive) {
+        # Always routed through the "custom" shape, built directly from
+        # config — a $null value in any key means "keep the tenant's
+        # current value", matching the interactive Get-*Choice functions'
+        # own "Keep" convention.
         Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
-    }
+        Write-Host "  STEP 3: Custom Configuration (non-interactive)" -ForegroundColor Yellow
 
-    $presetNum = 0
-    if (![int]::TryParse($presetChoice, [ref]$presetNum) -or $presetNum -lt 1 -or $presetNum -gt 4) {
-        Write-Host ""
-        Write-Host "  Invalid selection. Exiting." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
-    }
+        $sharingChoice = if ($null -ne $script:RunConfig.SharingLevel) {
+            @{ Keep = $false; Level = $script:RunConfig.SharingLevel }
+        } else {
+            @{ Keep = $true; Level = $prereqResult.CurrentSharing }
+        }
 
-    # Get configuration based on preset or custom
-    if ($presetNum -eq 4) {
-        # Custom configuration
-        Write-Host ""
-        Write-Host "  STEP 3: Custom Configuration" -ForegroundColor Yellow
+        $expirationChoice = if ($null -ne $script:RunConfig.GuestExpirationEnabled) {
+            @{ Keep = $false; Enabled = $script:RunConfig.GuestExpirationEnabled; Days = $script:RunConfig.GuestExpirationDays }
+        } else {
+            @{ Keep = $true; Enabled = $prereqResult.GuestExpiration; Days = $prereqResult.GuestExpirationDays }
+        }
 
-        Show-SharingOptions -CurrentLevel $prereqResult.CurrentSharing
-        $sharingChoice = Get-UserSharingChoice -CurrentLevel $prereqResult.CurrentSharing
+        $linkTypeChoice = if ($script:RunConfig.DefaultLinkType) {
+            @{ Keep = $false; Type = $script:RunConfig.DefaultLinkType }
+        } else {
+            @{ Keep = $true; Type = $prereqResult.DefaultLinkType }
+        }
 
-        $expirationChoice = Get-GuestExpirationChoice -CurrentEnabled $prereqResult.GuestExpiration -CurrentDays $prereqResult.GuestExpirationDays
-
-        $linkTypeChoice = Get-DefaultLinkTypeChoice -CurrentType $prereqResult.DefaultLinkType
-
-        $linkPermissionChoice = Get-DefaultLinkPermissionChoice -CurrentPermission $prereqResult.DefaultLinkPermission
+        $linkPermissionChoice = if ($script:RunConfig.DefaultLinkPermission) {
+            @{ Keep = $false; Permission = $script:RunConfig.DefaultLinkPermission }
+        } else {
+            @{ Keep = $true; Permission = $prereqResult.DefaultLinkPermission }
+        }
     }
     else {
-        # Use preset
-        $preset = Get-PresetConfiguration -PresetNumber $presetNum
-        $sharingChoice = $preset.Sharing
-        $expirationChoice = $preset.Expiration
-        $linkTypeChoice = $preset.LinkType
-        $linkPermissionChoice = $preset.LinkPermission
+        Show-QuickPresets
+
+        Write-Host "  Select a preset (1-4) or 'Q' to quit:" -ForegroundColor Gray
+        $presetChoice = Read-Host "  Selection"
+
+        if ($presetChoice -like "Q*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
+
+        $presetNum = 0
+        if (![int]::TryParse($presetChoice, [ref]$presetNum) -or $presetNum -lt 1 -or $presetNum -gt 4) {
+            Write-Host ""
+            Write-Host "  Invalid selection. Exiting." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Invalid preset selection" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
+
+        # Get configuration based on preset or custom
+        if ($presetNum -eq 4) {
+            # Custom configuration
+            Write-Host ""
+            Write-Host "  STEP 3: Custom Configuration" -ForegroundColor Yellow
+
+            Show-SharingOptions -CurrentLevel $prereqResult.CurrentSharing
+            $sharingChoice = Get-UserSharingChoice -CurrentLevel $prereqResult.CurrentSharing
+
+            $expirationChoice = Get-GuestExpirationChoice -CurrentEnabled $prereqResult.GuestExpiration -CurrentDays $prereqResult.GuestExpirationDays
+
+            $linkTypeChoice = Get-DefaultLinkTypeChoice -CurrentType $prereqResult.DefaultLinkType
+
+            $linkPermissionChoice = Get-DefaultLinkPermissionChoice -CurrentPermission $prereqResult.DefaultLinkPermission
+        }
+        else {
+            # Use preset
+            $preset = Get-PresetConfiguration -PresetNumber $presetNum
+            $sharingChoice = $preset.Sharing
+            $expirationChoice = $preset.Expiration
+            $linkTypeChoice = $preset.LinkType
+            $linkPermissionChoice = $preset.LinkPermission
+        }
     }
 
     # Step 4: Preview
@@ -587,17 +680,20 @@ function Start-ExternalSharing {
     Show-ConfigurationPreview -SharingChoice $sharingChoice -ExpirationChoice $expirationChoice -LinkTypeChoice $linkTypeChoice -LinkPermissionChoice $linkPermissionChoice -CurrentConfig $prereqResult
 
     # Confirmation
-    Write-Host "  [Y] Apply changes  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Apply these settings? (Y/N)"
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Apply changes  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Apply these settings? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 5: Apply
@@ -653,8 +749,24 @@ function Start-ExternalSharing {
     Write-Host "    https://admin.microsoft.com/sharepoint?page=sharing" -ForegroundColor Cyan
     Write-Host ""
 
+    Write-Result-File -Result @{
+        Success               = $result.Success
+        Error                 = $result.Error
+        SharingLevel          = if (!$sharingChoice.Keep) { $sharingChoice.Level } else { $null }
+        GuestExpirationDays   = if (!$expirationChoice.Keep -and $expirationChoice.Enabled) { $expirationChoice.Days } else { $null }
+        DefaultLinkType       = if (!$linkTypeChoice.Keep) { $linkTypeChoice.Type } else { $null }
+        DefaultLinkPermission = if (!$linkPermissionChoice.Keep) { $linkPermissionChoice.Permission } else { $null }
+    }
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+}
+
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultPath -Encoding UTF8
 }
 
 # ============================================================================
@@ -664,11 +776,14 @@ function Start-ExternalSharing {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-ExternalSharing
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }
