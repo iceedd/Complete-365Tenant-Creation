@@ -104,6 +104,11 @@ try {
     }
     Write-Host "  Snapshotted original state (ArchiveStatus=$($originalMailboxState.ArchiveStatus), UseDatabaseQuotaDefaults=$($originalMailboxState.UseDatabaseQuotaDefaults))" -ForegroundColor Gray
 
+    # TEMP DIAGNOSTIC — remove once the quota comparison bug is understood
+    Write-Host "  DEBUG IssueWarningQuota type: $($testMailbox.IssueWarningQuota.GetType().FullName)" -ForegroundColor Magenta
+    Write-Host "  DEBUG IssueWarningQuota value: $($testMailbox.IssueWarningQuota)" -ForegroundColor Magenta
+    Write-Host "  DEBUG IssueWarningQuota members: $(($testMailbox.IssueWarningQuota | Get-Member -MemberType Property,Method | Select-Object -ExpandProperty Name) -join ', ')" -ForegroundColor Magenta
+
     @{ MailboxUPNs = @($testUpn) } | ConvertTo-Json -Depth 5 | Set-Content -Path $APConfigPath -Encoding UTF8
 
     # ========================================================================
