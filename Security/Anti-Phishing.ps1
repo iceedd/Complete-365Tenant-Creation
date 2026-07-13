@@ -111,7 +111,16 @@ function Test-Prerequisites {
         if ($orgConfig.IsDehydrated) {
             Write-Host "   Enabling organization customization (one-time, tenant-wide)..." -ForegroundColor Yellow
             Enable-OrganizationCustomization -ErrorAction Stop
-            Start-Sleep -Seconds 5
+
+            # Provisioning isn't instantaneous — confirmed live: IsDehydrated
+            # can still read $true for well over a minute afterwards. Poll
+            # rather than trust a fixed sleep.
+            $maxAttempts = 12
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                Start-Sleep -Seconds 10
+                if (!(Get-OrganizationConfig -ErrorAction Stop).IsDehydrated) { break }
+                Write-Host "     Still provisioning, waiting ($attempt/$maxAttempts)..." -ForegroundColor Gray
+            }
             Write-Host "   Organization customization enabled" -ForegroundColor Green
         }
         else {
@@ -166,7 +175,11 @@ function New-AntiPhishingConfiguration {
             Write-Host "   Creating new anti-phishing policy..." -ForegroundColor Cyan
             $policyAction = 'Created'
 
-            New-AntiPhishPolicy -Name $policyName `
+            # $null = suppresses New-AntiPhishPolicy's created-object output —
+            # otherwise it leaks into this function's own return value,
+            # turning $result into a [PolicyObject, Hashtable] array whose
+            # .Success access throws under strict mode (confirmed live).
+            $null = New-AntiPhishPolicy -Name $policyName `
                 -Enabled $true `
                 -EnableSpoofIntelligence $true `
                 -EnableMailboxIntelligence $true `
@@ -195,11 +208,28 @@ function New-AntiPhishingConfiguration {
             Write-Host "   Creating anti-phishing rule to apply policy..." -ForegroundColor Cyan
             $ruleAction = 'Created'
 
-            New-AntiPhishRule -Name $ruleName `
-                -AntiPhishPolicy $policyName `
-                -RecipientDomainIs (Get-AcceptedDomain).Name `
-                -Enabled $true `
-                -Priority 0
+            # Exchange Online directory-replication lag: a policy just created
+            # by New-AntiPhishPolicy above can briefly be unresolvable by name
+            # to New-AntiPhishRule -AntiPhishPolicy (confirmed live — "Policy
+            # ... not found" immediately after a successful creation).
+            $acceptedDomains = (Get-AcceptedDomain).Name
+            $maxAttempts = 6
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                try {
+                    $null = New-AntiPhishRule -Name $ruleName `
+                        -AntiPhishPolicy $policyName `
+                        -RecipientDomainIs $acceptedDomains `
+                        -Enabled $true `
+                        -Priority 0 `
+                        -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($attempt -eq $maxAttempts) { throw }
+                    Write-Host "     Policy not yet replicated, retrying ($attempt/$maxAttempts)..." -ForegroundColor Gray
+                    Start-Sleep -Seconds 10
+                }
+            }
 
             Write-Host "   Created anti-phishing rule (applied to all domains)" -ForegroundColor Green
         }
