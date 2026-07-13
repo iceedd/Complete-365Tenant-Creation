@@ -195,20 +195,41 @@ function Enable-MailboxArchiving {
     return @{ Stats = $stats; Errors = $errors }
 }
 
+function Get-QuotaByteCount {
+    <#
+    .SYNOPSIS
+        Extracts a byte count from a mailbox quota value, regardless of which
+        shape Get-Mailbox returned it in.
+    .DESCRIPTION
+        Confirmed live: depending on the ExchangeOnlineManagement module's
+        REST vs. remote-PowerShell backend for a given call, quota values can
+        come back either as rich objects (with IsUnlimited/ToBytes()) or as
+        plain strings like "40 GB (42,949,672,960 bytes)" or "Unlimited".
+        PSObject.Properties[] indexing (unlike dot-notation) never throws
+        under strict mode when a property is absent.
+    #>
+    param($ExchangeQuota)
+    if ($null -eq $ExchangeQuota) { return $null }
+
+    if ($ExchangeQuota -is [string]) {
+        if ($ExchangeQuota -eq 'Unlimited') { return $null }
+        if ($ExchangeQuota -match '\(([\d,]+)\s*bytes\)') {
+            return [long]($Matches[1] -replace ',', '')
+        }
+        return $null
+    }
+
+    $isUnlimitedProp = $ExchangeQuota.PSObject.Properties['IsUnlimited']
+    if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $null }
+
+    try { return $ExchangeQuota.ToBytes() } catch { return $null }
+}
+
 function Compare-MailboxQuota {
     param($ExchangeQuota, [long]$TargetBytes)
-    if ($null -eq $ExchangeQuota) { return $false }
-
-    # Not every quota value returned by Get-Mailbox has an IsUnlimited property —
-    # depending on the ExchangeOnlineManagement module's REST vs. remote-PowerShell
-    # backend for a given call, quota objects can come back as different .NET
-    # types. PSObject.Properties[] indexing (unlike dot-notation) never throws
-    # under strict mode when the property is absent.
-    $isUnlimitedProp = $ExchangeQuota.PSObject.Properties['IsUnlimited']
-    if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $false }
-
-    try { return $ExchangeQuota.ToBytes() -eq $TargetBytes }
-    catch { return $false }
+    $bytes = Get-QuotaByteCount $ExchangeQuota
+    if ($null -eq $bytes) { return $false }
+    return $bytes -eq $TargetBytes
 }
 
 function Set-MailboxQuotas {

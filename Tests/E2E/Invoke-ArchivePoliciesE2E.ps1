@@ -60,13 +60,31 @@ function Write-Result {
 }
 
 function Get-QuotaBytes {
+    <#
+    .SYNOPSIS
+        Extracts a byte count from a mailbox quota value, regardless of which
+        shape Get-Mailbox returned it in — mirrors Archive-Policies.ps1's own
+        Get-QuotaByteCount.
+    .DESCRIPTION
+        Confirmed live: this tenant's ExchangeOnlineManagement backend returns
+        quota values as plain strings like "40 GB (42,949,672,960 bytes)" or
+        "Unlimited", not as rich objects with IsUnlimited/ToBytes() — hence the
+        string-parsing branch below. The object-shape branch is kept for
+        other ExchangeOnlineManagement backends that do return rich objects.
+    #>
     param($Quota)
     if ($null -eq $Quota) { return $null }
 
+    if ($Quota -is [string]) {
+        if ($Quota -eq 'Unlimited') { return $null }
+        if ($Quota -match '\(([\d,]+)\s*bytes\)') {
+            return [long]($Matches[1] -replace ',', '')
+        }
+        return $null
+    }
+
     # PSObject.Properties[] indexing never throws under strict mode when the
-    # property is absent, unlike dot-notation (confirmed: Archive-Policies.ps1's
-    # own Compare-MailboxQuota hit this same "IsUnlimited cannot be found" crash
-    # against this tenant's quota objects).
+    # property is absent, unlike dot-notation.
     $isUnlimitedProp = $Quota.PSObject.Properties['IsUnlimited']
     if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $null }
 
@@ -103,11 +121,6 @@ try {
         ProhibitSendReceiveQuota = $testMailbox.ProhibitSendReceiveQuota
     }
     Write-Host "  Snapshotted original state (ArchiveStatus=$($originalMailboxState.ArchiveStatus), UseDatabaseQuotaDefaults=$($originalMailboxState.UseDatabaseQuotaDefaults))" -ForegroundColor Gray
-
-    # TEMP DIAGNOSTIC — remove once the quota comparison bug is understood
-    Write-Host "  DEBUG IssueWarningQuota type: $($testMailbox.IssueWarningQuota.GetType().FullName)" -ForegroundColor Magenta
-    Write-Host "  DEBUG IssueWarningQuota value: $($testMailbox.IssueWarningQuota)" -ForegroundColor Magenta
-    Write-Host "  DEBUG IssueWarningQuota members: $(($testMailbox.IssueWarningQuota | Get-Member -MemberType Property,Method | Select-Object -ExpandProperty Name) -join ', ')" -ForegroundColor Magenta
 
     @{ MailboxUPNs = @($testUpn) } | ConvertTo-Json -Depth 5 | Set-Content -Path $APConfigPath -Encoding UTF8
 
