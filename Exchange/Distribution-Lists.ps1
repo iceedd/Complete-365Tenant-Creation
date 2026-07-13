@@ -202,7 +202,9 @@ function Test-GroupExists {
     try {
         $uri = "https://graph.microsoft.com/v1.0/groups?`$filter=mailNickname eq '$MailNickname'"
         $existingGroups = Invoke-MgGraphRequest -Uri $uri -Method GET
-        return ($existingGroups.value.Count -gt 0)
+        # @() wrap: defends against a single matching group collapsing to a
+        # bare object (no .Count) under Set-StrictMode
+        return (@($existingGroups.value).Count -gt 0)
     }
     catch {
         return $false
@@ -219,7 +221,9 @@ function Get-UserIdsFromEmails {
             $uri = "https://graph.microsoft.com/v1.0/users?`$filter=mail eq '$email' or userPrincipalName eq '$email'"
             $user = Invoke-MgGraphRequest -Uri $uri -Method GET
 
-            if ($user.value.Count -gt 0) {
+            # @() wrap: defends against a single matching user collapsing to
+            # a bare object (no .Count) under Set-StrictMode
+            if (@($user.value).Count -gt 0) {
                 $userIds += "https://graph.microsoft.com/v1.0/users/$($user.value[0].id)"
                 Write-Host "       Found: $email" -ForegroundColor Green
             }
@@ -314,7 +318,7 @@ function New-DistributionListInteractive {
         # throws under Set-StrictMode
         $memberEmails = @($membersInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { Test-EmailFormat $_ })
         if ($memberEmails.Count -gt 0) {
-            $memberUserIds = Get-UserIdsFromEmails -EmailAddresses $memberEmails
+            $memberUserIds = @(Get-UserIdsFromEmails -EmailAddresses $memberEmails)
         }
     }
 
@@ -340,7 +344,7 @@ function Show-DistributionListPreview {
     Write-Host "  Email Address: $($Config.PrimaryEmail)" -ForegroundColor White
     Write-Host "  Alias:         $($Config.MailNickname)" -ForegroundColor White
     Write-Host "  Description:   $($Config.Description)" -ForegroundColor White
-    Write-Host "  Members:       $(if ($Config.MemberUserIds.Count -gt 0) { $Config.MemberUserIds.Count } else { 'None' })" -ForegroundColor White
+    Write-Host "  Members:       $(if (@($Config.MemberUserIds).Count -gt 0) { @($Config.MemberUserIds).Count } else { 'None' })" -ForegroundColor White
     Write-Host ""
 }
 
@@ -357,8 +361,8 @@ function New-DistributionListFromConfig {
             groupTypes = @()
         }
 
-        if ($Config.MemberUserIds.Count -gt 0) {
-            $groupBody["members@odata.bind"] = $Config.MemberUserIds
+        if (@($Config.MemberUserIds).Count -gt 0) {
+            $groupBody["members@odata.bind"] = @($Config.MemberUserIds)
         }
 
         $newGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/groups" -Method POST -Body $groupBody
@@ -429,10 +433,14 @@ function Start-DistributionListCreation {
             }
 
             $memberUserIds = @()
-            $members = if ($dlConfig.ContainsKey('Members')) { @($dlConfig.Members) } else { @() }
+            # @() wrap applied to the whole if/else, not nested inside a
+            # branch — a single-element result from inside a branch still
+            # collapses to a bare scalar when the if/else expression itself
+            # is assigned, same as a function's return value would
+            $members = @(if ($dlConfig.ContainsKey('Members')) { $dlConfig.Members })
             if ($members.Count -gt 0) {
                 Write-Host "     Looking up members..." -ForegroundColor Gray
-                $memberUserIds = Get-UserIdsFromEmails -EmailAddresses $members
+                $memberUserIds = @(Get-UserIdsFromEmails -EmailAddresses $members)
             }
 
             $config = @{
