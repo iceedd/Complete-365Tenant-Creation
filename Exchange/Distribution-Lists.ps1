@@ -2,14 +2,20 @@
 
 <#
 .SYNOPSIS
-    Creates distribution lists using Microsoft Graph API
+    Creates Exchange Online distribution lists
 .DESCRIPTION
-    Interactive wizard for creating distribution lists using Microsoft Graph REST API.
+    Interactive wizard for creating distribution groups in Exchange Online.
     Includes preview and validation before creation.
 .AUTHOR
     BITS
 .VERSION
-    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+    3.0 - Switched from Microsoft Graph to Exchange Online cmdlets. A live
+          E2E run confirmed the Graph-based approach (POST /groups with
+          mailEnabled=true, securityEnabled=false, groupTypes=[]) always
+          400s — Microsoft's own groups-overview documentation lists
+          distribution groups as read-only via Microsoft Graph; the only
+          way to create one is via Exchange Online PowerShell. Also adds
+          non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing.
 .PARAMETER NonInteractive
     Run unattended: skip all prompts and "press any key" pauses, creating
@@ -59,12 +65,7 @@ if ($ConfigFile) {
 }
 
 $RequiredModules = @(
-    'Microsoft.Graph.Authentication'
-)
-
-$RequiredScopes = @(
-    "Group.ReadWrite.All",
-    "Directory.Read.All"
+    'ExchangeOnlineManagement'
 )
 
 # ============================================================================
@@ -109,81 +110,38 @@ function Test-Prerequisites {
     Write-Host "   PREREQUISITES CHECK" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
-    # Check Graph connection
-    Write-Host "   Checking Microsoft Graph connection..." -ForegroundColor Gray
-    $context = Get-MgContext
-    if (!$context) {
-        Write-Host "   Not connected to Microsoft Graph" -ForegroundColor Red
+    # Check Exchange Online connection
+    Write-Host "   Checking Exchange Online connection..." -ForegroundColor Gray
+    $connection = Get-ConnectionInformation -ErrorAction SilentlyContinue
+    if (!$connection -or $connection.State -ne "Connected") {
+        Write-Host "   Not connected to Exchange Online" -ForegroundColor Red
         Write-Host "   Please connect using the main menu first" -ForegroundColor Yellow
+        Write-Host ""
         return @{ Success = $false }
     }
-    Write-Host "   Connected as: $($context.Account)" -ForegroundColor Green
-
-    # Check and request scopes
-    Write-Host "   Checking required permissions..." -ForegroundColor Gray
-    # @() wrap: Where-Object returns $null when nothing matches and a bare scalar
-    # (no .Count) when exactly one item matches — either case throws under
-    # Set-StrictMode
-    $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
-
-    if ($missingScopes.Count -gt 0) {
-        # App-only tokens carry fixed app-role permissions and unattended runs
-        # can't consent interactively — warn and continue; individual operations
-        # that lack permission will fail with their own clear errors.
-        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
-            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-            try {
-                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-                Write-Host "   Permissions updated" -ForegroundColor Green
-            }
-            catch {
-                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-                return @{ Success = $false }
-            }
-        }
-    }
-    else {
-        Write-Host "   All required permissions present" -ForegroundColor Green
-    }
+    Write-Host "   Connected as: $($connection.UserPrincipalName)" -ForegroundColor Green
 
     # Get accepted domains
-    Write-Host "   Getting accepted domains..." -ForegroundColor Gray
-    # @() wrap: a single-element array returned from a function via `return`
-    # unrolls to a bare scalar (no .Count) across the output-stream boundary
-    # even though Get-AcceptedDomains already wraps its own return value —
-    # the wrap must be repeated here, at the call site
-    $acceptedDomains = @(Get-AcceptedDomains)
-    if ($acceptedDomains.Count -gt 0) {
-        Write-Host "   Found $($acceptedDomains.Count) accepted domain(s)" -ForegroundColor Green
+    Write-Host "   Retrieving accepted domains..." -ForegroundColor Gray
+    try {
+        $domains = Get-AcceptedDomain -ErrorAction Stop
+        # @() wrap: Where-Object/-ExpandProperty return $null when nothing
+        # matches and a bare scalar (no .Count) when exactly one item matches —
+        # either case throws under Set-StrictMode
+        $acceptedDomains = @($domains | Where-Object { $_.DomainType -eq "Authoritative" } | Select-Object -ExpandProperty DomainName)
+        if ($acceptedDomains.Count -gt 0) {
+            Write-Host "   Found $($acceptedDomains.Count) accepted domain(s)" -ForegroundColor Green
+        }
     }
-    else {
-        Write-Host "   Could not retrieve domains (basic validation only)" -ForegroundColor Yellow
+    catch {
+        Write-Host "   Could not retrieve accepted domains (basic validation only)" -ForegroundColor Yellow
+        $acceptedDomains = @()
     }
 
     Write-Host ""
     return @{
-        Success = $true
+        Success         = $true
         AcceptedDomains = $acceptedDomains
-    }
-}
-
-function Get-AcceptedDomains {
-    try {
-        $domains = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization?`$expand=verifiedDomains" -Method GET
-        # @() wrap: Where-Object/-ExpandProperty return $null when nothing
-        # matches and a bare scalar (no .Count) when exactly one item matches —
-        # either case throws under Set-StrictMode
-        $acceptedDomains = @($domains.value[0].verifiedDomains | Where-Object { $_.capabilities -contains "Email" } | Select-Object -ExpandProperty name)
-        return $acceptedDomains
-    }
-    catch {
-        return @()
     }
 }
 
@@ -200,43 +158,12 @@ function Test-EmailFormat {
 function Test-GroupExists {
     param([string]$MailNickname)
     try {
-        $uri = "https://graph.microsoft.com/v1.0/groups?`$filter=mailNickname eq '$MailNickname'"
-        $existingGroups = Invoke-MgGraphRequest -Uri $uri -Method GET
-        # @() wrap: defends against a single matching group collapsing to a
-        # bare object (no .Count) under Set-StrictMode
-        return (@($existingGroups.value).Count -gt 0)
+        $existing = Get-DistributionGroup -Identity $MailNickname -ErrorAction SilentlyContinue
+        return ($null -ne $existing)
     }
     catch {
         return $false
     }
-}
-
-function Get-UserIdsFromEmails {
-    param([string[]]$EmailAddresses)
-
-    $userIds = @()
-
-    foreach ($email in $EmailAddresses) {
-        try {
-            $uri = "https://graph.microsoft.com/v1.0/users?`$filter=mail eq '$email' or userPrincipalName eq '$email'"
-            $user = Invoke-MgGraphRequest -Uri $uri -Method GET
-
-            # @() wrap: defends against a single matching user collapsing to
-            # a bare object (no .Count) under Set-StrictMode
-            if (@($user.value).Count -gt 0) {
-                $userIds += "https://graph.microsoft.com/v1.0/users/$($user.value[0].id)"
-                Write-Host "       Found: $email" -ForegroundColor Green
-            }
-            else {
-                Write-Host "       Not found: $email (skipped)" -ForegroundColor Yellow
-            }
-        }
-        catch {
-            Write-Host "       Error: $email (skipped)" -ForegroundColor Yellow
-        }
-    }
-
-    return $userIds
 }
 
 # ============================================================================
@@ -310,25 +237,22 @@ function New-DistributionListInteractive {
     Write-Host "  Enter email addresses separated by commas, or press Enter to skip" -ForegroundColor Gray
     $membersInput = Read-Host "  Members"
 
-    $memberUserIds = @()
-    if (![string]::IsNullOrWhiteSpace($membersInput)) {
-        Write-Host "     Looking up users..." -ForegroundColor Gray
-        # @() wrap: Where-Object returns $null when nothing matches and a bare
-        # scalar (no .Count) when exactly one item matches — either case
-        # throws under Set-StrictMode
-        $memberEmails = @($membersInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { Test-EmailFormat $_ })
-        if ($memberEmails.Count -gt 0) {
-            $memberUserIds = @(Get-UserIdsFromEmails -EmailAddresses $memberEmails)
+    # @() wrap applied to the whole if/else, not nested inside a branch — a
+    # single-element result from inside a branch still collapses to a bare
+    # scalar when the if/else expression itself is assigned
+    $members = @(
+        if (![string]::IsNullOrWhiteSpace($membersInput)) {
+            $membersInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { Test-EmailFormat $_ }
         }
-    }
+    )
 
     # Return the configuration
     return @{
-        DisplayName = $groupName
+        DisplayName  = $groupName
         MailNickname = $alias
         PrimaryEmail = $primaryEmail
-        Description = $description
-        MemberUserIds = $memberUserIds
+        Description  = $description
+        Members      = $members
     }
 }
 
@@ -344,7 +268,7 @@ function Show-DistributionListPreview {
     Write-Host "  Email Address: $($Config.PrimaryEmail)" -ForegroundColor White
     Write-Host "  Alias:         $($Config.MailNickname)" -ForegroundColor White
     Write-Host "  Description:   $($Config.Description)" -ForegroundColor White
-    Write-Host "  Members:       $(if (@($Config.MemberUserIds).Count -gt 0) { @($Config.MemberUserIds).Count } else { 'None' })" -ForegroundColor White
+    Write-Host "  Members:       $(if (@($Config.Members).Count -gt 0) { @($Config.Members).Count } else { 'None' })" -ForegroundColor White
     Write-Host ""
 }
 
@@ -352,22 +276,21 @@ function New-DistributionListFromConfig {
     param([hashtable]$Config)
 
     try {
-        $groupBody = @{
-            displayName = $Config.DisplayName
-            mailNickname = $Config.MailNickname
-            description = $Config.Description
-            mailEnabled = $true
-            securityEnabled = $false
-            groupTypes = @()
+        $groupParams = @{
+            Name               = $Config.DisplayName
+            DisplayName        = $Config.DisplayName
+            Alias              = $Config.MailNickname
+            PrimarySmtpAddress = $Config.PrimaryEmail
+            Notes              = $Config.Description
         }
 
-        if (@($Config.MemberUserIds).Count -gt 0) {
-            $groupBody["members@odata.bind"] = @($Config.MemberUserIds)
+        if (@($Config.Members).Count -gt 0) {
+            $groupParams.Members = @($Config.Members)
         }
 
-        $newGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/groups" -Method POST -Body $groupBody
+        $newGroup = New-DistributionGroup @groupParams -ErrorAction Stop
 
-        Write-Host "     Created successfully (ID: $($newGroup.id))" -ForegroundColor Green
+        Write-Host "     Created successfully (Email: $($newGroup.PrimarySmtpAddress))" -ForegroundColor Green
         return @{ Success = $true; Group = $newGroup }
     }
     catch {
@@ -386,7 +309,7 @@ function Start-DistributionListCreation {
     Write-Host ("=" * 70) -ForegroundColor Cyan
     Write-Host "  DISTRIBUTION LISTS" -ForegroundColor Cyan
     Write-Host ("=" * 70) -ForegroundColor Cyan
-    Write-Host "  Creates Exchange distribution lists via Microsoft Graph" -ForegroundColor Gray
+    Write-Host "  Creates Exchange Online distribution lists" -ForegroundColor Gray
     Write-Host ""
 
     # Step 1: Prerequisites
@@ -432,23 +355,18 @@ function Start-DistributionListCreation {
                 continue
             }
 
-            $memberUserIds = @()
             # @() wrap applied to the whole if/else, not nested inside a
             # branch — a single-element result from inside a branch still
             # collapses to a bare scalar when the if/else expression itself
             # is assigned, same as a function's return value would
             $members = @(if ($dlConfig.ContainsKey('Members')) { $dlConfig.Members })
-            if ($members.Count -gt 0) {
-                Write-Host "     Looking up members..." -ForegroundColor Gray
-                $memberUserIds = @(Get-UserIdsFromEmails -EmailAddresses $members)
-            }
 
             $config = @{
-                DisplayName   = $dlConfig.DisplayName
-                MailNickname  = $mailNickname
-                PrimaryEmail  = $primaryEmail
-                Description   = if ($dlConfig.ContainsKey('Description') -and $dlConfig.Description) { $dlConfig.Description } else { "Distribution list: $($dlConfig.DisplayName)" }
-                MemberUserIds = $memberUserIds
+                DisplayName  = $dlConfig.DisplayName
+                MailNickname = $mailNickname
+                PrimaryEmail = $primaryEmail
+                Description  = if ($dlConfig.ContainsKey('Description') -and $dlConfig.Description) { $dlConfig.Description } else { "Distribution list: $($dlConfig.DisplayName)" }
+                Members      = $members
             }
 
             $result = New-DistributionListFromConfig -Config $config
@@ -518,7 +436,7 @@ function Start-DistributionListCreation {
             if ($result.Success) {
                 $totalCreated++
                 Write-Host ""
-                Write-Host "  Email: $($result.Group.mail)" -ForegroundColor Green
+                Write-Host "  Email: $($result.Group.PrimarySmtpAddress)" -ForegroundColor Green
             }
             else {
                 $totalFailed++

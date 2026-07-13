@@ -618,7 +618,7 @@ jobs:
         shell: pwsh
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
       - name: Import auth certificate
         shell: pwsh
