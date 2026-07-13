@@ -97,41 +97,32 @@ $ctx = Get-MgContext
 if (!$ctx) { throw "Failed to establish Graph context" }
 Write-Host "  Connected to Graph tenant $($ctx.TenantId)" -ForegroundColor Green
 
-Write-Host "`n== DEBUG: checking this app's Entra directory role assignments ==" -ForegroundColor Magenta
-try {
-    $sp = Get-MgServicePrincipal -Filter "appId eq '$AppId'" -ErrorAction Stop
-    Write-Host "DEBUG Service principal object ID: $($sp.Id)" -ForegroundColor Magenta
-    $roleAssignments = Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$($sp.Id)'" -ExpandProperty "roleDefinition" -ErrorAction Stop
-    if (@($roleAssignments).Count -eq 0) {
-        Write-Host "DEBUG No Entra directory role assignments found for this service principal at all" -ForegroundColor Magenta
-    }
-    else {
-        foreach ($ra in $roleAssignments) {
-            Write-Host "DEBUG Role assigned: $($ra.RoleDefinition.DisplayName)" -ForegroundColor Magenta
-        }
-    }
-}
-catch {
-    Write-Host "DEBUG Could not query role assignments: $($_.Exception.Message)" -ForegroundColor Magenta
+# Confirmed root cause of a prior recurring "Object reference not set to an
+# instance of an object" crash inside Connect-IPPSSession's internal module
+# construction: the roles that grant Exchange Online PowerShell access
+# (Exchange Administrator, Exchange Recipient Administrator, Helpdesk
+# Administrator) are NOT the same set that grant Security & Compliance
+# PowerShell access (Compliance Administrator, Security Administrator,
+# Security Reader, Global Reader, Global Administrator) — see
+# learn.microsoft.com/powershell/exchange/app-only-auth-powershell-v2. If the
+# app only has an EXO-only role, the token carries no Compliance RBAC info
+# and Connect-IPPSSession's session-module construction null-refs. Check this
+# up front so a missing role produces a clear error instead of a cryptic crash.
+$sccRoles = 'Compliance Administrator', 'Security Administrator', 'Security Reader', 'Global Reader', 'Global Administrator'
+$sp = Get-MgServicePrincipal -Filter "appId eq '$AppId'" -ErrorAction Stop
+$assignedRoles = (Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$($sp.Id)'" -ExpandProperty "roleDefinition" -ErrorAction Stop).RoleDefinition.DisplayName
+if (!(@($assignedRoles) | Where-Object { $_ -in $sccRoles })) {
+    throw "The test app's service principal ($($sp.Id)) has no Security & Compliance-capable Entra role (needs one of: $($sccRoles -join ', ')). Assigned roles: $(@($assignedRoles) -join ', '). Connect-IPPSSession will fail with a null-reference crash without one — assign a role in the Entra admin center before re-running."
 }
 
 # -DisableWAM is for the interactive WAM/RuntimeBroker conflict between a
 # delegated Connect-MgGraph and Connect-IPPSSession in the same session (see
 # CLAUDE.md) — it doesn't apply to app-only certificate auth, where WAM (an
 # interactive Windows Account Manager broker) never enters the picture at
-# all. Confirmed live: adding -DisableWAM to this app-only call itself threw
-# "Object reference not set to an instance of an object" on the very first
-# connection attempt, before Graph was even touched. Microsoft's own
-# documented example for unattended cert-based Connect-IPPSSession omits it.
-try {
-    Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-        -Organization $TenantDomain -ErrorAction Stop -ShowBanner:$false
-}
-catch {
-    Write-Host "DEBUG Exception message: $($_.Exception.Message)" -ForegroundColor Magenta
-    Write-Host "DEBUG ScriptStackTrace: $($_.ScriptStackTrace)" -ForegroundColor Magenta
-    throw
-}
+# all. Microsoft's own documented example for unattended cert-based
+# Connect-IPPSSession omits it.
+Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
+    -Organization $TenantDomain -ErrorAction Stop -ShowBanner:$false
 $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
