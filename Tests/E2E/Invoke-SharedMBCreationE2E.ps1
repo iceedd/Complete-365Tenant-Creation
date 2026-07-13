@@ -131,6 +131,18 @@ try {
     if ($mailbox) {
         Write-Result ($mailbox.RecipientTypeDetails -eq 'SharedMailbox') "$E2EEmail is a shared mailbox (RecipientTypeDetails: $($mailbox.RecipientTypeDetails))"
         Write-Result ($mailbox.PrimarySmtpAddress -eq $E2EEmail) "$E2EEmail has the correct primary SMTP address"
+
+        # Set-Mailbox's own property values (as opposed to the mailbox's mere
+        # existence, already waited for above) have a further, independent
+        # replication lag before Get-Mailbox reflects them — poll rather than
+        # checking the single snapshot already in hand.
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            if ($mailbox.MessageCopyForSentAsEnabled -and $mailbox.MessageCopyForSendOnBehalfEnabled) { break }
+            if ($attempt -lt 6) {
+                Start-Sleep -Seconds 10
+                $mailbox = Get-Mailbox -Identity $E2EEmail -ErrorAction SilentlyContinue
+            }
+        }
         Write-Result ($mailbox.MessageCopyForSentAsEnabled -eq $true) "$E2EEmail has MessageCopyForSentAsEnabled"
         Write-Result ($mailbox.MessageCopyForSendOnBehalfEnabled -eq $true) "$E2EEmail has MessageCopyForSendOnBehalfEnabled"
     }
