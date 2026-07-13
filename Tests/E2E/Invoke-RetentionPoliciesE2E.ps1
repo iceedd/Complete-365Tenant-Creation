@@ -79,12 +79,16 @@ function Wait-ForRetentionRule {
 # ============================================================================
 Write-Host "`n== Connecting to test tenant (Security & Compliance + Graph, app-only) ==" -ForegroundColor Cyan
 
-# Connect IPPS first, then Graph — connecting Graph before IPPS still hit the
-# documented WAM/RuntimeBroker NullReferenceException even with -DisableWAM
-# on the IPPS side (confirmed live); establishing IPPS first avoids it.
-# -DisableWAM requires ExchangeOnlineManagement 3.7.2+.
+# -DisableWAM is for the interactive WAM/RuntimeBroker conflict between a
+# delegated Connect-MgGraph and Connect-IPPSSession in the same session (see
+# CLAUDE.md) — it doesn't apply to app-only certificate auth, where WAM (an
+# interactive Windows Account Manager broker) never enters the picture at
+# all. Confirmed live: adding -DisableWAM to this app-only call itself threw
+# "Object reference not set to an instance of an object" on the very first
+# connection attempt, before Graph was even touched. Microsoft's own
+# documented example for unattended cert-based Connect-IPPSSession omits it.
 Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-    -Organization $TenantDomain -DisableWAM -ErrorAction Stop
+    -Organization $TenantDomain -ErrorAction Stop
 $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
