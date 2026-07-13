@@ -291,14 +291,29 @@ function New-SharedMailboxItem {
 
         $newMailbox = New-Mailbox @mailboxParams -ErrorAction Stop
 
-        # Configure additional settings
+        # Configure additional settings. A freshly created mailbox isn't
+        # always immediately visible to Set-Mailbox — Exchange Online has a
+        # short directory-replication lag between New-Mailbox returning and
+        # the object being fully queryable, so retry on "couldn't be found"
+        # rather than failing outright.
         $configParams = @{
             Identity                          = $Config.EmailAddress
             MessageCopyForSentAsEnabled       = $true
             MessageCopyForSendOnBehalfEnabled = $true
         }
 
-        Set-Mailbox @configParams -ErrorAction Stop
+        $maxAttempts = 6
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+                Set-Mailbox @configParams -ErrorAction Stop
+                break
+            }
+            catch {
+                if ($attempt -eq $maxAttempts) { throw }
+                Write-Host "     Mailbox not yet replicated, retrying ($attempt/$maxAttempts)..." -ForegroundColor Gray
+                Start-Sleep -Seconds 10
+            }
+        }
 
         Write-Host "     Created successfully (Email: $($Config.EmailAddress))" -ForegroundColor Green
         return @{ Success = $true; Mailbox = $newMailbox }

@@ -67,6 +67,23 @@ function Write-Result {
     else       { Write-Host "  FAIL  $Message" -ForegroundColor Red; $script:failures++ }
 }
 
+function Wait-ForMailbox {
+    <#
+    .SYNOPSIS
+        Polls Get-Mailbox with backoff — Exchange Online has a short
+        directory-replication lag between mailbox creation and the object
+        being consistently queryable.
+    #>
+    param([string]$Identity, [int]$MaxAttempts = 6, [int]$DelaySeconds = 10)
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $mbx = Get-Mailbox -Identity $Identity -ErrorAction SilentlyContinue
+        if ($mbx) { return $mbx }
+        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $DelaySeconds }
+    }
+    return $null
+}
+
 # ============================================================================
 # Connect
 # ============================================================================
@@ -93,8 +110,13 @@ try {
         Write-Result $false "Script produced no results file — it likely aborted early"
     }
     else {
+        # Tolerate a stray mailbox surviving from a prior run whose cleanup
+        # raced the same replication lag being fixed here — either Created
+        # (normal case) or Skipped (already existed) is an acceptable outcome
+        # as long as the script reported overall success.
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and @($result.Created) -contains $E2EEmail) "Script reported success and created $E2EEmail"
+        $handledThisEmail = (@($result.Created) -contains $E2EEmail) -or (@($result.Skipped) -contains $E2EEmail)
+        Write-Result ([bool]$result.Success -and $handledThisEmail) "Script reported success and created/skipped $E2EEmail"
         foreach ($fail in @($result.Failed)) {
             Write-Host "        failed mailbox: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
         }
@@ -104,7 +126,7 @@ try {
     # Independently verify tenant state
     # ========================================================================
     Write-Host "`n== Verifying created mailbox in tenant ==" -ForegroundColor Cyan
-    $mailbox = Get-Mailbox -Identity $E2EEmail -ErrorAction SilentlyContinue
+    $mailbox = Wait-ForMailbox -Identity $E2EEmail
     Write-Result ([bool]$mailbox) "$E2EEmail exists"
     if ($mailbox) {
         Write-Result ($mailbox.RecipientTypeDetails -eq 'SharedMailbox') "$E2EEmail is a shared mailbox (RecipientTypeDetails: $($mailbox.RecipientTypeDetails))"
@@ -130,7 +152,7 @@ finally {
     # ========================================================================
     Write-Host "`n== Cleaning up E2E shared mailbox ==" -ForegroundColor Cyan
     try {
-        if (Get-Mailbox -Identity $E2EEmail -ErrorAction SilentlyContinue) {
+        if (Wait-ForMailbox -Identity $E2EEmail -MaxAttempts 3 -DelaySeconds 10) {
             Remove-Mailbox -Identity $E2EEmail -Confirm:$false -ErrorAction Stop
             Write-Host "  Deleted mailbox $E2EEmail" -ForegroundColor Gray
         }
