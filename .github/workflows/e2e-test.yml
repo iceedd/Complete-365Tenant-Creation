@@ -35,6 +35,7 @@ on:
           - safe-attachments
           - web-filtering
           - retention-policies
+          - site-creation
   schedule:
     - cron: '0 3 * * 1' # Mondays 03:00 UTC
 
@@ -966,6 +967,67 @@ jobs:
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
         run: |
           ./Tests/E2E/Invoke-RetentionPoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-site-creation:
+    name: Site-Creation end-to-end
+    runs-on: windows-latest
+    # Higher than the other jobs' 20 minutes — SharePoint site provisioning
+    # and recycle-bin purging are both documented as slower, multi-minute
+    # operations (see Tests/E2E/Invoke-SiteCreationE2E.ps1's poll loops).
+    timeout-minutes: 35
+    # Chained after e2e-retention-policies to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-retention-policies
+    if: |
+      always() &&
+      (needs.e2e-retention-policies.result == 'success' || needs.e2e-retention-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'site-creation')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Site-Creation E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-SiteCreationE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
             -TenantDomain $env:M365_TENANT_DOMAIN `
             -AppId $env:M365_APP_ID `
