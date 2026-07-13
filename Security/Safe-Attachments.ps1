@@ -155,11 +155,14 @@ function New-SafeAttachmentsConfiguration {
             Write-Host "   Safe Attachments policy '$safeAttachPolicyName' already exists" -ForegroundColor Yellow
             Write-Host "   Updating existing policy..." -ForegroundColor Cyan
 
+            # ActionOnError isn't a real parameter of Set-SafeAttachmentPolicy
+            # (confirmed live: "A parameter cannot be found that matches
+            # parameter name 'ActionOnError'" — it doesn't exist on this
+            # cmdlet at all, per Microsoft Learn's documented parameter set).
             Set-SafeAttachmentPolicy -Identity $safeAttachPolicyName `
                 -Enable $true `
                 -Action DynamicDelivery `
-                -Redirect $false `
-                -ActionOnError $true
+                -Redirect $false
 
             Write-Host "   Updated Safe Attachments policy" -ForegroundColor Green
         }
@@ -173,8 +176,7 @@ function New-SafeAttachmentsConfiguration {
             $null = New-SafeAttachmentPolicy -Name $safeAttachPolicyName `
                 -Enable $true `
                 -Action DynamicDelivery `
-                -Redirect $false `
-                -ActionOnError $true
+                -Redirect $false
 
             Write-Host "   Created Safe Attachments policy" -ForegroundColor Green
         }
@@ -259,8 +261,13 @@ function New-SafeLinksConfiguration {
             Write-Host "   Safe Links policy '$safeLinksPolicyName' already exists" -ForegroundColor Yellow
             Write-Host "   Updating existing policy..." -ForegroundColor Cyan
 
+            # IsEnabled isn't a real parameter of Set-SafeLinksPolicy
+            # (confirmed live: "A parameter cannot be found that matches
+            # parameter name 'IsEnabled'" — Safe Links policies have no
+            # top-level enabled toggle; enabling happens via the rule's
+            # own -Enabled parameter instead, per Microsoft Learn's
+            # documented parameter set).
             Set-SafeLinksPolicy -Identity $safeLinksPolicyName `
-                -IsEnabled $true `
                 -EnableSafeLinksForEmail $true `
                 -EnableSafeLinksForTeams $true `
                 -EnableSafeLinksForOffice $true `
@@ -279,7 +286,6 @@ function New-SafeLinksConfiguration {
             $policyAction = 'Created'
 
             $null = New-SafeLinksPolicy -Name $safeLinksPolicyName `
-                -IsEnabled $true `
                 -EnableSafeLinksForEmail $true `
                 -EnableSafeLinksForTeams $true `
                 -EnableSafeLinksForOffice $true `

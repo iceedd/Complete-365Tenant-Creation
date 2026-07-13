@@ -120,9 +120,12 @@ try {
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
         Write-Result ([bool]$result.Success) "Script reported overall success"
-        Write-Result ($result.SafeAttachments.PolicyAction -eq 'Created' -and $result.SafeAttachments.RuleAction -eq 'Created') `
+        # Guard on .Success first (short-circuits -and) — the failure-path
+        # result hashtable has no PolicyAction/RuleAction keys, so accessing
+        # them unconditionally throws under strict mode (confirmed live).
+        Write-Result ([bool]$result.SafeAttachments.Success -and $result.SafeAttachments.PolicyAction -eq 'Created' -and $result.SafeAttachments.RuleAction -eq 'Created') `
             "Safe Attachments: created a new policy and rule"
-        Write-Result ($result.SafeLinks.PolicyAction -eq 'Created' -and $result.SafeLinks.RuleAction -eq 'Created') `
+        Write-Result ([bool]$result.SafeLinks.Success -and $result.SafeLinks.PolicyAction -eq 'Created' -and $result.SafeLinks.RuleAction -eq 'Created') `
             "Safe Links: created a new policy and rule"
     }
 
@@ -146,7 +149,10 @@ try {
     $slPolicy = Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue
     Write-Result ([bool]$slPolicy) "$SLPolicyName exists"
     if ($slPolicy) {
-        Write-Result ($slPolicy.IsEnabled -eq $true) "$SLPolicyName is enabled"
+        # Safe Links policies have no top-level enabled toggle (confirmed
+        # live — Set-SafeLinksPolicy has no IsEnabled parameter); check a
+        # setting the script actually configures instead.
+        Write-Result ($slPolicy.EnableSafeLinksForEmail -eq $true) "$SLPolicyName has Safe Links for email enabled"
         Write-Result ($slPolicy.ScanUrls -eq $true) "$SLPolicyName scans URLs"
     }
     $slRule = Wait-ForRule -GetRule { Get-SafeLinksRule -Identity $SLRuleName -ErrorAction SilentlyContinue }
