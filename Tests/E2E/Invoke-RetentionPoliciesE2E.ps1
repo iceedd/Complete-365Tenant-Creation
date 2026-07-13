@@ -87,8 +87,25 @@ Write-Host "`n== Connecting to test tenant (Security & Compliance + Graph, app-o
 # "Object reference not set to an instance of an object" on the very first
 # connection attempt, before Graph was even touched. Microsoft's own
 # documented example for unattended cert-based Connect-IPPSSession omits it.
-Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-    -Organization $TenantDomain -ErrorAction Stop
+Write-Host "DEBUG ExchangeOnlineManagement version: $((Get-Module ExchangeOnlineManagement -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version)" -ForegroundColor Magenta
+Write-Host "DEBUG PSVersion: $($PSVersionTable.PSVersion)" -ForegroundColor Magenta
+Write-Host "DEBUG Cert thumbprint length: $($CertificateThumbprint.Length)" -ForegroundColor Magenta
+try {
+    Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
+        -Organization $TenantDomain -ErrorAction Stop -Verbose -ShowBanner:$false
+}
+catch {
+    Write-Host "DEBUG Exception type: $($_.Exception.GetType().FullName)" -ForegroundColor Magenta
+    Write-Host "DEBUG Exception message: $($_.Exception.Message)" -ForegroundColor Magenta
+    Write-Host "DEBUG Full exception record:" -ForegroundColor Magenta
+    Write-Host ($_ | Format-List * -Force | Out-String) -ForegroundColor Magenta
+    Write-Host "DEBUG Exception (Format-List *):" -ForegroundColor Magenta
+    Write-Host ($_.Exception | Format-List * -Force | Out-String) -ForegroundColor Magenta
+    Write-Host "DEBUG InnerException:" -ForegroundColor Magenta
+    Write-Host ($_.Exception.InnerException | Format-List * -Force | Out-String) -ForegroundColor Magenta
+    Write-Host "DEBUG ScriptStackTrace: $($_.ScriptStackTrace)" -ForegroundColor Magenta
+    throw
+}
 $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
