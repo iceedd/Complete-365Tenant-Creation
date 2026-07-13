@@ -101,6 +101,27 @@ function Test-Prerequisites {
     }
     Write-Host "   Connected as: $($connection.UserPrincipalName)" -ForegroundColor Green
 
+    # New tenants (and some existing ones) reject New-AntiPhishPolicy with
+    # "you first need to run the command: Enable-OrganizationCustomization"
+    # until that one-time, tenant-wide command has been run. Running it twice
+    # throws, so gate on Get-OrganizationConfig's IsDehydrated flag.
+    Write-Host "   Checking organization customization..." -ForegroundColor Gray
+    try {
+        $orgConfig = Get-OrganizationConfig -ErrorAction Stop
+        if ($orgConfig.IsDehydrated) {
+            Write-Host "   Enabling organization customization (one-time, tenant-wide)..." -ForegroundColor Yellow
+            Enable-OrganizationCustomization -ErrorAction Stop
+            Start-Sleep -Seconds 5
+            Write-Host "   Organization customization enabled" -ForegroundColor Green
+        }
+        else {
+            Write-Host "   Organization customization already enabled" -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "   Warning: could not verify/enable organization customization: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     return @{ Success = $true }
 }
