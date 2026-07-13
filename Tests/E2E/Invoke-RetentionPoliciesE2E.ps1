@@ -77,23 +77,22 @@ function Wait-ForRetentionRule {
 # (Security & Compliance) so Connect-SecurityCompliance's probe finds an
 # already-active session instead of attempting its own interactive-only call.
 # ============================================================================
-Write-Host "`n== Connecting to test tenant (Graph + Security & Compliance, app-only) ==" -ForegroundColor Cyan
+Write-Host "`n== Connecting to test tenant (Security & Compliance + Graph, app-only) ==" -ForegroundColor Cyan
+
+# Connect IPPS first, then Graph — connecting Graph before IPPS still hit the
+# documented WAM/RuntimeBroker NullReferenceException even with -DisableWAM
+# on the IPPS side (confirmed live); establishing IPPS first avoids it.
+# -DisableWAM requires ExchangeOnlineManagement 3.7.2+.
+Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
+    -Organization $TenantDomain -DisableWAM -ErrorAction Stop
+$null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
+Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
+
 Connect-MgGraph -ClientId $AppId -TenantId $TenantId `
     -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop
 $ctx = Get-MgContext
 if (!$ctx) { throw "Failed to establish Graph context" }
 Write-Host "  Connected to Graph tenant $($ctx.TenantId)" -ForegroundColor Green
-
-
-# -DisableWAM avoids the MSAL/Web Account Manager broker crash
-# (NullReferenceException in RuntimeBroker) when Connect-IPPSSession runs in
-# the same session as an already-connected Connect-MgGraph (confirmed live —
-# see CLAUDE.md and Retention-Policies.ps1's own Connect-SecurityCompliance,
-# which uses the same flag). Requires ExchangeOnlineManagement 3.7.2+.
-Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-    -Organization $TenantDomain -DisableWAM -ErrorAction Stop
-$null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
-Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
 # Pre-clean any stray leftovers from a previous run's incomplete cleanup.
 Write-Host "`n== Pre-cleaning any stray E2E policy/rule ==" -ForegroundColor Cyan
