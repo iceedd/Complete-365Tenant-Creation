@@ -47,6 +47,7 @@ jobs:
     name: Security-Groups end-to-end
     if: github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'security-groups'
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -95,6 +96,7 @@ jobs:
   e2e-admin-creation:
     name: Admin-Creation end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Runs after e2e-security-groups rather than in parallel — both tests
     # create/delete "E2E-" prefixed objects in the same tenant, and this one
     # also invokes Security-Groups.ps1 itself as a setup step, so running
@@ -154,6 +156,7 @@ jobs:
   e2e-ca-policies:
     name: CA-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-admin-creation — this test also invokes
     # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
     # objects in the same tenant, so it must not run concurrently with
@@ -213,6 +216,7 @@ jobs:
   e2e-auth-methods:
     name: Auth-Methods end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-ca-policies — this test also invokes
     # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
     # objects in the same tenant, so it must not run concurrently with
@@ -270,6 +274,7 @@ jobs:
   e2e-password-policies:
     name: Password-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-auth-methods — this test also invokes
     # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
     # objects in the same tenant, so it must not run concurrently with
@@ -329,6 +334,7 @@ jobs:
   e2e-device-groups:
     name: Device-Groups end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-password-policies — this test's cleanup query
     # broad-matches any "E2E-" prefixed group tenant-wide (not just ones it
     # created), so it must not run concurrently with the other five.
@@ -385,6 +391,7 @@ jobs:
   e2e-compliance-policies:
     name: Compliance-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-device-groups — this test also invokes
     # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
     # in the same tenant, so it must not run concurrently with the other six.
@@ -443,6 +450,7 @@ jobs:
   e2e-configuration-policies:
     name: Configuration-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-compliance-policies — this test also invokes
     # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
     # in the same tenant, so it must not run concurrently with the other
@@ -502,6 +510,7 @@ jobs:
   e2e-wau-deployment:
     name: WAU-Deployment end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-configuration-policies — this test also invokes
     # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
     # in the same tenant, so it must not run concurrently with the other
@@ -560,6 +569,7 @@ jobs:
   e2e-shared-mb-creation:
     name: Shared-MB-Creation end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-wau-deployment — kept in the same sequential chain as
     # the rest of the E2E jobs to avoid two jobs mutating tenant state at
     # once, even though this test only touches Exchange Online objects.
@@ -617,6 +627,7 @@ jobs:
   e2e-distribution-lists:
     name: Distribution-Lists end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-shared-mb-creation to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-shared-mb-creation
@@ -673,6 +684,7 @@ jobs:
   e2e-archive-policies:
     name: Archive-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-distribution-lists to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-distribution-lists
@@ -729,6 +741,7 @@ jobs:
   e2e-anti-phishing:
     name: Anti-Phishing end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-archive-policies to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-archive-policies
@@ -785,6 +798,7 @@ jobs:
   e2e-safe-attachments:
     name: Safe-Attachments end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-anti-phishing to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-anti-phishing
@@ -841,6 +855,7 @@ jobs:
   e2e-web-filtering:
     name: Web-Filtering end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-safe-attachments to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-safe-attachments
@@ -897,6 +912,7 @@ jobs:
   e2e-retention-policies:
     name: Retention-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-web-filtering to avoid two jobs mutating tenant
     # state at once, matching the rest of the E2E chain.
     needs: e2e-web-filtering
