@@ -79,6 +79,42 @@ function Wait-ForRetentionRule {
 # ============================================================================
 Write-Host "`n== Connecting to test tenant (Security & Compliance + Graph, app-only) ==" -ForegroundColor Cyan
 
+# Connect Graph first (known-working) to check the app's Entra directory role
+# assignments before attempting IPPS. Per Microsoft's own app-only-auth docs
+# (learn.microsoft.com/powershell/exchange/app-only-auth-powershell-v2), the
+# roles that grant Exchange Online PowerShell access (Exchange Administrator,
+# Exchange Recipient Administrator, Helpdesk Administrator) are NOT the same
+# set that grant Security & Compliance PowerShell access (Compliance
+# Administrator, Security Administrator, Security Reader, Global Reader,
+# Global Administrator). If this app only has an EXO-only role, Connect-EXO
+# works but Connect-IPPSSession fails — plausibly explaining the "Object
+# reference not set" crash inside NewEXOModule.ProcessRecord() seen on every
+# prior attempt (token acquisition always succeeded; only RBAC/session-module
+# construction failed).
+Connect-MgGraph -ClientId $AppId -TenantId $TenantId `
+    -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop
+$ctx = Get-MgContext
+if (!$ctx) { throw "Failed to establish Graph context" }
+Write-Host "  Connected to Graph tenant $($ctx.TenantId)" -ForegroundColor Green
+
+Write-Host "`n== DEBUG: checking this app's Entra directory role assignments ==" -ForegroundColor Magenta
+try {
+    $sp = Get-MgServicePrincipal -Filter "appId eq '$AppId'" -ErrorAction Stop
+    Write-Host "DEBUG Service principal object ID: $($sp.Id)" -ForegroundColor Magenta
+    $roleAssignments = Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$($sp.Id)'" -ExpandProperty "roleDefinition" -ErrorAction Stop
+    if (@($roleAssignments).Count -eq 0) {
+        Write-Host "DEBUG No Entra directory role assignments found for this service principal at all" -ForegroundColor Magenta
+    }
+    else {
+        foreach ($ra in $roleAssignments) {
+            Write-Host "DEBUG Role assigned: $($ra.RoleDefinition.DisplayName)" -ForegroundColor Magenta
+        }
+    }
+}
+catch {
+    Write-Host "DEBUG Could not query role assignments: $($_.Exception.Message)" -ForegroundColor Magenta
+}
+
 # -DisableWAM is for the interactive WAM/RuntimeBroker conflict between a
 # delegated Connect-MgGraph and Connect-IPPSSession in the same session (see
 # CLAUDE.md) — it doesn't apply to app-only certificate auth, where WAM (an
@@ -87,33 +123,17 @@ Write-Host "`n== Connecting to test tenant (Security & Compliance + Graph, app-o
 # "Object reference not set to an instance of an object" on the very first
 # connection attempt, before Graph was even touched. Microsoft's own
 # documented example for unattended cert-based Connect-IPPSSession omits it.
-Write-Host "DEBUG ExchangeOnlineManagement version: $((Get-Module ExchangeOnlineManagement -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version)" -ForegroundColor Magenta
-Write-Host "DEBUG PSVersion: $($PSVersionTable.PSVersion)" -ForegroundColor Magenta
-Write-Host "DEBUG Cert thumbprint length: $($CertificateThumbprint.Length)" -ForegroundColor Magenta
 try {
     Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-        -Organization $TenantDomain -ErrorAction Stop -Verbose -ShowBanner:$false
+        -Organization $TenantDomain -ErrorAction Stop -ShowBanner:$false
 }
 catch {
-    Write-Host "DEBUG Exception type: $($_.Exception.GetType().FullName)" -ForegroundColor Magenta
     Write-Host "DEBUG Exception message: $($_.Exception.Message)" -ForegroundColor Magenta
-    Write-Host "DEBUG Full exception record:" -ForegroundColor Magenta
-    Write-Host ($_ | Format-List * -Force | Out-String) -ForegroundColor Magenta
-    Write-Host "DEBUG Exception (Format-List *):" -ForegroundColor Magenta
-    Write-Host ($_.Exception | Format-List * -Force | Out-String) -ForegroundColor Magenta
-    Write-Host "DEBUG InnerException:" -ForegroundColor Magenta
-    Write-Host ($_.Exception.InnerException | Format-List * -Force | Out-String) -ForegroundColor Magenta
     Write-Host "DEBUG ScriptStackTrace: $($_.ScriptStackTrace)" -ForegroundColor Magenta
     throw
 }
 $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
-
-Connect-MgGraph -ClientId $AppId -TenantId $TenantId `
-    -CertificateThumbprint $CertificateThumbprint -NoWelcome -ErrorAction Stop
-$ctx = Get-MgContext
-if (!$ctx) { throw "Failed to establish Graph context" }
-Write-Host "  Connected to Graph tenant $($ctx.TenantId)" -ForegroundColor Green
 
 # Pre-clean any stray leftovers from a previous run's incomplete cleanup.
 Write-Host "`n== Pre-cleaning any stray E2E policy/rule ==" -ForegroundColor Cyan

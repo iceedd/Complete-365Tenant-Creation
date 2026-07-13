@@ -900,6 +900,9 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+          # For the app's own directory-role-assignment diagnostic check
+          Install-Module Microsoft.Graph.Applications -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.SignIns -Force -Scope CurrentUser
           # Connect-IPPSSession needs 3.7.2+ (see smoke-test.yml, CLAUDE.md) —
           # confirmed live: an older resolved version throws "Object
           # reference not set to an instance of an object" on connect.
