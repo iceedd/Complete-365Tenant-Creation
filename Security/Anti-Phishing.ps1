@@ -8,8 +8,49 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip all "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix (string) prefixed to the policy and rule name, e.g. "E2E-"
+                 — lets E2E tests create/verify/delete a throwaway prefixed
+                 policy instead of the real tenant's default policy.
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
+
+$script:NonInteractive = [bool]$NonInteractive
+
+$script:RunConfig = @{
+    NamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 # Required Modules
 $RequiredModules = @(
@@ -69,8 +110,10 @@ function New-AntiPhishingConfiguration {
     Write-Host ""
     Write-Host "   Configuring Anti-Phishing Policies..." -ForegroundColor Cyan
 
-    $policyName = "Default Anti-Phishing Policy"
-    $ruleName = "Default Anti-Phishing Rule"
+    $policyName = "$($script:RunConfig.NamePrefix)Default Anti-Phishing Policy"
+    $ruleName = "$($script:RunConfig.NamePrefix)Default Anti-Phishing Rule"
+    $policyAction = 'Updated'
+    $ruleAction = 'Skipped'
 
     try {
         # Check if policy already exists
@@ -100,6 +143,7 @@ function New-AntiPhishingConfiguration {
         }
         else {
             Write-Host "   Creating new anti-phishing policy..." -ForegroundColor Cyan
+            $policyAction = 'Created'
 
             New-AntiPhishPolicy -Name $policyName `
                 -Enabled $true `
@@ -128,6 +172,7 @@ function New-AntiPhishingConfiguration {
         }
         else {
             Write-Host "   Creating anti-phishing rule to apply policy..." -ForegroundColor Cyan
+            $ruleAction = 'Created'
 
             New-AntiPhishRule -Name $ruleName `
                 -AntiPhishPolicy $policyName `
@@ -148,12 +193,24 @@ function New-AntiPhishingConfiguration {
         Write-Host "   Action: Move suspicious emails to Junk Mail folder" -ForegroundColor White
         Write-Host "   Applied to: All accepted domains" -ForegroundColor White
 
-        return $true
+        return @{
+            Success      = $true
+            PolicyName   = $policyName
+            RuleName     = $ruleName
+            PolicyAction = $policyAction
+            RuleAction   = $ruleAction
+        }
     }
     catch {
         Write-Host "     Failed to configure anti-phishing policy: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+        return @{ Success = $false; PolicyName = $policyName; RuleName = $ruleName; Error = $_.Exception.Message }
     }
+}
+
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
 }
 
 function Start-AntiPhishing {
@@ -169,6 +226,8 @@ function Start-AntiPhishing {
     if (!$prereqResult.Success) {
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -186,7 +245,7 @@ function Start-AntiPhishing {
     Write-Host ("=" * 70) -ForegroundColor Cyan
     Write-Host ""
 
-    if ($result) {
+    if ($result.Success) {
         Write-Host "  Status: Configured successfully" -ForegroundColor Green
         Write-Host ""
         Write-Host "  Next Steps:" -ForegroundColor Yellow
@@ -198,6 +257,9 @@ function Start-AntiPhishing {
         Write-Host "  Status: Configuration failed - check errors above" -ForegroundColor Red
     }
 
+    Write-Result-File -Result $result
+
+    if ($script:NonInteractive) { return }
     Write-Host ""
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
@@ -210,11 +272,14 @@ function Start-AntiPhishing {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-AntiPhishing
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }
