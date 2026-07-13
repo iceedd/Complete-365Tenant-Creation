@@ -78,6 +78,11 @@ the test tenant.
 - **Documentation**: See Docs/STANDARDIZATION_GUIDE.md → Manual Setup Requirements
 - **Tracking**: System tracks EDR status and shows 80%/20% completion split
 
+### Web Content Filtering (Manual Setup Required)
+- **Issue**: Defender for Endpoint's "Web content filtering" feature has no Microsoft Graph API at all — confirmed live (the tenant's Settings Catalog has no matching `device_vendor_msft_defender_configuration_webcontentfiltering_*` setting IDs, only unrelated Microsoft Edge browser policy settings under a similar name) and via Microsoft Learn (every doc for this feature says to use the Defender portal wizard exclusively)
+- **Solution**: Security/Web-Filtering.ps1 detects this and always falls back to manual setup instructions (security.microsoft.com > Settings > Endpoints > Web content filtering) rather than attempting a POST that can never succeed
+- **Status**: This is a permanent Microsoft platform limitation, not a stale/fixable setting ID
+
 ### P2 License Detection
 - **Coverage**: Detects 23+ Microsoft license SKUs in Main-Menu.ps1 (Test-EntraP2License)
 - **Note**: New license types may require periodic updates

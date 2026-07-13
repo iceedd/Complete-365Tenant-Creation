@@ -3,22 +3,30 @@
 <#
 .SYNOPSIS
     End-to-end test: runs Security/Web-Filtering.ps1 unattended against the
-    dedicated M365 test tenant and verifies the Settings Catalog policy it
-    creates.
+    dedicated M365 test tenant and confirms it correctly reports the known,
+    permanent Web Content Filtering Graph API limitation.
 .DESCRIPTION
+    Confirmed live (this test's earlier runs) and via Microsoft Learn
+    documentation: Defender for Endpoint's "Web content filtering" feature
+    has no Microsoft Graph API at all — every Microsoft doc for this feature
+    says to use the Defender portal wizard exclusively. The tenant's Settings
+    Catalog has no device_vendor_msft_defender_configuration_webcontentfiltering_*
+    setting IDs; only unrelated Microsoft Edge browser policy settings share
+    a similar name. See CLAUDE.md → "Web Content Filtering (Manual Setup
+    Required)".
+
     Connects to Microsoft Graph with certificate-based app-only auth, then:
-      1. Writes a throwaway config file with NamePrefix = "E2E-", so the real
-         script creates/verifies/deletes a throwaway prefixed policy instead
-         of the tenant's real default policy
-      2. Runs Security/Web-Filtering.ps1 non-interactively — the real
+      1. Runs Security/Web-Filtering.ps1 non-interactively — the real
          script, same file the menu calls
-      3. Verifies the policy exists via the same
-         beta/deviceManagement/configurationPolicies endpoint the script
-         itself uses
-      4. Re-runs the script to prove idempotency (second run must report
-         Skipped, not create a duplicate policy)
-      5. Deletes the policy in a finally block that always runs, so cleanup
-         happens even on failure
+      2. Verifies the script correctly detects this as a known limitation
+         (Success=$false, KnownLimitation=$true) rather than crashing or
+         reporting a misleading success
+      3. Verifies no policy was created in the tenant (since none can be)
+      4. Re-runs the script to confirm this is reported consistently, not
+         just on a first attempt
+      5. Cleans up any policy in a finally block regardless (defensive —
+         only relevant if Microsoft ever exposes a working API and the
+         create call starts succeeding)
 .EXAMPLE
     ./Invoke-WebFilteringE2E.ps1 -TenantId $env:M365_TENANT_ID -AppId $env:M365_APP_ID -CertificateThumbprint $env:CERT_THUMBPRINT
 #>
@@ -68,27 +76,6 @@ $ctx = Get-MgContext
 if (!$ctx) { throw "Failed to establish Graph context" }
 Write-Host "  Connected to tenant $($ctx.TenantId)" -ForegroundColor Green
 
-# Pre-clean any stray leftover from a previous run's incomplete cleanup.
-Write-Host "`n== Pre-cleaning any stray E2E policy ==" -ForegroundColor Cyan
-try {
-    $stray = Get-WebFilterPolicyByName -Name $PolicyName
-    if ($stray) {
-        Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$($stray.id)" -ErrorAction Stop
-        Write-Host "  Removed stray policy $PolicyName" -ForegroundColor Gray
-    }
-}
-catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
-
-# TEMP DIAGNOSTIC — remove once the setting-ID bug is understood
-Write-Host "`n== DEBUG: searching configurationSettings for webcontentfiltering ==" -ForegroundColor Magenta
-try {
-    $diagUri = "https://graph.microsoft.com/beta/deviceManagement/configurationSettings?`$filter=contains(id,'webcontentfiltering')&`$select=id&`$top=50"
-    $diagResponse = Invoke-MgGraphRequest -Method GET -Uri $diagUri -ErrorAction Stop
-    Write-Host "  Found $(@($diagResponse.value).Count) matching setting IDs:" -ForegroundColor Magenta
-    foreach ($item in @($diagResponse.value)) { Write-Host "    $($item.id)" -ForegroundColor Magenta }
-}
-catch { Write-Host "  DEBUG query failed: $($_.Exception.Message)" -ForegroundColor Magenta }
-
 try {
     # ========================================================================
     # Execute the real script, unattended, in this session
@@ -106,35 +93,34 @@ try {
     }
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and -not [bool]$result.Skipped) "Script reported success and created a new policy"
+        Write-Result ((-not [bool]$result.Success) -and [bool]$result.KnownLimitation) `
+            "Script correctly reported the known Web Content Filtering API limitation (not a crash or false success)"
     }
 
     # ========================================================================
-    # Independently verify tenant state
+    # Independently verify no policy was created (since none can be)
     # ========================================================================
-    Write-Host "`n== Verifying policy in tenant ==" -ForegroundColor Cyan
+    Write-Host "`n== Verifying no policy was created in tenant ==" -ForegroundColor Cyan
     $policy = Get-WebFilterPolicyByName -Name $PolicyName
-    Write-Result ([bool]$policy) "$PolicyName exists"
-    if ($policy) {
-        Write-Result ($policy.name -eq $PolicyName) "$PolicyName has the expected name"
-        Write-Result ($policy.technologies -match 'microsoftSense') "$PolicyName targets Defender for Endpoint (microsoftSense)"
-    }
+    Write-Result (!$policy) "$PolicyName correctly does not exist (API cannot create it)"
 
     # ========================================================================
-    # Idempotency: a second run must report Skipped, not create a duplicate
+    # Re-run: the known limitation must be reported consistently
     # ========================================================================
-    Write-Host "`n== Verifying idempotency (second run skips) ==" -ForegroundColor Cyan
+    Write-Host "`n== Verifying the limitation is reported consistently on re-run ==" -ForegroundColor Cyan
     & (Join-Path $RepoRoot 'Security/Web-Filtering.ps1') `
         -NonInteractive -ConfigFile $WFConfigPath -ResultPath $ResultPath
 
     $second = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-    Write-Result ([bool]$second.Success -and [bool]$second.Skipped) "Second run reported success and skipped (policy already exists)"
+    Write-Result ((-not [bool]$second.Success) -and [bool]$second.KnownLimitation) `
+        "Second run also correctly reported the known limitation"
 }
 finally {
     # ========================================================================
-    # Cleanup — always runs
+    # Defensive cleanup — only relevant if a policy somehow got created
+    # (e.g. Microsoft starts exposing a working API for this feature)
     # ========================================================================
-    Write-Host "`n== Cleaning up E2E web filter policy ==" -ForegroundColor Cyan
+    Write-Host "`n== Cleaning up any E2E web filter policy ==" -ForegroundColor Cyan
     try {
         $existing = Get-WebFilterPolicyByName -Name $PolicyName
         if ($existing) {
@@ -142,12 +128,11 @@ finally {
             Write-Host "  Deleted policy $PolicyName" -ForegroundColor Gray
         }
         else {
-            Write-Host "  No policy to delete" -ForegroundColor Gray
+            Write-Host "  No policy to delete (expected)" -ForegroundColor Gray
         }
     }
     catch {
         Write-Host "  WARNING: could not delete policy $($PolicyName): $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "  Manually delete the '$PolicyName' Settings Catalog policy in the test tenant" -ForegroundColor Yellow
     }
 
     Remove-Item $WFConfigPath, $ResultPath -ErrorAction SilentlyContinue

@@ -309,7 +309,6 @@ function Test-SettingDefinitionsExist {
 
     if ($missing.Count -gt 0) {
         Write-Host "     WARNING: Setting IDs not found in tenant for: $($missing -join ', ')" -ForegroundColor Yellow
-        Write-Host "     Microsoft may have changed these IDs. Use manual setup if the policy fails." -ForegroundColor Yellow
         return $false
     }
 
@@ -330,7 +329,31 @@ function New-WebFilterPolicy {
         }
 
         Write-Host "     Validating setting definition IDs..." -ForegroundColor Gray
-        Test-SettingDefinitionsExist -Categories $Categories | Out-Null
+        $settingsResolved = Test-SettingDefinitionsExist -Categories $Categories
+
+        if (!$settingsResolved) {
+            # Confirmed live against the test tenant, and against Microsoft's
+            # own documentation: Defender for Endpoint's "Web content
+            # filtering" feature has no Microsoft Graph API at all — every
+            # Microsoft Learn article says to create it exclusively through
+            # the Defender portal wizard (security.microsoft.com > Settings >
+            # Endpoints > Web content filtering). The
+            # device_vendor_msft_defender_configuration_webcontentfiltering_*
+            # setting IDs this policy body relies on do not exist in the
+            # Settings Catalog — only unrelated Microsoft Edge browser policy
+            # settings share a similar name. This is a permanent platform
+            # limitation, not a stale/renamed ID that a live attempt might
+            # still resolve, so skip the doomed POST and go straight to
+            # manual setup guidance.
+            Write-Host "     Web content filtering has no Microsoft Graph API — this is a permanent Microsoft limitation, not a script bug" -ForegroundColor Yellow
+            Write-Host "     Configure manually in the Defender portal (see instructions below)" -ForegroundColor Yellow
+            return @{
+                Success         = $false
+                Skipped         = $false
+                KnownLimitation = $true
+                Error           = "Web content filtering cannot be automated via Microsoft Graph — no such API exists. Configure manually in the Defender portal (security.microsoft.com > Settings > Endpoints > Web content filtering)."
+            }
+        }
 
         Write-Host "     Creating Settings Catalog policy..." -ForegroundColor Gray
 
