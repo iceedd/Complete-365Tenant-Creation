@@ -9,8 +9,50 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode and license checks
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the license warning, Y/N/M confirmation, and all
+    "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix (string) prefixed to the policy name, e.g. "E2E-" — lets
+                 E2E tests create/verify/delete a throwaway prefixed policy
+                 instead of the real tenant's default policy.
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
+
+$script:NonInteractive = [bool]$NonInteractive
+
+$script:RunConfig = @{
+    NamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 # ============================================================================
 # CONFIGURATION
@@ -124,11 +166,14 @@ function Test-Prerequisites {
         Write-Host "   WARNING: Defender for Endpoint P2 license not detected" -ForegroundColor Yellow
         Write-Host "   Web content filtering requires this license to function" -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "   [Y] Continue anyway (create policy)  [N] Cancel" -ForegroundColor Gray
-        $confirm = Read-Host "   Continue? (Y/N)"
 
-        if ($confirm -notlike "Y*") {
-            return @{ Success = $false }
+        if (!$script:NonInteractive) {
+            Write-Host "   [Y] Continue anyway (create policy)  [N] Cancel" -ForegroundColor Gray
+            $confirm = Read-Host "   Continue? (Y/N)"
+
+            if ($confirm -notlike "Y*") {
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -179,12 +224,13 @@ function Test-DefenderLicense {
 }
 
 function Get-ExistingWebFilterPolicy {
+    $policyName = "$($script:RunConfig.NamePrefix)Default Web Filter"
     try {
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq 'Default Web Filter'"
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq '$policyName'"
         $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction SilentlyContinue
 
         if ($response.value -and $response.value.Count -gt 0) {
-            Write-Host "   Found existing 'Default Web Filter' policy" -ForegroundColor Yellow
+            Write-Host "   Found existing '$policyName' policy" -ForegroundColor Yellow
             return $response.value[0]
         }
 
@@ -263,7 +309,7 @@ function Test-SettingDefinitionsExist {
 function New-WebFilterPolicy {
     param([array]$Categories)
 
-    $policyName = "Default Web Filter"
+    $policyName = "$($script:RunConfig.NamePrefix)Default Web Filter"
 
     try {
         # Check if policy exists
@@ -323,6 +369,12 @@ function New-WebFilterPolicy {
     }
 }
 
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 15 | Set-Content -Path $ResultPath -Encoding UTF8
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -344,6 +396,8 @@ function Start-WebFiltering {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -352,11 +406,13 @@ function Start-WebFiltering {
     # Check if policy already exists
     if ($prereqResult.ExistingPolicy) {
         Write-Host ""
-        Write-Host "  Web filter policy 'Default Web Filter' already exists." -ForegroundColor Yellow
+        Write-Host "  Web filter policy '$($script:RunConfig.NamePrefix)Default Web Filter' already exists." -ForegroundColor Yellow
         Write-Host "  Policy ID: $($prereqResult.ExistingPolicy.id)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "  No action needed." -ForegroundColor Green
         Write-Host ""
+        Write-Result-File -Result @{ Success = $true; Skipped = $true; Policy = $prereqResult.ExistingPolicy }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -368,22 +424,25 @@ function Start-WebFiltering {
     Show-WebFilterPreview -Categories $BlockedCategories
 
     # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel  [M] Manual setup instructions" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create this policy? (Y/N/M)"
-
-    if ($confirm -like "M*") {
-        Show-ManualInstructions
-        return
-    }
-
-    if ($confirm -notlike "Y*") {
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel  [M] Manual setup instructions" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        $confirm = Read-Host "  Create this policy? (Y/N/M)"
+
+        if ($confirm -like "M*") {
+            Show-ManualInstructions
+            return
+        }
+
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Execute
@@ -430,9 +489,12 @@ function Start-WebFiltering {
         Write-Host "  Status: Failed" -ForegroundColor Red
         Write-Host "  Error: $($result.Error)" -ForegroundColor Red
         Write-Host ""
-        Show-ManualInstructions
+        if (!$script:NonInteractive) { Show-ManualInstructions }
     }
 
+    Write-Result-File -Result $result
+
+    if ($script:NonInteractive) { return }
     Write-Host ""
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
@@ -478,11 +540,14 @@ function Show-ManualInstructions {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-WebFiltering
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }
