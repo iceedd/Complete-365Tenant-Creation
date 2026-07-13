@@ -55,6 +55,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -111,6 +112,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -169,6 +171,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -227,6 +230,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -283,6 +287,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -340,6 +345,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -395,6 +401,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -453,6 +460,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -511,6 +519,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -567,6 +576,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
@@ -622,6 +632,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
@@ -677,6 +688,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
@@ -732,6 +744,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
@@ -787,6 +800,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
 
@@ -842,6 +856,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
@@ -897,6 +912,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
