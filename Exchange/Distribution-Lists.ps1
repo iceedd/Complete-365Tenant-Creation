@@ -172,7 +172,10 @@ function Test-Prerequisites {
 function Get-AcceptedDomains {
     try {
         $domains = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization?`$expand=verifiedDomains" -Method GET
-        $acceptedDomains = $domains.value[0].verifiedDomains | Where-Object { $_.capabilities -contains "Email" } | Select-Object -ExpandProperty name
+        # @() wrap: Where-Object/-ExpandProperty return $null when nothing
+        # matches and a bare scalar (no .Count) when exactly one item matches —
+        # either case throws under Set-StrictMode
+        $acceptedDomains = @($domains.value[0].verifiedDomains | Where-Object { $_.capabilities -contains "Email" } | Select-Object -ExpandProperty name)
         return $acceptedDomains
     }
     catch {
@@ -302,7 +305,10 @@ function New-DistributionListInteractive {
     $memberUserIds = @()
     if (![string]::IsNullOrWhiteSpace($membersInput)) {
         Write-Host "     Looking up users..." -ForegroundColor Gray
-        $memberEmails = $membersInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { Test-EmailFormat $_ }
+        # @() wrap: Where-Object returns $null when nothing matches and a bare
+        # scalar (no .Count) when exactly one item matches — either case
+        # throws under Set-StrictMode
+        $memberEmails = @($membersInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { Test-EmailFormat $_ })
         if ($memberEmails.Count -gt 0) {
             $memberUserIds = Get-UserIdsFromEmails -EmailAddresses $memberEmails
         }
