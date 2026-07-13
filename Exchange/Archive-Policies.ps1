@@ -197,7 +197,16 @@ function Enable-MailboxArchiving {
 
 function Compare-MailboxQuota {
     param($ExchangeQuota, [long]$TargetBytes)
-    if ($null -eq $ExchangeQuota -or $ExchangeQuota.IsUnlimited) { return $false }
+    if ($null -eq $ExchangeQuota) { return $false }
+
+    # Not every quota value returned by Get-Mailbox has an IsUnlimited property —
+    # depending on the ExchangeOnlineManagement module's REST vs. remote-PowerShell
+    # backend for a given call, quota objects can come back as different .NET
+    # types. PSObject.Properties[] indexing (unlike dot-notation) never throws
+    # under strict mode when the property is absent.
+    $isUnlimitedProp = $ExchangeQuota.PSObject.Properties['IsUnlimited']
+    if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $false }
+
     try { return $ExchangeQuota.ToBytes() -eq $TargetBytes }
     catch { return $false }
 }
