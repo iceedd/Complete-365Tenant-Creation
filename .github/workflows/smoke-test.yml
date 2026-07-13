@@ -24,10 +24,17 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
-          # 3.7.2+ required: -DisableWAM and app-only fixes
-          Install-Module ExchangeOnlineManagement -MinimumVersion 3.7.2 -Force -Scope CurrentUser
+          # Pinned to an exact 3.9.0 (was -MinimumVersion 3.7.2, which now
+          # resolves to 3.10.0). Confirmed live in the Retention-Policies E2E
+          # test: 3.10.0 has a regression where Connect-IPPSSession crashes
+          # with "Object reference not set to an instance of an object" for
+          # certificate-based app-only auth, even with fully correct Entra
+          # role assignments — 3.9.0 connects successfully with the
+          # identical call. See Tests/E2E/Invoke-RetentionPoliciesE2E.ps1.
+          Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.0 -Force -Scope CurrentUser
 
       - name: Import auth certificate
         shell: pwsh

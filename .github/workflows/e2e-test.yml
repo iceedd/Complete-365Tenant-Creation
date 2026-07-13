@@ -919,12 +919,14 @@ jobs:
           # For the app's own directory-role-assignment diagnostic check
           Install-Module Microsoft.Graph.Applications -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Identity.SignIns -Force -Scope CurrentUser
-          # TEMPORARY DEBUG: pinned to an exact older version (was
-          # -MinimumVersion 3.7.2, which now resolves to 3.10.0) to test
-          # whether 3.10.0's Connect-IPPSSession cert-auth change is the
-          # cause of a live null-reference crash confirmed NOT to be a
-          # permissions/role issue (JWT token was verified to carry the
-          # correct Compliance Administrator role claim).
+          # Pinned to an exact 3.9.0 (was -MinimumVersion 3.7.2, which now
+          # resolves to 3.10.0). Confirmed live: 3.10.0 has a regression
+          # where Connect-IPPSSession crashes with "Object reference not
+          # set to an instance of an object" for certificate-based app-only
+          # auth, even with fully correct Entra role assignments (verified
+          # by decoding the actual token's "wids" claim) — 3.9.0 connects
+          # successfully with the identical call. See
+          # Tests/E2E/Invoke-RetentionPoliciesE2E.ps1 for detail.
           Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.0 -Force -Scope CurrentUser
 
       - name: Import auth certificate

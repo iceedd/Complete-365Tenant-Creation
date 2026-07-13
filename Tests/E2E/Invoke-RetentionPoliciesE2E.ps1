@@ -115,63 +115,24 @@ if (!(@($assignedRoles) | Where-Object { $_ -in $sccRoles })) {
     throw "The test app's service principal ($($sp.Id)) has no Security & Compliance-capable Entra role (needs one of: $($sccRoles -join ', ')). Assigned roles: $(@($assignedRoles) -join ', '). Connect-IPPSSession will fail with a null-reference crash without one — assign a role in the Entra admin center before re-running."
 }
 
-# DEBUG: two prior attempts after the Compliance Administrator role
-# assignment still crashed identically in Connect-IPPSSession, despite the
-# preflight check above finding the role via Graph. Directory role
-# assignment != what's actually inside the token IPPS receives, so acquire
-# the same v1 ADAL-style token IPPS uses directly (client-credentials +
-# cert JWT assertion, resource https://ps.compliance.protection.outlook.com)
-# and inspect its "wids" claim for the Compliance Administrator role
-# template ID (17315797-102d-40b4-93e0-432062caca18, per
-# learn.microsoft.com/entra/identity/role-based-access-control/permissions-reference)
-# to see definitively whether the role is actually present in the token.
-function ConvertTo-Base64Url {
-    param([byte[]]$Bytes)
-    [Convert]::ToBase64String($Bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=')
-}
-try {
-    $cert = Get-Item "Cert:\CurrentUser\My\$CertificateThumbprint"
-    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
-    $now = [DateTimeOffset]::UtcNow
-    $header  = @{ alg = 'RS256'; typ = 'JWT'; x5t = (ConvertTo-Base64Url $cert.GetCertHash()) } | ConvertTo-Json -Compress
-    $payload = @{
-        aud = "https://login.microsoftonline.com/$TenantId/oauth2/token"
-        iss = $AppId; sub = $AppId; jti = [guid]::NewGuid().ToString()
-        nbf = $now.ToUnixTimeSeconds(); exp = $now.AddMinutes(10).ToUnixTimeSeconds()
-    } | ConvertTo-Json -Compress
-    $unsigned  = (ConvertTo-Base64Url ([Text.Encoding]::UTF8.GetBytes($header))) + '.' + (ConvertTo-Base64Url ([Text.Encoding]::UTF8.GetBytes($payload)))
-    $signature = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsigned), [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-    $assertion = "$unsigned." + (ConvertTo-Base64Url $signature)
-
-    $tokenResponse = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TenantId/oauth2/token" -Body @{
-        client_id             = $AppId
-        client_assertion_type = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
-        client_assertion      = $assertion
-        grant_type            = 'client_credentials'
-        resource              = 'https://ps.compliance.protection.outlook.com'
-    } -ErrorAction Stop
-
-    $tokenParts = $tokenResponse.access_token.Split('.')
-    $payloadB64 = $tokenParts[1].Replace('-', '+').Replace('_', '/')
-    switch ($payloadB64.Length % 4) { 2 { $payloadB64 += '==' } 3 { $payloadB64 += '=' } }
-    $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payloadB64)) | ConvertFrom-Json
-    Write-Host "DEBUG IPPS token wids claim: $(@($claims.wids) -join ', ')" -ForegroundColor Magenta
-    Write-Host "DEBUG IPPS token roles claim: $(@($claims.roles) -join ', ')" -ForegroundColor Magenta
-    Write-Host "DEBUG Compliance Administrator template ID (17315797-102d-40b4-93e0-432062caca18) present in wids: $(@($claims.wids) -contains '17315797-102d-40b4-93e0-432062caca18')" -ForegroundColor Magenta
-}
-catch {
-    Write-Host "DEBUG Could not acquire/decode diagnostic IPPS token: $($_.Exception.Message)" -ForegroundColor Magenta
-}
-
 # -DisableWAM is for the interactive WAM/RuntimeBroker conflict between a
 # delegated Connect-MgGraph and Connect-IPPSSession in the same session (see
 # CLAUDE.md) — it doesn't apply to app-only certificate auth, where WAM (an
 # interactive Windows Account Manager broker) never enters the picture at
 # all. Microsoft's own documented example for unattended cert-based
 # Connect-IPPSSession omits it.
+#
+# ExchangeOnlineManagement is pinned to an exact 3.9.0 in the CI workflow
+# (not just a minimum version) because 3.10.0 has a confirmed regression:
+# Connect-IPPSSession crashes with "Object reference not set to an instance
+# of an object" inside its internal NewEXOModule.ProcessRecord() for
+# certificate-based app-only auth, even with fully correct Entra role
+# assignments (verified live by decoding the actual token's "wids" claim —
+# the Compliance Administrator role was present, and it still crashed on
+# 3.10.0; the identical call succeeds on 3.9.0).
 Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
     -Organization $TenantDomain -ErrorAction Stop -ShowBanner:$false
-$null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
+$null = Get-RetentionCompliancePolicy -ErrorAction Stop | Select-Object -First 1
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
 # Pre-clean any stray leftovers from a previous run's incomplete cleanup.

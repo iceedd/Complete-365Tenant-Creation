@@ -67,6 +67,23 @@ cover the API surface, not script logic end-to-end. A non-interactive mode
 (-ConfigFile / -NonInteractive) is planned to enable full E2E testing against
 the test tenant.
 
+### ExchangeOnlineManagement 3.10.0 Regression (Connect-IPPSSession)
+- **Issue**: ExchangeOnlineManagement 3.10.0 has a regression where
+  `Connect-IPPSSession` with certificate-based app-only auth crashes with
+  `Object reference not set to an instance of an object` inside its
+  internal `NewEXOModule.ProcessRecord()`, even with fully correct Entra
+  role assignments (Compliance Administrator) — confirmed live by decoding
+  the actual access token's `wids` claim, which correctly contained the
+  role, yet the connection still failed on 3.10.0. The identical call
+  succeeds on 3.9.0.
+- **Solution**: CI workflows (`e2e-test.yml`, `smoke-test.yml`) pin
+  `Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.0` (an
+  exact version, not `-MinimumVersion`) until Microsoft fixes the
+  regression in a later release.
+- **Status**: Workaround in place. Re-test with a newer module version
+  periodically and lift the pin once `Connect-IPPSSession` app-only auth
+  is confirmed fixed.
+
 ### Microsoft Graph SDK Bug (2025)
 - **Issue**: Compliance policy assignments fail via the SDK cmdlets
 - **Solution**: REST/Invoke-MgGraphRequest workaround in Intune/Compliance-Policies.ps1
