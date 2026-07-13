@@ -154,7 +154,11 @@ function Test-Prerequisites {
 
     # Get accepted domains
     Write-Host "   Getting accepted domains..." -ForegroundColor Gray
-    $acceptedDomains = Get-AcceptedDomains
+    # @() wrap: a single-element array returned from a function via `return`
+    # unrolls to a bare scalar (no .Count) across the output-stream boundary
+    # even though Get-AcceptedDomains already wraps its own return value —
+    # the wrap must be repeated here, at the call site
+    $acceptedDomains = @(Get-AcceptedDomains)
     if ($acceptedDomains.Count -gt 0) {
         Write-Host "   Found $($acceptedDomains.Count) accepted domain(s)" -ForegroundColor Green
     }
