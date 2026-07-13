@@ -84,8 +84,14 @@ $ctx = Get-MgContext
 if (!$ctx) { throw "Failed to establish Graph context" }
 Write-Host "  Connected to Graph tenant $($ctx.TenantId)" -ForegroundColor Green
 
+
+# -DisableWAM avoids the MSAL/Web Account Manager broker crash
+# (NullReferenceException in RuntimeBroker) when Connect-IPPSSession runs in
+# the same session as an already-connected Connect-MgGraph (confirmed live —
+# see CLAUDE.md and Retention-Policies.ps1's own Connect-SecurityCompliance,
+# which uses the same flag). Requires ExchangeOnlineManagement 3.7.2+.
 Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint `
-    -Organization $TenantDomain -ErrorAction Stop
+    -Organization $TenantDomain -DisableWAM -ErrorAction Stop
 $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
