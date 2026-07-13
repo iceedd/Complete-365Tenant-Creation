@@ -141,17 +141,27 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual
+        # operations that lack permission will fail with their own clear
+        # errors (confirmed live: attempting interactive elevation under
+        # app-only cert auth throws "A window handle must be configured").
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
