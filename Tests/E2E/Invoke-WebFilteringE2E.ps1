@@ -79,6 +79,16 @@ try {
 }
 catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
 
+# TEMP DIAGNOSTIC — remove once the setting-ID bug is understood
+Write-Host "`n== DEBUG: searching configurationSettings for webcontentfiltering ==" -ForegroundColor Magenta
+try {
+    $diagUri = "https://graph.microsoft.com/beta/deviceManagement/configurationSettings?`$filter=contains(id,'webcontentfiltering')&`$select=id&`$top=50"
+    $diagResponse = Invoke-MgGraphRequest -Method GET -Uri $diagUri -ErrorAction Stop
+    Write-Host "  Found $(@($diagResponse.value).Count) matching setting IDs:" -ForegroundColor Magenta
+    foreach ($item in @($diagResponse.value)) { Write-Host "    $($item.id)" -ForegroundColor Magenta }
+}
+catch { Write-Host "  DEBUG query failed: $($_.Exception.Message)" -ForegroundColor Magenta }
+
 try {
     # ========================================================================
     # Execute the real script, unattended, in this session
