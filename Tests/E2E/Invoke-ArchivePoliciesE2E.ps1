@@ -61,7 +61,15 @@ function Write-Result {
 
 function Get-QuotaBytes {
     param($Quota)
-    if ($null -eq $Quota -or $Quota.IsUnlimited) { return $null }
+    if ($null -eq $Quota) { return $null }
+
+    # PSObject.Properties[] indexing never throws under strict mode when the
+    # property is absent, unlike dot-notation (confirmed: Archive-Policies.ps1's
+    # own Compare-MailboxQuota hit this same "IsUnlimited cannot be found" crash
+    # against this tenant's quota objects).
+    $isUnlimitedProp = $Quota.PSObject.Properties['IsUnlimited']
+    if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $null }
+
     try { return $Quota.ToBytes() } catch { return $null }
 }
 
