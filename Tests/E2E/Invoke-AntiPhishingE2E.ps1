@@ -50,6 +50,25 @@ function Write-Result {
     else       { Write-Host "  FAIL  $Message" -ForegroundColor Red; $script:failures++ }
 }
 
+function Wait-ForAntiPhishRule {
+    <#
+    .SYNOPSIS
+        Polls Get-AntiPhishRule with backoff — Exchange Online has a short
+        directory-replication lag between rule creation and the object being
+        consistently queryable (confirmed live: New-AntiPhishRule can
+        immediately-afterwards report "already has rule ... associated with
+        it" while Get-AntiPhishRule still returns nothing for that rule).
+    #>
+    param([string]$Identity, [int]$MaxAttempts = 6, [int]$DelaySeconds = 10)
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $rule = Get-AntiPhishRule -Identity $Identity -ErrorAction SilentlyContinue
+        if ($rule) { return $rule }
+        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $DelaySeconds }
+    }
+    return $null
+}
+
 # ============================================================================
 # Connect
 # ============================================================================
@@ -59,6 +78,24 @@ Connect-ExchangeOnline -AppId $AppId -CertificateThumbprint $CertificateThumbpri
 $conn = Get-ConnectionInformation
 if (!$conn -or $conn.State -ne 'Connected') { throw "Expected Connected state, got $($conn.State)" }
 Write-Host "  Connected to $($conn.Organization)" -ForegroundColor Green
+
+# Pre-clean any stray leftovers from a previous run's incomplete cleanup, so
+# this run's "created a new policy and rule" assertion is reliable.
+Write-Host "`n== Pre-cleaning any stray E2E policy/rule ==" -ForegroundColor Cyan
+try {
+    if (Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue) {
+        Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
+        Write-Host "  Removed stray rule $RuleName" -ForegroundColor Gray
+    }
+}
+catch { Write-Host "  (no stray rule to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
+try {
+    if (Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
+        Remove-AntiPhishPolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
+        Write-Host "  Removed stray policy $PolicyName" -ForegroundColor Gray
+    }
+}
+catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
 
 try {
     # ========================================================================
@@ -93,7 +130,7 @@ try {
         Write-Result ($policy.PhishThresholdLevel -eq 2) "$PolicyName has the expected phish threshold level"
     }
 
-    $rule = Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue
+    $rule = Wait-ForAntiPhishRule -Identity $RuleName
     Write-Result ([bool]$rule) "$RuleName exists"
     if ($rule) {
         Write-Result ($rule.AntiPhishPolicy -eq $PolicyName) "$RuleName is linked to $PolicyName"

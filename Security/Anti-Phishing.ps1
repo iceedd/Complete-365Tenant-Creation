@@ -208,10 +208,16 @@ function New-AntiPhishingConfiguration {
             Write-Host "   Creating anti-phishing rule to apply policy..." -ForegroundColor Cyan
             $ruleAction = 'Created'
 
-            # Exchange Online directory-replication lag: a policy just created
-            # by New-AntiPhishPolicy above can briefly be unresolvable by name
-            # to New-AntiPhishRule -AntiPhishPolicy (confirmed live — "Policy
-            # ... not found" immediately after a successful creation).
+            # Exchange Online directory-replication lag, two forms confirmed
+            # live: (1) a policy just created by New-AntiPhishPolicy above can
+            # briefly be unresolvable by name to New-AntiPhishRule
+            # -AntiPhishPolicy ("Policy ... not found") — retry handles this.
+            # (2) Get-AntiPhishRule above can return nothing for a rule that
+            # was in fact already created by an earlier run seconds before,
+            # so New-AntiPhishRule then fails with "already has rule ...
+            # associated with it" — treat that specific conflict as success
+            # rather than a real failure, since the end state (the rule
+            # exists) is exactly what was requested.
             $acceptedDomains = (Get-AcceptedDomain).Name
             $maxAttempts = 6
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
@@ -225,13 +231,20 @@ function New-AntiPhishingConfiguration {
                     break
                 }
                 catch {
+                    if ($_.Exception.Message -match 'already has rule .* associated with it') {
+                        Write-Host "   Anti-phishing rule already exists (detected on create), skipping" -ForegroundColor Yellow
+                        $ruleAction = 'Skipped'
+                        break
+                    }
                     if ($attempt -eq $maxAttempts) { throw }
                     Write-Host "     Policy not yet replicated, retrying ($attempt/$maxAttempts)..." -ForegroundColor Gray
                     Start-Sleep -Seconds 10
                 }
             }
 
-            Write-Host "   Created anti-phishing rule (applied to all domains)" -ForegroundColor Green
+            if ($ruleAction -eq 'Created') {
+                Write-Host "   Created anti-phishing rule (applied to all domains)" -ForegroundColor Green
+            }
         }
 
         # Display configuration summary
