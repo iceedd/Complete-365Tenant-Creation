@@ -109,8 +109,24 @@ Write-Host "  Using $ownerUpn as site owner" -ForegroundColor Green
 } | ConvertTo-Json -Depth 5 | Set-Content -Path $SCConfigPath -Encoding UTF8
 
 Write-Host "`n== Connecting to test tenant (SharePoint Online, app-only) ==" -ForegroundColor Cyan
-Connect-SPOService -Url $SpoAdminUrl -ClientId $AppId -TenantId $TenantId `
-    -CertificateThumbprint $CertificateThumbprint -ErrorAction Stop
+# Connect-SPOService's -CertificateThumbprint is broken — it throws "No
+# certificate was found matching the specified parameters" even when the
+# cert is demonstrably in Cert:\CurrentUser\My (confirmed live: Connect-MgGraph
+# succeeded with the identical thumbprint seconds earlier), a known module
+# issue. Use -CertificatePath with the PFX instead (Microsoft's documented
+# approach), re-materialised from the same env vars the workflow's
+# import-certificate step uses.
+if (!$env:M365_PFX_BASE64 -or !$env:M365_PFX_PASSWORD) { throw "M365_PFX_BASE64 and M365_PFX_PASSWORD env vars are required for the SPO connection" }
+$spoPfxPath = Join-Path ([IO.Path]::GetTempPath()) "spo-e2e-$([guid]::NewGuid().ToString('n')).pfx"
+[IO.File]::WriteAllBytes($spoPfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+try {
+    $spoPfxPassword = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+    Connect-SPOService -Url $SpoAdminUrl -ClientId $AppId -TenantId $TenantId `
+        -CertificatePath $spoPfxPath -CertificatePassword $spoPfxPassword -ErrorAction Stop
+}
+finally {
+    Remove-Item $spoPfxPath -Force -ErrorAction SilentlyContinue
+}
 $null = Get-SPOTenant -ErrorAction Stop
 Write-Host "  Connected to $SpoAdminUrl" -ForegroundColor Green
 

@@ -1047,6 +1047,10 @@ jobs:
           M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
           M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
         run: |
           ./Tests/E2E/Invoke-SiteCreationE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
@@ -1119,6 +1123,10 @@ jobs:
           M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
           M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
         run: |
           ./Tests/E2E/Invoke-SiteGroupsE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
@@ -1191,6 +1199,10 @@ jobs:
           M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
           M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
         run: |
           ./Tests/E2E/Invoke-PermissionGroupsE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
@@ -1262,6 +1274,10 @@ jobs:
           M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
           M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
           M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
         run: |
           ./Tests/E2E/Invoke-ExternalSharingE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
