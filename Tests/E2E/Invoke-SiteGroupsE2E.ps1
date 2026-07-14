@@ -194,7 +194,10 @@ try {
         # A failure-shaped result (@{Success=$false; Error=...}) lacks the
         # detail keys, and strict mode makes missing-key access throw — guard
         # every optional key with ContainsKey.
-        $groupsCreated = if ($result.ContainsKey('GroupsCreated')) { @($result.GroupsCreated) } else { @() }
+        # @() wraps the WHOLE if: `$x = if (...) { @() }` assigns $null when
+        # the branch emits an empty array (empty pipeline output), and
+        # $null.Count then throws under strict mode (confirmed live).
+        $groupsCreated = @(if ($result.ContainsKey('GroupsCreated')) { $result.GroupsCreated })
         Write-Result ([bool]$result.Success -and $groupsCreated.Count -eq 3) `
             "Script reported success and created all 3 groups"
         if ($result.ContainsKey('Error') -and $result.Error) {
@@ -230,8 +233,9 @@ try {
         -NonInteractive -ConfigFile $SGConfigPath -ResultPath $ResultPath
 
     $second = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-    $secondCreated = if ($second.ContainsKey('GroupsCreated')) { @($second.GroupsCreated) } else { @() }
-    $secondSkipped = if ($second.ContainsKey('GroupsSkipped')) { @($second.GroupsSkipped) } else { @() }
+    # @() wraps the WHOLE if — see comment on $groupsCreated above.
+    $secondCreated = @(if ($second.ContainsKey('GroupsCreated')) { $second.GroupsCreated })
+    $secondSkipped = @(if ($second.ContainsKey('GroupsSkipped')) { $second.GroupsSkipped })
     Write-Result ([bool]$second.Success -and $secondCreated.Count -eq 0 -and $secondSkipped.Count -eq 3) `
         "Second run created nothing and skipped all 3 already-existing groups"
 }

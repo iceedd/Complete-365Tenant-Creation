@@ -170,7 +170,10 @@ try {
         # A failure-shaped result (@{Success=$false; Error=...}) lacks the
         # detail keys, and strict mode makes missing-key access throw — guard
         # every optional key with ContainsKey.
-        $created = if ($result.ContainsKey('Created')) { @($result.Created) } else { @() }
+        # @() wraps the WHOLE if: `$x = if (...) { @() }` assigns $null when
+        # the branch emits an empty array (empty pipeline output), and
+        # $null.Count then throws under strict mode (confirmed live).
+        $created = @(if ($result.ContainsKey('Created')) { $result.Created })
         Write-Result ([bool]$result.Success -and $created.Count -eq 1) `
             "Script reported success and repaired exactly 1 missing group"
         if ($result.ContainsKey('Error') -and $result.Error) {
@@ -198,7 +201,9 @@ try {
         -NonInteractive -ConfigFile $PGConfigPath -ResultPath $ResultPath
 
     $second = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-    Write-Result ([bool]$second.Success -and @($second.Created).Count -eq 0) `
+    # @() wraps the WHOLE if — see comment on $created above.
+    $secondCreated = @(if ($second.ContainsKey('Created')) { $second.Created })
+    Write-Result ([bool]$second.Success -and $secondCreated.Count -eq 0) `
         "Second run found no missing groups and created nothing"
 }
 finally {
