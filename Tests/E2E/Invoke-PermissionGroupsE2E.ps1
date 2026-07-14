@@ -133,7 +133,7 @@ catch { Write-Host "  (no stray site to remove, or removal failed: $($_.Exceptio
 # ============================================================================
 Write-Host "`n== Creating throwaway site for the test (may take a few minutes to provision) ==" -ForegroundColor Cyan
 New-SPOSite -Url $E2EFullUrl -Owner $ownerUpn -Title $E2ETitle -Template 'STS#3' `
-    -StorageQuota 1024 -StorageQuotaWarningLevel 512 -ErrorAction Stop
+    -StorageQuota 1024 -ErrorAction Stop
 $site = Wait-ForSite -Url $E2EFullUrl
 if (!$site) { throw "Throwaway site $E2EFullUrl never finished provisioning" }
 Write-Host "  Site ready: $E2EFullUrl" -ForegroundColor Green

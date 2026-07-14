@@ -414,14 +414,15 @@ function Invoke-SiteCreation {
 
         $template = $SiteTemplates[$SiteDefinition.Type]
 
+        # New-SPOSite no longer accepts -StorageQuotaWarningLevel (confirmed
+        # live and against current Microsoft docs)
         New-SPOSite `
-            -Url                      $SiteDefinition.FullUrl `
-            -Owner                    $SiteDefinition.Owner `
-            -Title                    $SiteDefinition.Title `
-            -Template                 $template `
-            -StorageQuota             1024 `
-            -StorageQuotaWarningLevel 512 `
-            -ErrorAction              Stop
+            -Url          $SiteDefinition.FullUrl `
+            -Owner        $SiteDefinition.Owner `
+            -Title        $SiteDefinition.Title `
+            -Template     $template `
+            -StorageQuota 1024 `
+            -ErrorAction  Stop
 
         Write-Host "     Created: $($SiteDefinition.FullUrl)" -ForegroundColor Green
         return @{ Success = $true; Skipped = $false }

@@ -74,8 +74,10 @@ $SiteTemplates = @{
     }
 }
 
-$StorageQuotaMB        = 1024
-$StorageQuotaWarningMB = 512
+# NOTE: New-SPOSite no longer accepts -StorageQuotaWarningLevel (confirmed
+# live and against current Microsoft docs — the storage-quota-warning
+# feature was retired), so only the quota itself is configurable.
+$StorageQuotaMB = 1024
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -296,13 +298,12 @@ function New-SharePointSite {
         }
 
         New-SPOSite `
-            -Url                      $SiteDefinition.FullUrl `
-            -Owner                    $SiteDefinition.Owner `
-            -StorageQuota             $StorageQuotaMB `
-            -StorageQuotaWarningLevel $StorageQuotaWarningMB `
-            -Template                 $template.Template `
-            -Title                    $SiteDefinition.Title `
-            -ErrorAction              Stop
+            -Url          $SiteDefinition.FullUrl `
+            -Owner        $SiteDefinition.Owner `
+            -StorageQuota $StorageQuotaMB `
+            -Template     $template.Template `
+            -Title        $SiteDefinition.Title `
+            -ErrorAction  Stop
 
         Write-Host "     Created: $($SiteDefinition.FullUrl)" -ForegroundColor Green
         return @{ Success = $true; Skipped = $false }
