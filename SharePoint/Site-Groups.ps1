@@ -600,10 +600,13 @@ function Set-SiteGroupPermission {
             # so "cannot be found" here can only mean the Entra principal.
             # $null = : Add-SPOUser emits the added user to the pipeline,
             # which would corrupt this function's hashtable return value.
-            # 10 x 20s: observed live replication took just over 105s (a
-            # 6 x 20s budget expired 12 seconds before the identical call
-            # succeeded), so allow ~3 minutes.
-            $maxAttempts = 10
+            # Keep this inner retry SHORT: observed live that once a
+            # specific principal fails to resolve, hammering the same
+            # principal never recovers (9 consecutive 20s-spaced retries all
+            # failed while other principals resolved fine in between) — the
+            # caller's multi-pass loop is what actually rescues those, so a
+            # long stall here just wastes the pass.
+            $maxAttempts = 3
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                 try {
                     $null = Add-SPOUser -Site $SiteUrl -Group $spGroup.Title -LoginName $loginName -ErrorAction Stop
@@ -921,8 +924,21 @@ function Start-SiteGroups {
         $siteId = Get-GraphSiteId -SiteUrl $site.FullUrl
 
         if ($null -ne $siteId) {
-            foreach ($roleName in @('Owners', 'Members', 'Guests')) {
-                if ($groupIds.ContainsKey($roleName)) {
+            # Multi-pass assignment: observed live that once Add-SPOUser
+            # fails to resolve a freshly created Entra group, retrying THAT
+            # SAME principal in a tight loop never recovers (9 consecutive
+            # 20s-spaced retries all failed) — yet the identical call
+            # succeeds moments after the OTHER groups' assignments go
+            # through. So attempt every group once per pass and re-try the
+            # failed ones in later passes instead of stalling on one group.
+            $failedRoles = @(@('Owners', 'Members', 'Guests') | Where-Object { $groupIds.ContainsKey($_) })
+            for ($pass = 1; $pass -le 3 -and $failedRoles.Count -gt 0; $pass++) {
+                if ($pass -gt 1) {
+                    Write-Host "     Retrying failed assignment(s) in 30s (pass $pass/3)..." -ForegroundColor Gray
+                    Start-Sleep -Seconds 30
+                }
+                $stillFailed = @()
+                foreach ($roleName in $failedRoles) {
                     $role       = $PermissionRoleMap[$roleName].Role
                     $permResult = Set-SiteGroupPermission `
                         -SiteId           $siteId `
@@ -931,9 +947,13 @@ function Start-SiteGroups {
                         -GroupDisplayName $groupNames[$roleName] `
                         -Role             $role
                     if (!$permResult.Success) {
-                        $results.PermsFailed += "$($groupNames[$roleName]) -> $($site.Title)"
+                        $stillFailed += $roleName
                     }
                 }
+                $failedRoles = $stillFailed
+            }
+            foreach ($roleName in $failedRoles) {
+                $results.PermsFailed += "$($groupNames[$roleName]) -> $($site.Title)"
             }
         }
         else {
