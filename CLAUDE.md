@@ -100,6 +100,24 @@ the test tenant.
 - **Solution**: Security/Web-Filtering.ps1 detects this and always falls back to manual setup instructions (security.microsoft.com > Settings > Endpoints > Web content filtering) rather than attempting a POST that can never succeed
 - **Status**: This is a permanent Microsoft platform limitation, not a stale/fixable setting ID
 
+### SharePoint Online Management Shell (App-Only Quirks)
+- **Windows PowerShell only**: the SPO module can't be used natively in
+  PowerShell 7 — Microsoft's docs require
+  `Import-Module Microsoft.Online.SharePoint.PowerShell -UseWindowsPowerShell`,
+  and for that compatibility session to find it, the module must be
+  installed from Windows PowerShell 5.1 (confirmed live: installed via pwsh,
+  `Connect-SPOService` is simply not recognized).
+- **-CertificateThumbprint is broken**: `Connect-SPOService` throws "No
+  certificate was found matching the specified parameters" even when the
+  cert is demonstrably in `Cert:\CurrentUser\My` (confirmed live). Use
+  `-CertificatePath` + `-CertificatePassword` instead.
+- **Sites.FullControl.All required**: SPO tenant admin APIs only accept
+  app-only tokens carrying the SharePoint API application permission
+  `Sites.FullControl.All` (admin-consented). Without it, Connect-SPOService
+  fails with 401 Unauthorized (confirmed live) — Graph permissions alone are
+  not enough. The Claude-SmokeTest app needs this granted before the
+  SharePoint E2E jobs can run.
+
 ### P2 License Detection
 - **Coverage**: Detects 23+ Microsoft license SKUs in Main-Menu.ps1 (Test-EntraP2License)
 - **Note**: New license types may require periodic updates
