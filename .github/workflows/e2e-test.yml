@@ -1015,6 +1015,17 @@ jobs:
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
 
       - name: Import auth certificate
@@ -1076,6 +1087,17 @@ jobs:
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
 
       - name: Import auth certificate
@@ -1137,6 +1159,17 @@ jobs:
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
 
       - name: Import auth certificate
@@ -1196,6 +1229,17 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
 

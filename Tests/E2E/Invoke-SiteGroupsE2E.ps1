@@ -38,6 +38,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# The SPO Management Shell is a Windows PowerShell module — Microsoft's own
+# docs require importing it with -UseWindowsPowerShell in a PowerShell 7
+# console (learn.microsoft.com/powershell/sharepoint/sharepoint-online/connect-sharepoint-online;
+# confirmed live: without this, Connect-SPOService is simply not recognized).
+# The CI workflow installs the module from Windows PowerShell 5.1 so it lands
+# in a module path the compatibility session can see.
+Import-Module Microsoft.Online.SharePoint.PowerShell -UseWindowsPowerShell -WarningAction SilentlyContinue -ErrorAction Stop
+
+
 $RepoRoot      = $PSScriptRoot | Split-Path | Split-Path
 $E2ETitle      = "E2E Test Site Groups"
 $E2EUrlAlias   = "e2e-test-site-groups"
