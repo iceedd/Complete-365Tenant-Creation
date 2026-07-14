@@ -281,13 +281,27 @@ function Connect-SecurityCompliance {
 
     try {
         # Probe for an active IPPS session by calling a Purview cmdlet.
-        # Get-ConnectionInformation only checks Exchange Online connections, not IPPS.
-        $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
+        # Get-ConnectionInformation only checks Exchange Online connections,
+        # not IPPS. NOTE: Get-RetentionCompliancePolicy has no -ResultSize
+        # parameter (confirmed live — passing it throws a parameter-binding
+        # error that this probe then misreads as "not connected").
+        $null = Get-RetentionCompliancePolicy -ErrorAction Stop | Select-Object -First 1
         Write-Host "   Already connected to Security & Compliance" -ForegroundColor Green
         return $true
     }
     catch {
         # Not connected — attempt fresh IPPS connection
+    }
+
+    if ($script:NonInteractive) {
+        # The parameterless Connect-IPPSSession below is interactive-only —
+        # on a headless CI runner it opens a browser and hangs until the
+        # job times out (confirmed live). Unattended callers must establish
+        # the IPPS session themselves (app-only cert auth) before running
+        # this script; if the probe above failed, fail fast instead.
+        Write-Host "   No active Security & Compliance session, and interactive sign-in is unavailable unattended" -ForegroundColor Red
+        Write-Host "   Connect with Connect-IPPSSession (app-only cert auth) before running this script non-interactively" -ForegroundColor Yellow
+        return $false
     }
 
     try {
