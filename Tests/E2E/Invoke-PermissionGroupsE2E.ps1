@@ -167,10 +167,19 @@ try {
     }
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and @($result.Created).Count -eq 1) `
+        # A failure-shaped result (@{Success=$false; Error=...}) lacks the
+        # detail keys, and strict mode makes missing-key access throw — guard
+        # every optional key with ContainsKey.
+        $created = if ($result.ContainsKey('Created')) { @($result.Created) } else { @() }
+        Write-Result ([bool]$result.Success -and $created.Count -eq 1) `
             "Script reported success and repaired exactly 1 missing group"
-        foreach ($fail in @($result.Failed)) {
-            Write-Host "        failed repair: $($fail.Group) — $($fail.Error)" -ForegroundColor Red
+        if ($result.ContainsKey('Error') -and $result.Error) {
+            Write-Host "        script error: $($result.Error)" -ForegroundColor Red
+        }
+        if ($result.ContainsKey('Failed')) {
+            foreach ($fail in @($result.Failed)) {
+                Write-Host "        failed repair: $($fail.Group) — $($fail.Error)" -ForegroundColor Red
+            }
         }
     }
 

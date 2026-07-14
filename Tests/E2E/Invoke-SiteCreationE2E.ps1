@@ -161,10 +161,19 @@ try {
     }
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and (@($result.Created) -contains $E2ETitle)) `
+        # A failure-shaped result (@{Success=$false; Error=...}) lacks the
+        # detail keys, and strict mode makes missing-key access throw — guard
+        # every optional key with ContainsKey.
+        $created = if ($result.ContainsKey('Created')) { @($result.Created) } else { @() }
+        Write-Result ([bool]$result.Success -and ($created -contains $E2ETitle)) `
             "Script reported success and created $E2ETitle"
-        foreach ($fail in @($result.Failed)) {
-            Write-Host "        failed site: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
+        if ($result.ContainsKey('Error') -and $result.Error) {
+            Write-Host "        script error: $($result.Error)" -ForegroundColor Red
+        }
+        if ($result.ContainsKey('Failed')) {
+            foreach ($fail in @($result.Failed)) {
+                Write-Host "        failed site: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
+            }
         }
     }
 

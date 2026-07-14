@@ -143,8 +143,15 @@ try {
     }
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and $result.SharingLevel -eq $targetSharingCapability) `
+        # A failure-shaped result (@{Success=$false; Error=...}) lacks the
+        # detail keys, and strict mode makes missing-key access throw — guard
+        # every optional key with ContainsKey.
+        $reportedLevel = if ($result.ContainsKey('SharingLevel')) { $result.SharingLevel } else { $null }
+        Write-Result ([bool]$result.Success -and $reportedLevel -eq $targetSharingCapability) `
             "Script reported success and applied SharingLevel=$targetSharingCapability"
+        if ($result.ContainsKey('Error') -and $result.Error) {
+            Write-Host "        script error: $($result.Error)" -ForegroundColor Red
+        }
     }
 
     # ========================================================================

@@ -173,8 +173,12 @@ function Test-Prerequisites {
     Write-Host "   Detecting tenant URL..." -ForegroundColor Gray
     $tenantRootUrl = $null
 
-    if ($Global:SPOTenantName) {
-        $tenantRootUrl = "https://$($Global:SPOTenantName).sharepoint.com"
+    # $Global:SPOTenantName is only set when Main-Menu.ps1's
+    # Connect-SharePointOnline ran in this session — under strict mode a bare
+    # read of an unset global throws, so probe with Get-Variable instead.
+    $spoTenantNameVar = Get-Variable -Name SPOTenantName -Scope Global -ErrorAction SilentlyContinue
+    if ($spoTenantNameVar -and $spoTenantNameVar.Value) {
+        $tenantRootUrl = "https://$($spoTenantNameVar.Value).sharepoint.com"
         Write-Host "   Tenant root URL: $tenantRootUrl" -ForegroundColor Green
     }
     else {

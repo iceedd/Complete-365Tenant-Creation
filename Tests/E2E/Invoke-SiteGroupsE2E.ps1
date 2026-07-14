@@ -191,13 +191,24 @@ try {
     }
     else {
         $result = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Result ([bool]$result.Success -and @($result.GroupsCreated).Count -eq 3) `
+        # A failure-shaped result (@{Success=$false; Error=...}) lacks the
+        # detail keys, and strict mode makes missing-key access throw — guard
+        # every optional key with ContainsKey.
+        $groupsCreated = if ($result.ContainsKey('GroupsCreated')) { @($result.GroupsCreated) } else { @() }
+        Write-Result ([bool]$result.Success -and $groupsCreated.Count -eq 3) `
             "Script reported success and created all 3 groups"
-        foreach ($fail in @($result.GroupsFailed)) {
-            Write-Host "        failed group: $fail" -ForegroundColor Red
+        if ($result.ContainsKey('Error') -and $result.Error) {
+            Write-Host "        script error: $($result.Error)" -ForegroundColor Red
         }
-        foreach ($fail in @($result.PermsFailed)) {
-            Write-Host "        failed permission assignment: $fail" -ForegroundColor Red
+        if ($result.ContainsKey('GroupsFailed')) {
+            foreach ($fail in @($result.GroupsFailed)) {
+                Write-Host "        failed group: $fail" -ForegroundColor Red
+            }
+        }
+        if ($result.ContainsKey('PermsFailed')) {
+            foreach ($fail in @($result.PermsFailed)) {
+                Write-Host "        failed permission assignment: $fail" -ForegroundColor Red
+            }
         }
     }
 
@@ -219,7 +230,9 @@ try {
         -NonInteractive -ConfigFile $SGConfigPath -ResultPath $ResultPath
 
     $second = Get-Content $ResultPath -Raw | ConvertFrom-Json -AsHashtable
-    Write-Result ([bool]$second.Success -and @($second.GroupsCreated).Count -eq 0 -and @($second.GroupsSkipped).Count -eq 3) `
+    $secondCreated = if ($second.ContainsKey('GroupsCreated')) { @($second.GroupsCreated) } else { @() }
+    $secondSkipped = if ($second.ContainsKey('GroupsSkipped')) { @($second.GroupsSkipped) } else { @() }
+    Write-Result ([bool]$second.Success -and $secondCreated.Count -eq 0 -and $secondSkipped.Count -eq 3) `
         "Second run created nothing and skipped all 3 already-existing groups"
 }
 finally {
