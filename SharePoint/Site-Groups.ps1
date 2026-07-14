@@ -600,7 +600,10 @@ function Set-SiteGroupPermission {
             # so "cannot be found" here can only mean the Entra principal.
             # $null = : Add-SPOUser emits the added user to the pipeline,
             # which would corrupt this function's hashtable return value.
-            $maxAttempts = 6
+            # 10 x 20s: observed live replication took just over 105s (a
+            # 6 x 20s budget expired 12 seconds before the identical call
+            # succeeded), so allow ~3 minutes.
+            $maxAttempts = 10
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                 try {
                     $null = Add-SPOUser -Site $SiteUrl -Group $spGroup.Title -LoginName $loginName -ErrorAction Stop
