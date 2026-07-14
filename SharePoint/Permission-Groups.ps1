@@ -248,7 +248,11 @@ function Repair-PermissionGroup {
     $groupName = "$SiteTitle $GroupSuffix"
 
     try {
-        New-SPOSiteGroup -Site $SiteUrl -Group $groupName -PermissionLevels $PermissionLevel -ErrorAction Stop
+        # $null = : New-SPOSiteGroup emits the created group to the pipeline,
+        # which would corrupt this function's hashtable return value (strict
+        # mode then crashes on .Success — same class of bug confirmed live
+        # with Add-SPOUser in Site-Groups.ps1).
+        $null = New-SPOSiteGroup -Site $SiteUrl -Group $groupName -PermissionLevels $PermissionLevel -ErrorAction Stop
         Write-Host "     Created: $groupName" -ForegroundColor Green
         return @{ Success = $true; GroupName = $groupName }
     }

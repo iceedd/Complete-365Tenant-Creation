@@ -419,8 +419,11 @@ function Invoke-SiteCreation {
         $template = $SiteTemplates[$SiteDefinition.Type]
 
         # New-SPOSite no longer accepts -StorageQuotaWarningLevel (confirmed
-        # live and against current Microsoft docs)
-        New-SPOSite `
+        # live and against current Microsoft docs).
+        # $null = : any pipeline output here would corrupt this function's
+        # hashtable return value (same class of bug as Add-SPOUser, confirmed
+        # live — strict mode then crashes on $createResult.Success).
+        $null = New-SPOSite `
             -Url          $SiteDefinition.FullUrl `
             -Owner        $SiteDefinition.Owner `
             -Title        $SiteDefinition.Title `
@@ -586,7 +589,28 @@ function Set-SiteGroupPermission {
 
             # Entra security group claims format for SPO
             $loginName = "c:0t.c|tenant|$GroupId"
-            Add-SPOUser -Site $SiteUrl -Group $spGroup.Title -LoginName $loginName -ErrorAction Stop
+
+            # Freshly created Entra groups can take a couple of minutes to
+            # replicate to SharePoint — until then Add-SPOUser fails with
+            # "The specified user ... could not be found" (confirmed live).
+            # Retry with backoff before treating it as a real failure.
+            # $null = : Add-SPOUser emits the added user to the pipeline,
+            # which would corrupt this function's hashtable return value.
+            $maxAttempts = 6
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                try {
+                    $null = Add-SPOUser -Site $SiteUrl -Group $spGroup.Title -LoginName $loginName -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($attempt -lt $maxAttempts -and $_.Exception.Message -match 'could not be found') {
+                        Write-Host "     $GroupDisplayName not yet visible to SharePoint (Entra replication delay) — retrying in 20s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+                        Start-Sleep -Seconds 20
+                        continue
+                    }
+                    throw
+                }
+            }
 
             Write-Host "     Assigned $GroupDisplayName -> $($spGroup.Title)" -ForegroundColor Green
             return @{ Success = $true }

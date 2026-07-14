@@ -297,7 +297,10 @@ function New-SharePointSite {
             return @{ Success = $true; Skipped = $true }
         }
 
-        New-SPOSite `
+        # $null = : any pipeline output here would corrupt this function's
+        # hashtable return value (strict mode then crashes on .Success — same
+        # class of bug confirmed live with Add-SPOUser in Site-Groups.ps1).
+        $null = New-SPOSite `
             -Url          $SiteDefinition.FullUrl `
             -Owner        $SiteDefinition.Owner `
             -StorageQuota $StorageQuotaMB `
