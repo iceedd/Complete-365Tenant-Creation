@@ -183,20 +183,39 @@ finally {
     # prefixed object.
     # ========================================================================
     Write-Host "`n== Restoring original tenant sharing settings ==" -ForegroundColor Cyan
+    # Each restore step runs independently so one failure can't skip the rest.
+    $restoreFailures = @()
+    try { Set-SPOTenant -SharingCapability $originalSharingCapability -ErrorAction Stop }
+    catch { $restoreFailures += "SharingCapability=$($originalSharingCapability): $($_.Exception.Message)" }
     try {
-        Set-SPOTenant -SharingCapability $originalSharingCapability -ErrorAction Stop
         if ($originalExpirationRequired) {
             Set-SPOTenant -ExternalUserExpirationRequired $true -ExternalUserExpireInDays $originalExpirationDays -ErrorAction Stop
         }
         else {
             Set-SPOTenant -ExternalUserExpirationRequired $false -ErrorAction Stop
         }
-        Set-SPOTenant -DefaultSharingLinkType $originalLinkType -ErrorAction Stop
-        Set-SPOTenant -DefaultLinkPermission $originalLinkPermission -ErrorAction Stop
+    }
+    catch { $restoreFailures += "ExpirationRequired=$($originalExpirationRequired): $($_.Exception.Message)" }
+    try { Set-SPOTenant -DefaultSharingLinkType $originalLinkType -ErrorAction Stop }
+    catch { $restoreFailures += "LinkType=$($originalLinkType): $($_.Exception.Message)" }
+    # Set-SPOTenant only accepts Edit or View for -DefaultLinkPermission
+    # (confirmed live: 'Default link permission value must be Edit or View'),
+    # so an original value of 'None' (= never configured) cannot be
+    # re-applied — the test's 'View' stays in place, which is the
+    # more restrictive of the two settable values.
+    if ($originalLinkPermission -in @('Edit', 'View')) {
+        try { Set-SPOTenant -DefaultLinkPermission $originalLinkPermission -ErrorAction Stop }
+        catch { $restoreFailures += "LinkPermission=$($originalLinkPermission): $($_.Exception.Message)" }
+    }
+    else {
+        Write-Host "  NOTE: original DefaultLinkPermission was '$originalLinkPermission', which Set-SPOTenant cannot re-apply — leaving 'View' in place" -ForegroundColor Yellow
+    }
+    if ($restoreFailures.Count -eq 0) {
         Write-Host "  Restored: SharingCapability=$originalSharingCapability, ExpirationRequired=$originalExpirationRequired, ExpireInDays=$originalExpirationDays, LinkType=$originalLinkType, LinkPermission=$originalLinkPermission" -ForegroundColor Gray
     }
-    catch {
-        Write-Host "  WARNING: could not fully restore original tenant sharing settings: $($_.Exception.Message)" -ForegroundColor Yellow
+    else {
+        Write-Host "  WARNING: could not fully restore original tenant sharing settings:" -ForegroundColor Yellow
+        foreach ($f in $restoreFailures) { Write-Host "    - $f" -ForegroundColor Yellow }
         Write-Host "  Manually verify tenant sharing settings in the test tenant match: SharingCapability=$originalSharingCapability, ExpirationRequired=$originalExpirationRequired, ExpireInDays=$originalExpirationDays, LinkType=$originalLinkType, LinkPermission=$originalLinkPermission" -ForegroundColor Yellow
     }
 

@@ -428,7 +428,7 @@ function Set-SharingConfiguration {
             Set-SPOTenant -SharingCapability $SharingChoice.Level -ErrorAction Stop
             $levelName = $SharingLevels[$SharingChoice.Level].DisplayName
             Write-Host "     Sharing level: $levelName" -ForegroundColor Green
-            $results.SharingLevel = @{ Success = $true; Value = $SharingChoice.Level }
+            $results.SharingLevel = @{ Success = $true; Skipped = $false; Value = $SharingChoice.Level }
         }
         else {
             Write-Host "   Sharing level: (unchanged)" -ForegroundColor Gray
@@ -446,7 +446,7 @@ function Set-SharingConfiguration {
                 Set-SPOTenant -ExternalUserExpirationRequired $false -ErrorAction Stop
                 Write-Host "     Guest expiration: Disabled" -ForegroundColor Green
             }
-            $results.GuestExpiration = @{ Success = $true; Value = $ExpirationChoice }
+            $results.GuestExpiration = @{ Success = $true; Skipped = $false; Value = $ExpirationChoice }
         }
         else {
             Write-Host "   Guest expiration: (unchanged)" -ForegroundColor Gray
@@ -458,7 +458,7 @@ function Set-SharingConfiguration {
             Write-Host "   Setting default link type..." -ForegroundColor Gray
             Set-SPOTenant -DefaultSharingLinkType $LinkTypeChoice.Type -ErrorAction Stop
             Write-Host "     Default link type: $($LinkTypeChoice.Type)" -ForegroundColor Green
-            $results.LinkType = @{ Success = $true; Value = $LinkTypeChoice.Type }
+            $results.LinkType = @{ Success = $true; Skipped = $false; Value = $LinkTypeChoice.Type }
         }
         else {
             Write-Host "   Default link type: (unchanged)" -ForegroundColor Gray
@@ -470,7 +470,7 @@ function Set-SharingConfiguration {
             Write-Host "   Setting default link permission..." -ForegroundColor Gray
             Set-SPOTenant -DefaultLinkPermission $LinkPermissionChoice.Permission -ErrorAction Stop
             Write-Host "     Default permission: $($LinkPermissionChoice.Permission)" -ForegroundColor Green
-            $results.LinkPermission = @{ Success = $true; Value = $LinkPermissionChoice.Permission }
+            $results.LinkPermission = @{ Success = $true; Skipped = $false; Value = $LinkPermissionChoice.Permission }
         }
         else {
             Write-Host "   Default link permission: (unchanged)" -ForegroundColor Gray
