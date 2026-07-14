@@ -751,7 +751,9 @@ function Start-ExternalSharing {
 
     Write-Result-File -Result @{
         Success               = $result.Success
-        Error                 = $result.Error
+        # The success-shaped result (@{Success=$true; Results=...}) has no
+        # Error key, and strict mode makes missing-key access throw.
+        Error                 = if ($result.ContainsKey('Error')) { $result.Error } else { $null }
         SharingLevel          = if (!$sharingChoice.Keep) { $sharingChoice.Level } else { $null }
         GuestExpirationDays   = if (!$expirationChoice.Keep -and $expirationChoice.Enabled) { $expirationChoice.Days } else { $null }
         DefaultLinkType       = if (!$linkTypeChoice.Keep) { $linkTypeChoice.Type } else { $null }
