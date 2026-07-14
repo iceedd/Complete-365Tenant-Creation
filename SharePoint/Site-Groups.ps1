@@ -592,8 +592,12 @@ function Set-SiteGroupPermission {
 
             # Freshly created Entra groups can take a couple of minutes to
             # replicate to SharePoint — until then Add-SPOUser fails with
-            # "The specified user ... could not be found" (confirmed live).
-            # Retry with backoff before treating it as a real failure.
+            # "The specified user ... could not be found" OR "Group cannot
+            # be found." (both phrasings confirmed live, sometimes on
+            # consecutive attempts for the same group). Retry with backoff
+            # before treating it as a real failure. The SharePoint group
+            # itself definitely exists — Get-SPOSiteGroup located it above —
+            # so "cannot be found" here can only mean the Entra principal.
             # $null = : Add-SPOUser emits the added user to the pipeline,
             # which would corrupt this function's hashtable return value.
             $maxAttempts = 6
@@ -603,7 +607,7 @@ function Set-SiteGroupPermission {
                     break
                 }
                 catch {
-                    if ($attempt -lt $maxAttempts -and $_.Exception.Message -match 'could not be found') {
+                    if ($attempt -lt $maxAttempts -and $_.Exception.Message -match 'could not be found|cannot be found') {
                         Write-Host "     $GroupDisplayName not yet visible to SharePoint (Entra replication delay) — retrying in 20s ($attempt/$maxAttempts)..." -ForegroundColor Gray
                         Start-Sleep -Seconds 20
                         continue
