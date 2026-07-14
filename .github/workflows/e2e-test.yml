@@ -936,9 +936,16 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
-          # For the app's own directory-role-assignment diagnostic check
+          # For the app's own directory-role-assignment preflight check:
+          # Get-MgServicePrincipal is in Microsoft.Graph.Applications and
+          # Get-MgRoleManagementDirectoryRoleAssignment is in
+          # Microsoft.Graph.Identity.Governance. Both must be installed
+          # fresh so their Microsoft.Graph.Authentication dependency matches
+          # the freshly-installed one — otherwise PowerShell auto-loads the
+          # runner image's pre-installed (older) module and fails with
+          # "Assembly with same name is already loaded" (confirmed live).
           Install-Module Microsoft.Graph.Applications -Force -Scope CurrentUser
-          Install-Module Microsoft.Graph.Identity.SignIns -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.Governance -Force -Scope CurrentUser
           # Pinned to an exact 3.9.0 (was -MinimumVersion 3.7.2, which now
           # resolves to 3.10.0). Confirmed live: 3.10.0 has a regression
           # where Connect-IPPSSession crashes with "Object reference not
