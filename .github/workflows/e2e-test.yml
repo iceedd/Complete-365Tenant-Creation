@@ -5,6 +5,40 @@ name: E2E Test (M365 test tenant)
 # scheduled run catch regressions.
 on:
   workflow_dispatch:
+    inputs:
+      only_job:
+        description: >-
+          Run only this one job (for fast iteration while developing a single
+          script's E2E test). Each job's own script already sets up its
+          prerequisites and cleans up after itself — the needs: chaining
+          below exists solely to stop two jobs from mutating the same
+          "E2E-" prefixed objects in the shared test tenant at once, so
+          running a single job in isolation is safe. Leave as "all" (the
+          default) for full regression coverage before merging.
+        type: choice
+        default: all
+        options:
+          - all
+          - security-groups
+          - admin-creation
+          - ca-policies
+          - auth-methods
+          - password-policies
+          - device-groups
+          - compliance-policies
+          - configuration-policies
+          - wau-deployment
+          - shared-mb-creation
+          - distribution-lists
+          - archive-policies
+          - anti-phishing
+          - safe-attachments
+          - web-filtering
+          - retention-policies
+          - site-creation
+          - site-groups
+          - permission-groups
+          - external-sharing
   schedule:
     - cron: '0 3 * * 1' # Mondays 03:00 UTC
 
@@ -15,7 +49,9 @@ concurrency:
 jobs:
   e2e-security-groups:
     name: Security-Groups end-to-end
+    if: github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'security-groups'
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -24,9 +60,15 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          # Security-Groups.ps1 imports Identity.DirectoryManagement — it must be
+          # installed fresh alongside Authentication, or the runner's pre-installed
+          # copy (built against an older Authentication assembly) fails to import
+          # with "Assembly with same name is already loaded" (confirmed live).
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
 
       - name: Import auth certificate
         shell: pwsh
@@ -63,11 +105,16 @@ jobs:
   e2e-admin-creation:
     name: Admin-Creation end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Runs after e2e-security-groups rather than in parallel — both tests
     # create/delete "E2E-" prefixed objects in the same tenant, and this one
     # also invokes Security-Groups.ps1 itself as a setup step, so running
     # them concurrently risks the two runs colliding on the same objects.
     needs: e2e-security-groups
+    if: |
+      always() &&
+      (needs.e2e-security-groups.result == 'success' || needs.e2e-security-groups.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'admin-creation')
 
     steps:
       - name: Checkout
@@ -76,6 +123,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -117,11 +165,16 @@ jobs:
   e2e-ca-policies:
     name: CA-Policies end-to-end
     runs-on: windows-latest
+    timeout-minutes: 20
     # Chained after e2e-admin-creation — this test also invokes
     # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
     # objects in the same tenant, so it must not run concurrently with
     # the other two.
     needs: e2e-admin-creation
+    if: |
+      always() &&
+      (needs.e2e-admin-creation.result == 'success' || needs.e2e-admin-creation.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'ca-policies')
 
     steps:
       - name: Checkout
@@ -130,6 +183,7 @@ jobs:
       - name: Install modules
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
@@ -157,6 +211,1087 @@ jobs:
         run: |
           ./Tests/E2E/Invoke-CAPoliciesE2E.ps1 `
             -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-auth-methods:
+    name: Auth-Methods end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-ca-policies — this test also invokes
+    # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
+    # objects in the same tenant, so it must not run concurrently with
+    # the other three.
+    needs: e2e-ca-policies
+    if: |
+      always() &&
+      (needs.e2e-ca-policies.result == 'success' || needs.e2e-ca-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'auth-methods')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          # Security-Groups.ps1 imports Identity.DirectoryManagement — it must be
+          # installed fresh alongside Authentication, or the runner's pre-installed
+          # copy (built against an older Authentication assembly) fails to import
+          # with "Assembly with same name is already loaded" (confirmed live).
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Auth-Methods E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-AuthMethodsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-password-policies:
+    name: Password-Policies end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-auth-methods — this test also invokes
+    # Security-Groups.ps1 as a setup step and touches "E2E-" prefixed
+    # objects in the same tenant, so it must not run concurrently with
+    # the other four.
+    needs: e2e-auth-methods
+    if: |
+      always() &&
+      (needs.e2e-auth-methods.result == 'success' || needs.e2e-auth-methods.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'password-policies')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.SignIns -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Password-Policies E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-PasswordPoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-device-groups:
+    name: Device-Groups end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-password-policies — this test's cleanup query
+    # broad-matches any "E2E-" prefixed group tenant-wide (not just ones it
+    # created), so it must not run concurrently with the other five.
+    needs: e2e-password-policies
+    if: |
+      always() &&
+      (needs.e2e-password-policies.result == 'success' || needs.e2e-password-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'device-groups')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Device-Groups E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-DeviceGroupsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-compliance-policies:
+    name: Compliance-Policies end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-device-groups — this test also invokes
+    # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
+    # in the same tenant, so it must not run concurrently with the other six.
+    needs: e2e-device-groups
+    if: |
+      always() &&
+      (needs.e2e-device-groups.result == 'success' || needs.e2e-device-groups.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'compliance-policies')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Compliance-Policies E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-CompliancePoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-configuration-policies:
+    name: Configuration-Policies end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-compliance-policies — this test also invokes
+    # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
+    # in the same tenant, so it must not run concurrently with the other
+    # seven.
+    needs: e2e-compliance-policies
+    if: |
+      always() &&
+      (needs.e2e-compliance-policies.result == 'success' || needs.e2e-compliance-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'configuration-policies')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Configuration-Policies E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-ConfigurationPoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-wau-deployment:
+    name: WAU-Deployment end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-configuration-policies — this test also invokes
+    # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
+    # in the same tenant, so it must not run concurrently with the other
+    # eight.
+    needs: e2e-configuration-policies
+    if: |
+      always() &&
+      (needs.e2e-configuration-policies.result == 'success' || needs.e2e-configuration-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'wau-deployment')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run WAU-Deployment E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-WAUDeploymentE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-shared-mb-creation:
+    name: Shared-MB-Creation end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-wau-deployment — kept in the same sequential chain as
+    # the rest of the E2E jobs to avoid two jobs mutating tenant state at
+    # once, even though this test only touches Exchange Online objects.
+    needs: e2e-wau-deployment
+    if: |
+      always() &&
+      (needs.e2e-wau-deployment.result == 'success' || needs.e2e-wau-deployment.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'shared-mb-creation')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Shared-MB-Creation E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-SharedMBCreationE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-distribution-lists:
+    name: Distribution-Lists end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-shared-mb-creation to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-shared-mb-creation
+    if: |
+      always() &&
+      (needs.e2e-shared-mb-creation.result == 'success' || needs.e2e-shared-mb-creation.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'distribution-lists')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Distribution-Lists E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-DistributionListsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-archive-policies:
+    name: Archive-Policies end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-distribution-lists to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-distribution-lists
+    if: |
+      always() &&
+      (needs.e2e-distribution-lists.result == 'success' || needs.e2e-distribution-lists.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'archive-policies')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Archive-Policies E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-ArchivePoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-anti-phishing:
+    name: Anti-Phishing end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-archive-policies to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-archive-policies
+    if: |
+      always() &&
+      (needs.e2e-archive-policies.result == 'success' || needs.e2e-archive-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'anti-phishing')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Anti-Phishing E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-AntiPhishingE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-safe-attachments:
+    name: Safe-Attachments end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-anti-phishing to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-anti-phishing
+    if: |
+      always() &&
+      (needs.e2e-anti-phishing.result == 'success' || needs.e2e-anti-phishing.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'safe-attachments')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ExchangeOnlineManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Safe-Attachments E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-SafeAttachmentsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-web-filtering:
+    name: Web-Filtering end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-safe-attachments to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-safe-attachments
+    if: |
+      always() &&
+      (needs.e2e-safe-attachments.result == 'success' || needs.e2e-safe-attachments.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'web-filtering')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Web-Filtering E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-WebFilteringE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-retention-policies:
+    name: Retention-Policies end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-web-filtering to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-web-filtering
+    if: |
+      always() &&
+      (needs.e2e-web-filtering.result == 'success' || needs.e2e-web-filtering.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'retention-policies')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+          # For the app's own directory-role-assignment preflight check:
+          # Get-MgServicePrincipal is in Microsoft.Graph.Applications and
+          # Get-MgRoleManagementDirectoryRoleAssignment is in
+          # Microsoft.Graph.Identity.Governance. Both must be installed
+          # fresh so their Microsoft.Graph.Authentication dependency matches
+          # the freshly-installed one — otherwise PowerShell auto-loads the
+          # runner image's pre-installed (older) module and fails with
+          # "Assembly with same name is already loaded" (confirmed live).
+          Install-Module Microsoft.Graph.Applications -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.Governance -Force -Scope CurrentUser
+          # Pinned to an exact 3.9.0 (was -MinimumVersion 3.7.2, which now
+          # resolves to 3.10.0). Confirmed live: 3.10.0 has a regression
+          # where Connect-IPPSSession crashes with "Object reference not
+          # set to an instance of an object" for certificate-based app-only
+          # auth, even with fully correct Entra role assignments (verified
+          # by decoding the actual token's "wids" claim) — 3.9.0 connects
+          # successfully with the identical call. See
+          # Tests/E2E/Invoke-RetentionPoliciesE2E.ps1 for detail.
+          Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.0 -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Retention-Policies E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-RetentionPoliciesE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-site-creation:
+    name: Site-Creation end-to-end
+    runs-on: windows-latest
+    # Higher than the other jobs' 20 minutes — SharePoint site provisioning
+    # and recycle-bin purging are both documented as slower, multi-minute
+    # operations (see Tests/E2E/Invoke-SiteCreationE2E.ps1's poll loops).
+    timeout-minutes: 35
+    # Chained after e2e-retention-policies to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-retention-policies
+    if: |
+      always() &&
+      (needs.e2e-retention-policies.result == 'success' || needs.e2e-retention-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'site-creation')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Site-Creation E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          ./Tests/E2E/Invoke-SiteCreationE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-site-groups:
+    name: Site-Groups end-to-end
+    runs-on: windows-latest
+    # Higher than the other jobs' 20 minutes — SharePoint site provisioning
+    # and recycle-bin purging are both documented as slower, multi-minute
+    # operations (see Tests/E2E/Invoke-SiteGroupsE2E.ps1's poll loops).
+    timeout-minutes: 35
+    # Chained after e2e-site-creation to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-site-creation
+    if: |
+      always() &&
+      (needs.e2e-site-creation.result == 'success' || needs.e2e-site-creation.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'site-groups')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Site-Groups E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          ./Tests/E2E/Invoke-SiteGroupsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-permission-groups:
+    name: Permission-Groups end-to-end
+    runs-on: windows-latest
+    # Higher than the other jobs' 20 minutes — SharePoint site provisioning
+    # and recycle-bin purging are both documented as slower, multi-minute
+    # operations (see Tests/E2E/Invoke-PermissionGroupsE2E.ps1's poll loops).
+    timeout-minutes: 35
+    # Chained after e2e-site-groups to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain.
+    needs: e2e-site-groups
+    if: |
+      always() &&
+      (needs.e2e-site-groups.result == 'success' || needs.e2e-site-groups.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'permission-groups')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Permission-Groups E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          ./Tests/E2E/Invoke-PermissionGroupsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-external-sharing:
+    name: External-Sharing end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-permission-groups to avoid two jobs mutating tenant
+    # state at once, matching the rest of the E2E chain. This job mutates
+    # real tenant-wide sharing configuration (not a throwaway prefixed
+    # object) and restores it via snapshot/restore — see
+    # Tests/E2E/Invoke-ExternalSharingE2E.ps1.
+    needs: e2e-permission-groups
+    if: |
+      always() &&
+      (needs.e2e-permission-groups.result == 'success' || needs.e2e-permission-groups.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'external-sharing')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+      - name: Install SPO module (Windows PowerShell)
+        # The SPO Management Shell is a Windows PowerShell module — the E2E
+        # tests import it via PS7's -UseWindowsPowerShell compatibility
+        # session, which only scans Windows PowerShell module paths, so it
+        # must be installed from Windows PowerShell 5.1, not pwsh.
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Online.SharePoint.PowerShell -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run External-Sharing E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_TENANT_DOMAIN: ${{ secrets.M365_TENANT_DOMAIN }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+          # Connect-SPOService's -CertificateThumbprint is broken; the test
+          # re-materialises the PFX and uses -CertificatePath instead.
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          ./Tests/E2E/Invoke-ExternalSharingE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -TenantDomain $env:M365_TENANT_DOMAIN `
             -AppId $env:M365_APP_ID `
             -CertificateThumbprint $env:CERT_THUMBPRINT
 

@@ -9,8 +9,50 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode and role checks
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the Purview role interactive elevation, the Y/N
+    confirmation, and all "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix (string) prefixed to the policy and rule name, e.g. "E2E-"
+                 — lets E2E tests create/verify/delete a throwaway prefixed
+                 policy instead of the real tenant's default policy.
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
+
+$script:NonInteractive = [bool]$NonInteractive
+
+$script:RunConfig = @{
+    NamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 # ============================================================================
 # CONFIGURATION
@@ -111,18 +153,30 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredGraphScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
-            $context = Get-MgContext
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual
+        # operations that lack permission will fail with their own clear
+        # errors (same pattern as Security/Web-Filtering.ps1, confirmed live
+        # there: interactive elevation under app-only cert auth throws "A
+        # window handle must be configured" and can corrupt the process-wide
+        # Graph SDK connection state).
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+                $context = Get-MgContext
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -131,7 +185,20 @@ function Test-Prerequisites {
 
     # Check Purview/Compliance role
     Write-Host "   Checking Purview role assignments..." -ForegroundColor Gray
-    $roleResult = Test-PurviewRole -UserEmail $context.Account
+    if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+        # Directory role assignments belong to the signed-in user, not an
+        # app-only service principal — $context.Account is blank under
+        # app-only auth, so Get-MgUser -Filter "userPrincipalName eq ''"
+        # would just fail to find anyone. App-only permissions come from the
+        # app registration's API permissions instead; trust Connect-IPPSSession
+        # and the actual retention cmdlets to fail with their own clear
+        # errors if permissions are truly insufficient.
+        Write-Host "   Skipping interactive role check (app-only/unattended)" -ForegroundColor Yellow
+        $roleResult = @{ Success = $true; RoleName = "AppOnly (skipped)" }
+    }
+    else {
+        $roleResult = Test-PurviewRole -UserEmail $context.Account
+    }
 
     if (!$roleResult.Success) {
         return @{ Success = $false }
@@ -214,13 +281,27 @@ function Connect-SecurityCompliance {
 
     try {
         # Probe for an active IPPS session by calling a Purview cmdlet.
-        # Get-ConnectionInformation only checks Exchange Online connections, not IPPS.
-        $null = Get-RetentionCompliancePolicy -ResultSize 1 -ErrorAction Stop
+        # Get-ConnectionInformation only checks Exchange Online connections,
+        # not IPPS. NOTE: Get-RetentionCompliancePolicy has no -ResultSize
+        # parameter (confirmed live — passing it throws a parameter-binding
+        # error that this probe then misreads as "not connected").
+        $null = Get-RetentionCompliancePolicy -ErrorAction Stop | Select-Object -First 1
         Write-Host "   Already connected to Security & Compliance" -ForegroundColor Green
         return $true
     }
     catch {
         # Not connected — attempt fresh IPPS connection
+    }
+
+    if ($script:NonInteractive) {
+        # The parameterless Connect-IPPSSession below is interactive-only —
+        # on a headless CI runner it opens a browser and hangs until the
+        # job times out (confirmed live). Unattended callers must establish
+        # the IPPS session themselves (app-only cert auth) before running
+        # this script; if the probe above failed, fail fast instead.
+        Write-Host "   No active Security & Compliance session, and interactive sign-in is unavailable unattended" -ForegroundColor Red
+        Write-Host "   Connect with Connect-IPPSSession (app-only cert auth) before running this script non-interactively" -ForegroundColor Yellow
+        return $false
     }
 
     try {
@@ -259,12 +340,12 @@ function Connect-SecurityCompliance {
 function Get-RetentionPolicyDefinitions {
     return @(
         @{
-            Name = "7 Year Archive"
+            Name = "$($script:RunConfig.NamePrefix)7 Year Archive"
             Description = "Retain Exchange mailboxes and Microsoft 365 Group content for 7 years"
             RetentionDays = 2555
             Action = "Keep"
             Locations = @("Exchange", "Microsoft 365 Groups")
-            RuleName = "7 Year Archive Rule"
+            RuleName = "$($script:RunConfig.NamePrefix)7 Year Archive Rule"
             RuleComment = "Keep content for 7 years (2555 days)"
         }
     )
@@ -347,6 +428,12 @@ function New-RetentionPolicyWithRule {
     }
 }
 
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultPath -Encoding UTF8
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -368,6 +455,8 @@ function Start-RetentionPolicies {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -382,6 +471,8 @@ function Start-RetentionPolicies {
         Write-Host ""
         Write-Host "  Failed to connect to Security & Compliance Center." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to connect to Security & Compliance Center" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -401,17 +492,20 @@ function Start-RetentionPolicies {
     Show-RetentionPreview -Policies $policies
 
     # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create these retention policies? (Y/N)"
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create these retention policies? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 5: Execute
@@ -486,6 +580,14 @@ function Start-RetentionPolicies {
     Write-Host "    3. Consider adding Sensitivity Labels (Phase 2)" -ForegroundColor Gray
     Write-Host ""
 
+    Write-Result-File -Result @{
+        Success = ($results.Failed.Count -eq 0)
+        Created = $results.Created
+        Skipped = $results.Skipped
+        Failed  = $results.Failed
+    }
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
@@ -497,11 +599,14 @@ function Start-RetentionPolicies {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-RetentionPolicies
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }

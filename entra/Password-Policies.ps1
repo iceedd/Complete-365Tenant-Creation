@@ -9,12 +9,56 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Implemented password policies and SSPR configuration
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation and all "press any key" pauses.
+    Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      GroupNamePrefix (string) prefixed to "SSPR Eligible Users" when looking
+                       up the SSPR target group — lets E2E tests point at a
+                       throwaway prefixed group created by a prior
+                       Security-Groups E2E run
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    GroupNamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -25,6 +69,7 @@ $RequiredModules = @(
 
 $RequiredScopes = @(
     "Directory.ReadWrite.All",
+    "Domain.ReadWrite.All",
     "Policy.ReadWrite.AuthenticationMethod",
     "Group.Read.All",
     "UserAuthenticationMethod.ReadWrite.All"
@@ -90,17 +135,24 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -108,15 +160,17 @@ function Test-Prerequisites {
     }
 
     # Check for SSPR Eligible Users group
-    Write-Host "   Checking for SSPR Eligible Users group..." -ForegroundColor Gray
-    $ssprGroup = Get-MgGroup -Filter "displayName eq 'SSPR Eligible Users'" -ErrorAction SilentlyContinue
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    $ssprGroupName = "${groupPrefix}SSPR Eligible Users"
+    Write-Host "   Checking for $ssprGroupName group..." -ForegroundColor Gray
+    $ssprGroup = Get-MgGroup -Filter "displayName eq '$ssprGroupName'" -ErrorAction SilentlyContinue
 
     if (!$ssprGroup) {
-        Write-Host "   SSPR Eligible Users group not found" -ForegroundColor Yellow
+        Write-Host "   $ssprGroupName group not found" -ForegroundColor Yellow
         Write-Host "   Run Security-Groups script first to create this group" -ForegroundColor Yellow
         return @{ Success = $false; MissingSsprGroup = $true }
     }
-    Write-Host "   SSPR Eligible Users group found (ID: $($ssprGroup.Id))" -ForegroundColor Green
+    Write-Host "   $ssprGroupName group found (ID: $($ssprGroup.Id))" -ForegroundColor Green
 
     Write-Host ""
     return @{
@@ -147,7 +201,7 @@ function Set-PasswordNeverExpire {
 
         if (!$primaryDomain) {
             Write-Host "     Could not find primary domain" -ForegroundColor Yellow
-            return @{ Success = $false; Error = "Primary domain not found" }
+            return @{ Success = $false; Error = "Primary domain not found"; AlreadySet = $false; Changed = $false }
         }
 
         # Check current password policy
@@ -157,7 +211,7 @@ function Set-PasswordNeverExpire {
 
         if ($currentPolicy -eq 2147483647 -or $null -eq $currentPolicy) {
             Write-Host "     Passwords already set to never expire" -ForegroundColor Green
-            return @{ Success = $true; AlreadySet = $true }
+            return @{ Success = $true; AlreadySet = $true; Changed = $false }
         }
 
         # Set password to never expire (2147483647 = never)
@@ -166,15 +220,15 @@ function Set-PasswordNeverExpire {
             PasswordNotificationWindowInDays = 14
         }
 
-        Update-MgDomain -DomainId $primaryDomain.Id -BodyParameter $params -ErrorAction Stop
+        $null = Update-MgDomain -DomainId $primaryDomain.Id -BodyParameter $params -ErrorAction Stop
 
         Write-Host "     Password expiration set to: Never" -ForegroundColor Green
-        return @{ Success = $true; Changed = $true }
+        return @{ Success = $true; Changed = $true; AlreadySet = $false }
     }
     catch {
         Write-Host "     Failed to set password expiration: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "     You may need to configure this via Microsoft 365 Admin Center" -ForegroundColor Gray
-        return @{ Success = $false; Error = $_.Exception.Message }
+        return @{ Success = $false; Error = $_.Exception.Message; AlreadySet = $false; Changed = $false }
     }
 }
 
@@ -277,9 +331,14 @@ function Start-PasswordPolicies {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -303,18 +362,23 @@ function Start-PasswordPolicies {
     Write-Host "    - Smart lockout settings" -ForegroundColor Gray
     Write-Host ""
 
-    # Confirmation
-    Write-Host "  [Y] Proceed with configuration  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Apply password policies? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Proceed with configuration  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Apply password policies? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Execute
@@ -385,8 +449,21 @@ function Start-PasswordPolicies {
     Write-Host "    3. Review smart lockout settings" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners
+    if ($ResultPath) {
+        @{
+            Success            = [bool]$results.PasswordExpiration.Success
+            PasswordExpiration = $results.PasswordExpiration
+            Sspr               = $results.Sspr
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================

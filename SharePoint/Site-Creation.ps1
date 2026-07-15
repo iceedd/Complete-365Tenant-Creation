@@ -10,12 +10,54 @@
 .AUTHOR
     BITS
 .VERSION
-    1.0 - Implemented Team Site and Communication Site creation
+    1.1 - Implemented Team Site and Communication Site creation. Adds
+          non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip all prompts and "press any key" pauses, creating
+    exactly the sites listed in -ConfigFile. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Required in non-interactive mode. JSON file with a "Sites" array, each
+    entry: Title, Type ('TeamSite' or 'CommunicationSite'), UrlAlias
+    (optional, derived from Title if omitted), Description (optional),
+    Owner (required UPN).
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    Sites = @()
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        if ($userConfig.ContainsKey('Sites')) { $script:RunConfig.Sites = @($userConfig.Sites) }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @('Microsoft.Online.SharePoint.PowerShell')
 
@@ -32,8 +74,10 @@ $SiteTemplates = @{
     }
 }
 
-$StorageQuotaMB        = 1024
-$StorageQuotaWarningMB = 512
+# NOTE: New-SPOSite no longer accepts -StorageQuotaWarningLevel (confirmed
+# live and against current Microsoft docs — the storage-quota-warning
+# feature was retired), so only the quota itself is configurable.
+$StorageQuotaMB = 1024
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -253,14 +297,16 @@ function New-SharePointSite {
             return @{ Success = $true; Skipped = $true }
         }
 
-        New-SPOSite `
-            -Url                      $SiteDefinition.FullUrl `
-            -Owner                    $SiteDefinition.Owner `
-            -StorageQuota             $StorageQuotaMB `
-            -StorageQuotaWarningLevel $StorageQuotaWarningMB `
-            -Template                 $template.Template `
-            -Title                    $SiteDefinition.Title `
-            -ErrorAction              Stop
+        # $null = : any pipeline output here would corrupt this function's
+        # hashtable return value (strict mode then crashes on .Success — same
+        # class of bug confirmed live with Add-SPOUser in Site-Groups.ps1).
+        $null = New-SPOSite `
+            -Url          $SiteDefinition.FullUrl `
+            -Owner        $SiteDefinition.Owner `
+            -StorageQuota $StorageQuotaMB `
+            -Template     $template.Template `
+            -Title        $SiteDefinition.Title `
+            -ErrorAction  Stop
 
         Write-Host "     Created: $($SiteDefinition.FullUrl)" -ForegroundColor Green
         return @{ Success = $true; Skipped = $false }
@@ -269,6 +315,12 @@ function New-SharePointSite {
         Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
         return @{ Success = $false; Error = $_.Exception.Message }
     }
+}
+
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultPath -Encoding UTF8
 }
 
 # ============================================================================
@@ -291,6 +343,8 @@ function Start-SiteCreation {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -300,15 +354,38 @@ function Start-SiteCreation {
     Write-Host ""
     Write-Host "  STEP 2: Define Sites" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
-    Write-Host "   Enter the details for each site to create." -ForegroundColor Gray
-    Write-Host "   You will be shown a preview before anything is created." -ForegroundColor Gray
 
-    $siteList = Get-SiteDefinitions -TenantRootUrl $prereqResult.TenantRootUrl
+    if ($script:NonInteractive) {
+        $siteList = @(foreach ($siteConfig in $script:RunConfig.Sites) {
+            $urlAlias = if ($siteConfig.ContainsKey('UrlAlias') -and $siteConfig.UrlAlias) {
+                $siteConfig.UrlAlias
+            }
+            else {
+                ($siteConfig.Title -replace '[^a-zA-Z0-9]', '-' -replace '-+', '-').Trim('-').ToLower()
+            }
+            @{
+                Title       = $siteConfig.Title
+                Type        = $siteConfig.Type
+                UrlAlias    = $urlAlias
+                FullUrl     = "$($prereqResult.TenantRootUrl)/sites/$urlAlias"
+                Description = if ($siteConfig.ContainsKey('Description')) { $siteConfig.Description } else { '' }
+                Owner       = $siteConfig.Owner
+            }
+        })
+        Write-Host "   Loaded $($siteList.Count) site definition(s) from config" -ForegroundColor Green
+    }
+    else {
+        Write-Host "   Enter the details for each site to create." -ForegroundColor Gray
+        Write-Host "   You will be shown a preview before anything is created." -ForegroundColor Gray
+        $siteList = Get-SiteDefinitions -TenantRootUrl $prereqResult.TenantRootUrl
+    }
 
     if ($siteList.Count -eq 0) {
         Write-Host ""
         Write-Host "  No sites defined. Exiting." -ForegroundColor Yellow
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "No sites defined" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -320,17 +397,20 @@ function Start-SiteCreation {
     Show-SitePreview -Sites $siteList
 
     # Confirmation
-    Write-Host "  [Y] Create sites  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create these sites? (Y/N)"
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Create sites  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create these sites? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 4: Create sites
@@ -418,6 +498,14 @@ function Start-SiteCreation {
     Write-Host "    4. Visit https://admin.sharepoint.com for additional configuration" -ForegroundColor Gray
     Write-Host ""
 
+    Write-Result-File -Result @{
+        Success = ($results.Failed.Count -eq 0)
+        Created = @($results.Created | ForEach-Object { $_.Name })
+        Skipped = @($results.Skipped | ForEach-Object { $_.Name })
+        Failed  = $results.Failed
+    }
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
@@ -429,11 +517,14 @@ function Start-SiteCreation {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-SiteCreation
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }

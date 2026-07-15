@@ -9,12 +9,55 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation and all "press any key" pauses.
+    Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      MailboxUPNs (string array) restricts processing to only these user
+                  principal names instead of every UserMailbox in the
+                  tenant — lets E2E tests operate on a single throwaway
+                  mailbox instead of touching the whole tenant.
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+$script:RunConfig = @{
+    MailboxUPNs = @()
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'ExchangeOnlineManagement'
@@ -152,11 +195,41 @@ function Enable-MailboxArchiving {
     return @{ Stats = $stats; Errors = $errors }
 }
 
+function Get-QuotaByteCount {
+    <#
+    .SYNOPSIS
+        Extracts a byte count from a mailbox quota value, regardless of which
+        shape Get-Mailbox returned it in.
+    .DESCRIPTION
+        Confirmed live: depending on the ExchangeOnlineManagement module's
+        REST vs. remote-PowerShell backend for a given call, quota values can
+        come back either as rich objects (with IsUnlimited/ToBytes()) or as
+        plain strings like "40 GB (42,949,672,960 bytes)" or "Unlimited".
+        PSObject.Properties[] indexing (unlike dot-notation) never throws
+        under strict mode when a property is absent.
+    #>
+    param($ExchangeQuota)
+    if ($null -eq $ExchangeQuota) { return $null }
+
+    if ($ExchangeQuota -is [string]) {
+        if ($ExchangeQuota -eq 'Unlimited') { return $null }
+        if ($ExchangeQuota -match '\(([\d,]+)\s*bytes\)') {
+            return [long]($Matches[1] -replace ',', '')
+        }
+        return $null
+    }
+
+    $isUnlimitedProp = $ExchangeQuota.PSObject.Properties['IsUnlimited']
+    if ($isUnlimitedProp -and $isUnlimitedProp.Value) { return $null }
+
+    try { return $ExchangeQuota.ToBytes() } catch { return $null }
+}
+
 function Compare-MailboxQuota {
     param($ExchangeQuota, [long]$TargetBytes)
-    if ($null -eq $ExchangeQuota -or $ExchangeQuota.IsUnlimited) { return $false }
-    try { return $ExchangeQuota.ToBytes() -eq $TargetBytes }
-    catch { return $false }
+    $bytes = Get-QuotaByteCount $ExchangeQuota
+    if ($null -eq $bytes) { return $false }
+    return $bytes -eq $TargetBytes
 }
 
 function Set-MailboxQuotas {
@@ -216,6 +289,30 @@ function Set-MailboxQuotas {
     return @{ Stats = $stats; Errors = $errors }
 }
 
+function Write-Result-File {
+    param(
+        [bool] $Success,
+        [int] $MailboxCount = 0,
+        [hashtable] $ArchiveStats,
+        [hashtable] $QuotaStats,
+        [array] $Errors = @(),
+        [string] $ErrorMessage
+    )
+
+    if (!$ResultPath) { return }
+
+    $payload = @{
+        Success       = $Success
+        MailboxCount  = $MailboxCount
+        ArchiveStats  = $ArchiveStats
+        QuotaStats    = $QuotaStats
+        Errors        = @($Errors)
+    }
+    if ($ErrorMessage) { $payload.Errors = @($payload.Errors) + $ErrorMessage }
+
+    $payload | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -234,6 +331,8 @@ function Start-ArchivePolicies {
     if (!$prereqResult.Success) {
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Success $false -ErrorMessage "Prerequisites not met"
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -251,6 +350,8 @@ function Start-ArchivePolicies {
     catch {
         Write-Host "  Invalid quota configuration: $_" -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Success $false -ErrorMessage "Invalid quota configuration: $_"
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -258,11 +359,30 @@ function Start-ArchivePolicies {
 
     # Get mailbox count
     Write-Host "   Retrieving mailboxes..." -ForegroundColor Gray
-    $allMailboxes = Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue
+    # Get-Mailbox intermittently returns nothing (transient EXO directory
+    # flake, confirmed live: the same UPN filter that had just matched a
+    # mailbox returned 0 rows on an immediate re-run) — retry before
+    # concluding the tenant is empty.
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $allMailboxes = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
+        if (@($script:RunConfig.MailboxUPNs).Count -gt 0) {
+            $upnFilter = @($script:RunConfig.MailboxUPNs)
+            $allMailboxes = @($allMailboxes | Where-Object { $upnFilter -contains $_.UserPrincipalName })
+        }
+        if ($allMailboxes.Count -gt 0 -or $attempt -eq $maxAttempts) { break }
+        Write-Host "   No mailboxes returned — retrying in 15s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+        Start-Sleep -Seconds 15
+    }
+    if (@($script:RunConfig.MailboxUPNs).Count -gt 0) {
+        Write-Host "   Restricting to $($allMailboxes.Count) mailbox(es) via MailboxUPNs config" -ForegroundColor Gray
+    }
 
-    if (!$allMailboxes -or $allMailboxes.Count -eq 0) {
+    if ($allMailboxes.Count -eq 0) {
         Write-Host "   No user mailboxes found in the tenant" -ForegroundColor Yellow
         Write-Host ""
+        Write-Result-File -Success $false -ErrorMessage "No user mailboxes found"
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -278,16 +398,19 @@ function Start-ArchivePolicies {
     Write-Host ""
 
     # Confirmation
-    Write-Host "  [Y] Proceed with configuration  [N] Cancel" -ForegroundColor Gray
-    $confirm = Read-Host "  Apply settings? (Y/N)"
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Proceed with configuration  [N] Cancel" -ForegroundColor Gray
+        $confirm = Read-Host "  Apply settings? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Success $false -ErrorMessage "Cancelled by user"
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Apply archive settings
@@ -305,7 +428,7 @@ function Start-ArchivePolicies {
     $quotaResult = Set-MailboxQuotas -Mailboxes $allMailboxes -QuotaConfiguration $QuotaConfig
 
     # Summary
-    $totalErrors = $archiveResult.Errors + $quotaResult.Errors
+    $totalErrors = @(@($archiveResult.Errors) + @($quotaResult.Errors))
 
     Write-Host ""
     Write-Host ("=" * 70) -ForegroundColor Cyan
@@ -339,6 +462,13 @@ function Start-ArchivePolicies {
     Write-Host "    3. Test archive accessibility in Outlook clients" -ForegroundColor Gray
     Write-Host ""
 
+    Write-Result-File -Success ($totalErrors.Count -eq 0) `
+        -MailboxCount $allMailboxes.Count `
+        -ArchiveStats $archiveResult.Stats `
+        -QuotaStats $quotaResult.Stats `
+        -Errors $totalErrors
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
 }
@@ -350,11 +480,14 @@ function Start-ArchivePolicies {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Success $false -ErrorMessage "Failed to initialize required modules"
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-ArchivePolicies
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Success $false -ErrorMessage $_.Exception.Message
+    if ($script:NonInteractive) { exit 1 }
 }

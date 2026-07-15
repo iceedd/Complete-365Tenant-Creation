@@ -67,6 +67,23 @@ cover the API surface, not script logic end-to-end. A non-interactive mode
 (-ConfigFile / -NonInteractive) is planned to enable full E2E testing against
 the test tenant.
 
+### ExchangeOnlineManagement 3.10.0 Regression (Connect-IPPSSession)
+- **Issue**: ExchangeOnlineManagement 3.10.0 has a regression where
+  `Connect-IPPSSession` with certificate-based app-only auth crashes with
+  `Object reference not set to an instance of an object` inside its
+  internal `NewEXOModule.ProcessRecord()`, even with fully correct Entra
+  role assignments (Compliance Administrator) — confirmed live by decoding
+  the actual access token's `wids` claim, which correctly contained the
+  role, yet the connection still failed on 3.10.0. The identical call
+  succeeds on 3.9.0.
+- **Solution**: CI workflows (`e2e-test.yml`, `smoke-test.yml`) pin
+  `Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.0` (an
+  exact version, not `-MinimumVersion`) until Microsoft fixes the
+  regression in a later release.
+- **Status**: Workaround in place. Re-test with a newer module version
+  periodically and lift the pin once `Connect-IPPSSession` app-only auth
+  is confirmed fixed.
+
 ### Microsoft Graph SDK Bug (2025)
 - **Issue**: Compliance policy assignments fail via the SDK cmdlets
 - **Solution**: REST/Invoke-MgGraphRequest workaround in Intune/Compliance-Policies.ps1
@@ -77,6 +94,29 @@ the test tenant.
 - **Solution**: Must be configured manually in Microsoft Defender portal
 - **Documentation**: See Docs/STANDARDIZATION_GUIDE.md → Manual Setup Requirements
 - **Tracking**: System tracks EDR status and shows 80%/20% completion split
+
+### Web Content Filtering (Manual Setup Required)
+- **Issue**: Defender for Endpoint's "Web content filtering" feature has no Microsoft Graph API at all — confirmed live (the tenant's Settings Catalog has no matching `device_vendor_msft_defender_configuration_webcontentfiltering_*` setting IDs, only unrelated Microsoft Edge browser policy settings under a similar name) and via Microsoft Learn (every doc for this feature says to use the Defender portal wizard exclusively)
+- **Solution**: Security/Web-Filtering.ps1 detects this and always falls back to manual setup instructions (security.microsoft.com > Settings > Endpoints > Web content filtering) rather than attempting a POST that can never succeed
+- **Status**: This is a permanent Microsoft platform limitation, not a stale/fixable setting ID
+
+### SharePoint Online Management Shell (App-Only Quirks)
+- **Windows PowerShell only**: the SPO module can't be used natively in
+  PowerShell 7 — Microsoft's docs require
+  `Import-Module Microsoft.Online.SharePoint.PowerShell -UseWindowsPowerShell`,
+  and for that compatibility session to find it, the module must be
+  installed from Windows PowerShell 5.1 (confirmed live: installed via pwsh,
+  `Connect-SPOService` is simply not recognized).
+- **-CertificateThumbprint is broken**: `Connect-SPOService` throws "No
+  certificate was found matching the specified parameters" even when the
+  cert is demonstrably in `Cert:\CurrentUser\My` (confirmed live). Use
+  `-CertificatePath` + `-CertificatePassword` instead.
+- **Sites.FullControl.All required**: SPO tenant admin APIs only accept
+  app-only tokens carrying the SharePoint API application permission
+  `Sites.FullControl.All` (admin-consented). Without it, Connect-SPOService
+  fails with 401 Unauthorized (confirmed live) — Graph permissions alone are
+  not enough. The Claude-SmokeTest app needs this granted before the
+  SharePoint E2E jobs can run.
 
 ### P2 License Detection
 - **Coverage**: Detects 23+ Microsoft license SKUs in Main-Menu.ps1 (Test-EntraP2License)

@@ -9,8 +9,50 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode and license checks
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip the license warning, Y/N/M confirmation, and all
+    "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix (string) prefixed to the policy name, e.g. "E2E-" — lets
+                 E2E tests create/verify/delete a throwaway prefixed policy
+                 instead of the real tenant's default policy.
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
+
+$script:NonInteractive = [bool]$NonInteractive
+
+$script:RunConfig = @{
+    NamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 # ============================================================================
 # CONFIGURATION
@@ -99,17 +141,27 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual
+        # operations that lack permission will fail with their own clear
+        # errors (confirmed live: attempting interactive elevation under
+        # app-only cert auth throws "A window handle must be configured").
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -124,11 +176,14 @@ function Test-Prerequisites {
         Write-Host "   WARNING: Defender for Endpoint P2 license not detected" -ForegroundColor Yellow
         Write-Host "   Web content filtering requires this license to function" -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "   [Y] Continue anyway (create policy)  [N] Cancel" -ForegroundColor Gray
-        $confirm = Read-Host "   Continue? (Y/N)"
 
-        if ($confirm -notlike "Y*") {
-            return @{ Success = $false }
+        if (!$script:NonInteractive) {
+            Write-Host "   [Y] Continue anyway (create policy)  [N] Cancel" -ForegroundColor Gray
+            $confirm = Read-Host "   Continue? (Y/N)"
+
+            if ($confirm -notlike "Y*") {
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -179,12 +234,13 @@ function Test-DefenderLicense {
 }
 
 function Get-ExistingWebFilterPolicy {
+    $policyName = "$($script:RunConfig.NamePrefix)Default Web Filter"
     try {
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq 'Default Web Filter'"
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=name eq '$policyName'"
         $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction SilentlyContinue
 
         if ($response.value -and $response.value.Count -gt 0) {
-            Write-Host "   Found existing 'Default Web Filter' policy" -ForegroundColor Yellow
+            Write-Host "   Found existing '$policyName' policy" -ForegroundColor Yellow
             return $response.value[0]
         }
 
@@ -253,7 +309,6 @@ function Test-SettingDefinitionsExist {
 
     if ($missing.Count -gt 0) {
         Write-Host "     WARNING: Setting IDs not found in tenant for: $($missing -join ', ')" -ForegroundColor Yellow
-        Write-Host "     Microsoft may have changed these IDs. Use manual setup if the policy fails." -ForegroundColor Yellow
         return $false
     }
 
@@ -263,7 +318,7 @@ function Test-SettingDefinitionsExist {
 function New-WebFilterPolicy {
     param([array]$Categories)
 
-    $policyName = "Default Web Filter"
+    $policyName = "$($script:RunConfig.NamePrefix)Default Web Filter"
 
     try {
         # Check if policy exists
@@ -274,7 +329,31 @@ function New-WebFilterPolicy {
         }
 
         Write-Host "     Validating setting definition IDs..." -ForegroundColor Gray
-        Test-SettingDefinitionsExist -Categories $Categories | Out-Null
+        $settingsResolved = Test-SettingDefinitionsExist -Categories $Categories
+
+        if (!$settingsResolved) {
+            # Confirmed live against the test tenant, and against Microsoft's
+            # own documentation: Defender for Endpoint's "Web content
+            # filtering" feature has no Microsoft Graph API at all — every
+            # Microsoft Learn article says to create it exclusively through
+            # the Defender portal wizard (security.microsoft.com > Settings >
+            # Endpoints > Web content filtering). The
+            # device_vendor_msft_defender_configuration_webcontentfiltering_*
+            # setting IDs this policy body relies on do not exist in the
+            # Settings Catalog — only unrelated Microsoft Edge browser policy
+            # settings share a similar name. This is a permanent platform
+            # limitation, not a stale/renamed ID that a live attempt might
+            # still resolve, so skip the doomed POST and go straight to
+            # manual setup guidance.
+            Write-Host "     Web content filtering has no Microsoft Graph API — this is a permanent Microsoft limitation, not a script bug" -ForegroundColor Yellow
+            Write-Host "     Configure manually in the Defender portal (see instructions below)" -ForegroundColor Yellow
+            return @{
+                Success         = $false
+                Skipped         = $false
+                KnownLimitation = $true
+                Error           = "Web content filtering cannot be automated via Microsoft Graph — no such API exists. Configure manually in the Defender portal (security.microsoft.com > Settings > Endpoints > Web content filtering)."
+            }
+        }
 
         Write-Host "     Creating Settings Catalog policy..." -ForegroundColor Gray
 
@@ -323,6 +402,12 @@ function New-WebFilterPolicy {
     }
 }
 
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 15 | Set-Content -Path $ResultPath -Encoding UTF8
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -344,6 +429,8 @@ function Start-WebFiltering {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -352,11 +439,13 @@ function Start-WebFiltering {
     # Check if policy already exists
     if ($prereqResult.ExistingPolicy) {
         Write-Host ""
-        Write-Host "  Web filter policy 'Default Web Filter' already exists." -ForegroundColor Yellow
+        Write-Host "  Web filter policy '$($script:RunConfig.NamePrefix)Default Web Filter' already exists." -ForegroundColor Yellow
         Write-Host "  Policy ID: $($prereqResult.ExistingPolicy.id)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "  No action needed." -ForegroundColor Green
         Write-Host ""
+        Write-Result-File -Result @{ Success = $true; Skipped = $true; Policy = $prereqResult.ExistingPolicy }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -368,22 +457,25 @@ function Start-WebFiltering {
     Show-WebFilterPreview -Categories $BlockedCategories
 
     # Confirmation
-    Write-Host "  [Y] Proceed with creation  [N] Cancel  [M] Manual setup instructions" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create this policy? (Y/N/M)"
-
-    if ($confirm -like "M*") {
-        Show-ManualInstructions
-        return
-    }
-
-    if ($confirm -notlike "Y*") {
+    if (!$script:NonInteractive) {
+        Write-Host "  [Y] Proceed with creation  [N] Cancel  [M] Manual setup instructions" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        $confirm = Read-Host "  Create this policy? (Y/N/M)"
+
+        if ($confirm -like "M*") {
+            Show-ManualInstructions
+            return
+        }
+
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Execute
@@ -430,9 +522,12 @@ function Start-WebFiltering {
         Write-Host "  Status: Failed" -ForegroundColor Red
         Write-Host "  Error: $($result.Error)" -ForegroundColor Red
         Write-Host ""
-        Show-ManualInstructions
+        if (!$script:NonInteractive) { Show-ManualInstructions }
     }
 
+    Write-Result-File -Result $result
+
+    if ($script:NonInteractive) { return }
     Write-Host ""
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
@@ -478,11 +573,14 @@ function Show-ManualInstructions {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-WebFiltering
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }

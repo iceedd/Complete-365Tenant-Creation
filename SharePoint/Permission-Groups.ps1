@@ -10,12 +10,58 @@
 .AUTHOR
     BITS
 .VERSION
-    1.0 - Implemented permission group audit and repair
+    1.1 - Implemented permission group audit and repair. Adds non-interactive
+          mode (-NonInteractive/-ConfigFile) for unattended E2E testing.
+.PARAMETER NonInteractive
+    Run unattended: skip scope selection, the repair confirmation, and all
+    "press any key" pauses. Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Required in non-interactive mode. JSON file with:
+      ScopeChoice ('1' for all site collections, '2' for a specific site)
+      SiteUrl (required when ScopeChoice is '2'): full site URL
+      AutoRepair (optional, default true): whether to create missing
+        standard groups when found — there's no one to prompt unattended
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    ScopeChoice = '1'
+    SiteUrl     = ''
+    AutoRepair  = $true
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @('Microsoft.Online.SharePoint.PowerShell')
 
@@ -87,7 +133,7 @@ function Test-Prerequisites {
 # ============================================================================
 
 function Get-AuditSites {
-    param([string]$ScopeChoice)
+    param([string]$ScopeChoice, [string]$SiteUrl)
 
     switch ($ScopeChoice) {
         '1' {
@@ -96,7 +142,7 @@ function Get-AuditSites {
             return @($allSites | Where-Object { $_.Url -notlike '*-my.sharepoint.com*' })
         }
         '2' {
-            $specificUrl = Read-Host "   Enter site URL (e.g. https://contoso.sharepoint.com/sites/Marketing)"
+            $specificUrl = if ($script:NonInteractive) { $SiteUrl } else { Read-Host "   Enter site URL (e.g. https://contoso.sharepoint.com/sites/Marketing)" }
             if ($specificUrl -notmatch '^https://') {
                 Write-Host "   Invalid URL format" -ForegroundColor Red
                 return @()
@@ -202,7 +248,11 @@ function Repair-PermissionGroup {
     $groupName = "$SiteTitle $GroupSuffix"
 
     try {
-        New-SPOSiteGroup -Site $SiteUrl -Group $groupName -PermissionLevels $PermissionLevel -ErrorAction Stop
+        # $null = : New-SPOSiteGroup emits the created group to the pipeline,
+        # which would corrupt this function's hashtable return value (strict
+        # mode then crashes on .Success — same class of bug confirmed live
+        # with Add-SPOUser in Site-Groups.ps1).
+        $null = New-SPOSiteGroup -Site $SiteUrl -Group $groupName -PermissionLevels $PermissionLevel -ErrorAction Stop
         Write-Host "     Created: $groupName" -ForegroundColor Green
         return @{ Success = $true; GroupName = $groupName }
     }
@@ -232,6 +282,8 @@ function Start-PermissionGroups {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Prerequisites not met" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -241,27 +293,37 @@ function Start-PermissionGroups {
     Write-Host ""
     Write-Host "  STEP 2: Audit Scope" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "   Select sites to audit:" -ForegroundColor White
-    Write-Host "   1. All site collections" -ForegroundColor Gray
-    Write-Host "   2. Specific site URL" -ForegroundColor Gray
-    Write-Host "   Q. Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $scopeChoice = Read-Host "   Selection"
 
-    if ($scopeChoice -like "Q*") {
+    if ($script:NonInteractive) {
+        $scopeChoice = $script:RunConfig.ScopeChoice
+        Write-Host "   Scope: $scopeChoice (non-interactive)" -ForegroundColor Gray
+    }
+    else {
         Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
+        Write-Host "   Select sites to audit:" -ForegroundColor White
+        Write-Host "   1. All site collections" -ForegroundColor Gray
+        Write-Host "   2. Specific site URL" -ForegroundColor Gray
+        Write-Host "   Q. Cancel" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        $scopeChoice = Read-Host "   Selection"
+
+        if ($scopeChoice -like "Q*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Result-File -Result @{ Success = $false; Error = "Cancelled by user" }
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     if ($scopeChoice -notin @('1', '2')) {
         Write-Host ""
         Write-Host "  Invalid selection" -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "Invalid scope selection" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -273,11 +335,13 @@ function Start-PermissionGroups {
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
     try {
-        $sites = Get-AuditSites -ScopeChoice $scopeChoice
+        $sites = Get-AuditSites -ScopeChoice $scopeChoice -SiteUrl $script:RunConfig.SiteUrl
     }
     catch {
         Write-Host "   Failed to retrieve sites: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -286,6 +350,8 @@ function Start-PermissionGroups {
     if ($sites.Count -eq 0) {
         Write-Host "   No sites found to audit" -ForegroundColor Yellow
         Write-Host ""
+        Write-Result-File -Result @{ Success = $false; Error = "No sites found to audit" }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -333,6 +399,8 @@ function Start-PermissionGroups {
         Write-Host "    2. Run External-Sharing script to configure sharing policies" -ForegroundColor Gray
         Write-Host "    3. Run Site-Creation script to provision additional sites" -ForegroundColor Gray
         Write-Host ""
+        Write-Result-File -Result @{ Success = $true; SitesAudited = $auditResults.Count; Created = @(); Failed = @() }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -348,14 +416,24 @@ function Start-PermissionGroups {
     Write-Host "     '[Site Title] Members'  - Edit" -ForegroundColor Gray
     Write-Host "     '[Site Title] Visitors' - Read" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  [Y] Create missing groups  [N] Skip repair" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Create missing permission groups? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
+    if ($script:NonInteractive) {
+        $proceedRepair = $script:RunConfig.AutoRepair
+        Write-Host "   Auto-repair: $proceedRepair (non-interactive)" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Create missing groups  [N] Skip repair" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Create missing permission groups? (Y/N)"
+        $proceedRepair = ($confirm -like "Y*")
+    }
+
+    if (!$proceedRepair) {
         Write-Host ""
         Write-Host "  Repair skipped" -ForegroundColor Yellow
         Write-Host ""
+        Write-Result-File -Result @{ Success = $true; SitesAudited = $auditResults.Count; Created = @(); Failed = @(); RepairSkipped = $true }
+        if ($script:NonInteractive) { return }
         Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
         return
@@ -435,8 +513,22 @@ function Start-PermissionGroups {
     Write-Host "    3. Review site inheritance settings if subsites exist" -ForegroundColor Gray
     Write-Host ""
 
+    Write-Result-File -Result @{
+        Success      = ($repairResults.Failed.Count -eq 0)
+        SitesAudited = $auditResults.Count
+        Created      = @($repairResults.Created | ForEach-Object { $_.Group })
+        Failed       = $repairResults.Failed
+    }
+
+    if ($script:NonInteractive) { return }
     Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+}
+
+function Write-Result-File {
+    param([hashtable]$Result)
+    if (!$ResultPath) { return }
+    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultPath -Encoding UTF8
 }
 
 # ============================================================================
@@ -446,11 +538,14 @@ function Start-PermissionGroups {
 try {
     if (!(Initialize-ScriptModules)) {
         Write-Host "Failed to initialize required modules. Exiting." -ForegroundColor Red
-        return
+        Write-Result-File -Result @{ Success = $false; Error = "Failed to initialize required modules" }
+        if ($script:NonInteractive) { exit 1 } else { return }
     }
 
     Start-PermissionGroups
 }
 catch {
     Write-Host "Script execution failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Result-File -Result @{ Success = $false; Error = $_.Exception.Message }
+    if ($script:NonInteractive) { exit 1 }
 }

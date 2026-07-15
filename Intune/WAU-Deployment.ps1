@@ -11,16 +11,65 @@
 .AUTHOR
     BITS
 .VERSION
-    2.0 - Standardized UX with preview mode
+    2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
+          E2E testing.
 .NOTES
     - App: Winget-AutoUpdate-aaS from Microsoft Store (Store ID: XP89BSK82W9J28)
     - ADMX/ADML from: https://github.com/Weatherlights/Winget-AutoUpdate-Intune
     - Uses Administrative Templates profile type (same as manual import in Intune)
+.PARAMETER NonInteractive
+    Run unattended: skip the Y/N confirmation and all "press any key" pauses.
+    Used by CI E2E tests.
+.PARAMETER ConfigFile
+    Optional JSON file overriding run behaviour. Supported keys:
+      NamePrefix      (string) prefixed to the WAU app name and config
+                      policy name, e.g. "E2E-" — lets E2E tests
+                      create/verify/delete only throwaway prefixed objects.
+                      The imported ADMX file itself is NOT prefixed — it's a
+                      single shared tenant-wide resource, same as real usage.
+      GroupNamePrefix (string) prefixed to the target device group name —
+                      lets E2E tests point at a throwaway prefixed group
+                      created by a prior Device-Groups E2E run
+.PARAMETER ResultPath
+    Optional path to write a JSON results summary, so a CI runner can assert
+    on the outcome.
 #>
+
+param(
+    [switch] $NonInteractive,
+    [string] $ConfigFile,
+    [string] $ResultPath
+)
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+
+$script:NonInteractive = [bool]$NonInteractive
+
+# Run-behaviour config — overridable via -ConfigFile JSON
+$script:RunConfig = @{
+    NamePrefix      = ''
+    GroupNamePrefix = ''
+}
+
+if ($ConfigFile) {
+    if (!(Test-Path $ConfigFile)) {
+        Write-Host "Config file not found: $ConfigFile" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+    try {
+        $userConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($key in @($script:RunConfig.Keys)) {
+            if ($userConfig.ContainsKey($key)) { $script:RunConfig[$key] = $userConfig[$key] }
+        }
+        Write-Host "Loaded config from $ConfigFile" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "Failed to parse config file: $($_.Exception.Message)" -ForegroundColor Red
+        if ($script:NonInteractive) { exit 2 } else { return }
+    }
+}
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -84,6 +133,18 @@ $WAUConfig = @{
 # Target device group
 $TargetGroup = "Windows Devices (Autopilot)"
 
+# Apply configured prefixes (test isolation: E2E runs use "E2E-" so created
+# objects are identifiable and safely deletable). The ADMX file itself is
+# NOT prefixed — it's a single shared tenant-wide resource, same in test as
+# in real usage.
+if ($script:RunConfig.NamePrefix) {
+    $WAUStoreApp.Name = "$($script:RunConfig.NamePrefix)$($WAUStoreApp.Name)"
+    $WAUConfig.PolicyName = "$($script:RunConfig.NamePrefix)$($WAUConfig.PolicyName)"
+}
+if ($script:RunConfig.GroupNamePrefix) {
+    $TargetGroup = "$($script:RunConfig.GroupNamePrefix)$TargetGroup"
+}
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -131,6 +192,9 @@ function Get-ADMXFiles {
 
     # Try GitHub first
     try {
+        if (-not (Test-Path variable:Global:GitHubRepo) -or -not $Global:GitHubRepo) { $Global:GitHubRepo = "iceedd/Complete-365Tenant-Creation" }
+        if (-not (Test-Path variable:Global:GitHubBranch) -or -not $Global:GitHubBranch) { $Global:GitHubBranch = "main" }
+
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $baseUrl = "https://raw.githubusercontent.com/$Global:GitHubRepo/$Global:GitHubBranch/Intune/ADMX"
 
@@ -199,17 +263,25 @@ function Test-Prerequisites {
     $missingScopes = @($RequiredScopes | Where-Object { $_ -notin $context.Scopes })
 
     if ($missingScopes.Count -gt 0) {
-        Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
-        Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
-
-        try {
-            $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
-            Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
-            Write-Host "   Permissions updated" -ForegroundColor Green
+        # App-only tokens carry fixed app-role permissions and unattended runs
+        # can't consent interactively — warn and continue; individual operations
+        # that lack permission will fail with their own clear errors.
+        if ($context.AuthType -eq 'AppOnly' -or $script:NonInteractive) {
+            Write-Host "   Missing scopes (continuing unattended): $($missingScopes -join ', ')" -ForegroundColor Yellow
         }
-        catch {
-            Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
-            return @{ Success = $false }
+        else {
+            Write-Host "   Missing scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            Write-Host "   Requesting additional permissions..." -ForegroundColor Yellow
+
+            try {
+                $allScopes = ($context.Scopes + $missingScopes) | Select-Object -Unique
+                Connect-MgGraph -Scopes $allScopes -NoWelcome -ErrorAction Stop
+                Write-Host "   Permissions updated" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   Could not get required permissions: $($_.Exception.Message)" -ForegroundColor Red
+                return @{ Success = $false }
+            }
         }
     }
     else {
@@ -490,8 +562,24 @@ function New-WAUStoreApp {
                 )
             }
 
+            # A just-created Store app can transiently reject its first
+            # /assign call with 400 BadRequest while Intune finishes
+            # provisioning it (confirmed live: identical call succeeded in
+            # four consecutive CI runs, then failed once seconds after app
+            # creation) — retry before treating it as a real failure.
             $assignUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($newApp.id)/assign"
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
+            $maxAttempts = 5
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                try {
+                    $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10) -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($attempt -eq $maxAttempts) { throw }
+                    Write-Host "     Assignment not accepted yet ($($_.Exception.Message)) — retrying in 15s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+                    Start-Sleep -Seconds 15
+                }
+            }
             Write-Host "     Assigned to $TargetGroup (Required)" -ForegroundColor Green
         }
 
@@ -588,15 +676,21 @@ function New-WAUConfigPolicy {
 
             # Map our config to policy display names
             # Toggle = simple enabled/disabled, Text = requires presentationValues with a string value
+            # TextValue is always present (defaulting to $null for toggle-only
+            # settings) — under Set-StrictMode, accessing a hashtable key that
+            # was never set at all throws "property ... cannot be found",
+            # which previously caused every toggle-only setting below to be
+            # silently skipped (see the catch block's "Skipped $settingName"
+            # message) even though the summary claimed all 12 were configured.
             $settingsMap = @{
-                "DesktopShortcut"    = @{ Pattern = "Desktop.*Shortcut";            Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1) }
-                "StartMenuShortcut"  = @{ Pattern = "Start.*Menu.*Shortcut";        Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1) }
-                "UpdatesAtLogon"     = @{ Pattern = "Updates.*at.*logon";           Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1) }
-                "BypassListForUsers" = @{ Pattern = "Bypass.*List";                 Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1) }
-                "DoNotUpdate"        = @{ Pattern = "Do.*not.*update";              Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1) }
-                "InstallUserContext" = @{ Pattern = "Install.*user.*context";       Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1) }
-                "RunOnMetered"       = @{ Pattern = "Run.*on.*metered";             Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1) }
-                "UseWhiteList"       = @{ Pattern = "Use.*White.*List";             Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1) }
+                "DesktopShortcut"    = @{ Pattern = "Desktop.*Shortcut";            Enabled = ($WAUConfig.Settings.DesktopShortcut -eq 1);    TextValue = $null }
+                "StartMenuShortcut"  = @{ Pattern = "Start.*Menu.*Shortcut";        Enabled = ($WAUConfig.Settings.StartMenuShortcut -eq 1);  TextValue = $null }
+                "UpdatesAtLogon"     = @{ Pattern = "Updates.*at.*logon";           Enabled = ($WAUConfig.Settings.UpdatesAtLogon -eq 1);      TextValue = $null }
+                "BypassListForUsers" = @{ Pattern = "Bypass.*List";                 Enabled = ($WAUConfig.Settings.BypassListForUsers -eq 1);  TextValue = $null }
+                "DoNotUpdate"        = @{ Pattern = "Do.*not.*update";              Enabled = ($WAUConfig.Settings.DoNotUpdate -eq 1);         TextValue = $null }
+                "InstallUserContext" = @{ Pattern = "Install.*user.*context";       Enabled = ($WAUConfig.Settings.InstallUserContext -eq 1);  TextValue = $null }
+                "RunOnMetered"       = @{ Pattern = "Run.*on.*metered";             Enabled = ($WAUConfig.Settings.RunOnMetered -eq 1);        TextValue = $null }
+                "UseWhiteList"       = @{ Pattern = "Use.*White.*List";             Enabled = ($WAUConfig.Settings.UseWhiteList -eq 1);        TextValue = $null }
                 "NotificationLevel"  = @{ Pattern = "Notification.*level";          Enabled = $true; TextValue = $WAUConfig.Settings.NotificationLevel }
                 "UpdatesAtTime"      = @{ Pattern = "Update.*at.*time";             Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesAtTime }
                 "UpdatesInterval"    = @{ Pattern = "Update.*frequency|interval";   Enabled = $true; TextValue = $WAUConfig.Settings.UpdatesInterval }
@@ -718,9 +812,14 @@ function Start-WAUDeployment {
     if (!$prereqResult.Success) {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        if ($ResultPath) {
+            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        if (!$script:NonInteractive) {
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+        }
         return
     }
 
@@ -729,18 +828,23 @@ function Start-WAUDeployment {
     Write-Host "  STEP 2: Preview" -ForegroundColor Yellow
     Show-WAUPreview
 
-    # Confirmation
-    Write-Host "  [Y] Deploy WAU with configuration  [N] Cancel" -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Deploy Winget Auto Update? (Y/N)"
+    # Confirmation (skipped in unattended mode)
+    if ($script:NonInteractive) {
+        Write-Host "  Non-interactive mode: proceeding without confirmation" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "  [Y] Deploy WAU with configuration  [N] Cancel" -ForegroundColor Gray
+        Write-Host ""
+        $confirm = Read-Host "  Deploy Winget Auto Update? (Y/N)"
 
-    if ($confirm -notlike "Y*") {
-        Write-Host ""
-        Write-Host "  Cancelled by user" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
-        return
+        if ($confirm -notlike "Y*") {
+            Write-Host ""
+            Write-Host "  Cancelled by user" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+            try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+            return
+        }
     }
 
     # Step 3: Deploy
@@ -862,8 +966,24 @@ function Start-WAUDeployment {
     Write-Host "    4. Monitor WAU logs: C:\ProgramData\Winget-AutoUpdate\Logs" -ForegroundColor Gray
     Write-Host ""
 
-    Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
-    try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    # Machine-readable results for CI runners
+    if ($ResultPath) {
+        @{
+            Success        = ($results.AdmxImported -and $results.AppDeployed -and $results.ConfigDeployed -and $results.Errors.Count -eq 0)
+            AdmxImported   = $results.AdmxImported
+            AdmxId         = $results.AdmxId
+            AppDeployed    = $results.AppDeployed
+            ConfigDeployed = $results.ConfigDeployed
+            Errors         = @($results.Errors)
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
 }
 
 # ============================================================================
