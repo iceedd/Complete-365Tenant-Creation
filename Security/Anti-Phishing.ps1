@@ -135,6 +135,23 @@ function Test-Prerequisites {
     return @{ Success = $true }
 }
 
+# Get-AcceptedDomain can transiently fail with "A server side error has
+# occurred ... Please try again after some time. If the problem still
+# persists, please reach out to MS support." (confirmed live in the full
+# E2E sweep — the call sat for 60s then threw, sinking the whole policy
+# configuration) — do as the error says and retry before giving up.
+function Get-AcceptedDomainNames {
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try { return (Get-AcceptedDomain -ErrorAction Stop).Name }
+        catch {
+            if ($attempt -eq $maxAttempts) { throw }
+            Write-Host "     Could not list accepted domains — retrying in 20s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+            Start-Sleep -Seconds 20
+        }
+    }
+}
+
 # Create Anti-Phishing Policy
 function New-AntiPhishingConfiguration {
     Write-Host ""
@@ -221,7 +238,7 @@ function New-AntiPhishingConfiguration {
             # associated with it" — treat that specific conflict as success
             # rather than a real failure, since the end state (the rule
             # exists) is exactly what was requested.
-            $acceptedDomains = (Get-AcceptedDomain).Name
+            $acceptedDomains = Get-AcceptedDomainNames
             $maxAttempts = 6
             for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
                 try {

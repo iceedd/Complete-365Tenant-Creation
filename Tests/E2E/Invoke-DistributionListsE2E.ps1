@@ -97,6 +97,22 @@ $conn = Get-ConnectionInformation
 if (!$conn -or $conn.State -ne 'Connected') { throw "Expected Connected state, got $($conn.State)" }
 Write-Host "  Connected to $($conn.Organization)" -ForegroundColor Green
 
+# Pre-clean any stray leftover from a previous run's incomplete cleanup —
+# a lingering list makes the first run report "skipped" instead of
+# "created" and fails the assertion (confirmed live in the full-sweep run).
+Write-Host "`n== Pre-cleaning any stray E2E distribution list ==" -ForegroundColor Cyan
+try {
+    if (Get-DistributionGroup -Identity $E2EMailNickname -ErrorAction SilentlyContinue) {
+        Remove-DistributionGroup -Identity $E2EMailNickname -Confirm:$false -ErrorAction Stop
+        Write-Host "  Removed stray list $E2EMailNickname" -ForegroundColor Gray
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            if (!(Get-DistributionGroup -Identity $E2EMailNickname -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Seconds 10
+        }
+    }
+}
+catch { Write-Host "  (no stray list to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
+
 try {
     # ========================================================================
     # Execute the real script, unattended, in this session
