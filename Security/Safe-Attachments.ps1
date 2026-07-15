@@ -159,7 +159,10 @@ function New-SafeAttachmentsConfiguration {
             # (confirmed live: "A parameter cannot be found that matches
             # parameter name 'ActionOnError'" — it doesn't exist on this
             # cmdlet at all, per Microsoft Learn's documented parameter set).
-            Set-SafeAttachmentPolicy -Identity $safeAttachPolicyName `
+            # $null = : Set-* can emit the updated object, corrupting this
+            # function's hashtable return under strict mode (confirmed live:
+            # the identical crash hit the Set-SafeLinksPolicy update path).
+            $null = Set-SafeAttachmentPolicy -Identity $safeAttachPolicyName `
                 -Enable $true `
                 -Action DynamicDelivery `
                 -Redirect $false
@@ -267,7 +270,11 @@ function New-SafeLinksConfiguration {
             # top-level enabled toggle; enabling happens via the rule's
             # own -Enabled parameter instead, per Microsoft Learn's
             # documented parameter set).
-            Set-SafeLinksPolicy -Identity $safeLinksPolicyName `
+            # $null = : Set-SafeLinksPolicy emits the updated policy object
+            # on this path (confirmed live — it corrupted this function's
+            # hashtable return and crashed the caller's .Success read under
+            # strict mode).
+            $null = Set-SafeLinksPolicy -Identity $safeLinksPolicyName `
                 -EnableSafeLinksForEmail $true `
                 -EnableSafeLinksForTeams $true `
                 -EnableSafeLinksForOffice $true `

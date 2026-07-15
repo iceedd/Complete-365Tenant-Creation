@@ -359,11 +359,22 @@ function Start-ArchivePolicies {
 
     # Get mailbox count
     Write-Host "   Retrieving mailboxes..." -ForegroundColor Gray
-    $allMailboxes = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
-
+    # Get-Mailbox intermittently returns nothing (transient EXO directory
+    # flake, confirmed live: the same UPN filter that had just matched a
+    # mailbox returned 0 rows on an immediate re-run) — retry before
+    # concluding the tenant is empty.
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $allMailboxes = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited -ErrorAction SilentlyContinue)
+        if (@($script:RunConfig.MailboxUPNs).Count -gt 0) {
+            $upnFilter = @($script:RunConfig.MailboxUPNs)
+            $allMailboxes = @($allMailboxes | Where-Object { $upnFilter -contains $_.UserPrincipalName })
+        }
+        if ($allMailboxes.Count -gt 0 -or $attempt -eq $maxAttempts) { break }
+        Write-Host "   No mailboxes returned — retrying in 15s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+        Start-Sleep -Seconds 15
+    }
     if (@($script:RunConfig.MailboxUPNs).Count -gt 0) {
-        $upnFilter = @($script:RunConfig.MailboxUPNs)
-        $allMailboxes = @($allMailboxes | Where-Object { $upnFilter -contains $_.UserPrincipalName })
         Write-Host "   Restricting to $($allMailboxes.Count) mailbox(es) via MailboxUPNs config" -ForegroundColor Gray
     }
 

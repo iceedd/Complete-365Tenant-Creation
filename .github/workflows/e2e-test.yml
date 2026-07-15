@@ -64,6 +64,11 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          # Security-Groups.ps1 imports Identity.DirectoryManagement — it must be
+          # installed fresh alongside Authentication, or the runner's pre-installed
+          # copy (built against an older Authentication assembly) fails to import
+          # with "Assembly with same name is already loaded" (confirmed live).
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
 
       - name: Import auth certificate
         shell: pwsh
@@ -242,6 +247,11 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
           Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          # Security-Groups.ps1 imports Identity.DirectoryManagement — it must be
+          # installed fresh alongside Authentication, or the runner's pre-installed
+          # copy (built against an older Authentication assembly) fails to import
+          # with "Assembly with same name is already loaded" (confirmed live).
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
 
       - name: Import auth certificate
         shell: pwsh

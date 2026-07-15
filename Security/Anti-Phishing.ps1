@@ -153,7 +153,10 @@ function New-AntiPhishingConfiguration {
             Write-Host "   Anti-phishing policy '$policyName' already exists" -ForegroundColor Yellow
             Write-Host "   Updating existing policy..." -ForegroundColor Cyan
 
-            Set-AntiPhishPolicy -Identity $policyName `
+            # $null = : Set-* can emit the updated object, corrupting this
+            # function's hashtable return under strict mode (confirmed live
+            # on Set-SafeLinksPolicy's identical update path).
+            $null = Set-AntiPhishPolicy -Identity $policyName `
                 -Enabled $true `
                 -EnableSpoofIntelligence $true `
                 -EnableMailboxIntelligence $true `

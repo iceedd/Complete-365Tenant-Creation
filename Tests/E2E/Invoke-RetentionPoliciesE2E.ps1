@@ -38,7 +38,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot   = $PSScriptRoot | Split-Path | Split-Path
-$E2EPrefix  = "E2E-"
+# Unique per-run prefix: Purview deletes retention policies ASYNCHRONOUSLY —
+# a removed policy lingers in "pending deletion" for a while (confirmed live:
+# ErrorCannotRemovePendingDeletionRuleException / PolicyLockConflictException)
+# and still shows up to Get-RetentionCompliancePolicy, so a fixed name makes
+# the next run "skip existing" instead of creating. A per-run suffix keeps
+# runs independent; fully-deleted leftovers disappear on their own.
+$E2EPrefix  = "E2E-$([guid]::NewGuid().ToString('n').Substring(0, 6))-"
 $PolicyName = "${E2EPrefix}7 Year Archive"
 $RuleName   = "${E2EPrefix}7 Year Archive Rule"
 
@@ -135,22 +141,23 @@ Connect-IPPSSession -AppId $AppId -CertificateThumbprint $CertificateThumbprint 
 $null = Get-RetentionCompliancePolicy -ErrorAction Stop | Select-Object -First 1
 Write-Host "  Connected to Security & Compliance Center" -ForegroundColor Green
 
-# Pre-clean any stray leftovers from a previous run's incomplete cleanup.
-Write-Host "`n== Pre-cleaning any stray E2E policy/rule ==" -ForegroundColor Cyan
+# Pre-clean stray leftovers from previous runs' incomplete cleanups. The
+# prefix is unique per run, so sweep every E2E-* retention policy best-effort
+# instead of one fixed name; ones stuck in pending deletion can't be removed
+# (Purview's async delete) and are simply left to age out.
+Write-Host "`n== Pre-cleaning any stray E2E policies/rules ==" -ForegroundColor Cyan
 try {
-    if (Get-RetentionComplianceRule -Identity $RuleName -ErrorAction SilentlyContinue) {
-        Remove-RetentionComplianceRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
-        Write-Host "  Removed stray rule $RuleName" -ForegroundColor Gray
+    $strays = @(Get-RetentionCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'E2E-*' })
+    foreach ($stray in $strays) {
+        try {
+            Remove-RetentionCompliancePolicy -Identity $stray.Name -Confirm:$false -ErrorAction Stop
+            Write-Host "  Removed stray policy $($stray.Name)" -ForegroundColor Gray
+        }
+        catch { Write-Host "  (stray policy $($stray.Name) not removable yet: $($_.Exception.Message))" -ForegroundColor Gray }
     }
+    if ($strays.Count -eq 0) { Write-Host "  No stray E2E policies found" -ForegroundColor Gray }
 }
-catch { Write-Host "  (no stray rule to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
-try {
-    if (Get-RetentionCompliancePolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
-        Remove-RetentionCompliancePolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
-        Write-Host "  Removed stray policy $PolicyName" -ForegroundColor Gray
-    }
-}
-catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
+catch { Write-Host "  (stray sweep failed: $($_.Exception.Message))" -ForegroundColor Gray }
 
 try {
     # ========================================================================
