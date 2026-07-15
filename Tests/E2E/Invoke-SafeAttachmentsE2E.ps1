@@ -74,6 +74,22 @@ function Wait-ForRule {
     return $null
 }
 
+function Wait-ForObjectGone {
+    <#
+    .SYNOPSIS
+        Polls until a Get-* probe stops returning an object — Defender
+        deletions are also eventually consistent (confirmed live in the
+        Anti-Phishing E2E: Get-AntiPhishRule still returned a rule 6 seconds
+        after it was deleted, making the script under test skip creation).
+    #>
+    param([scriptblock]$Probe, [int]$MaxAttempts = 12, [int]$DelaySeconds = 10)
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if (-not (& $Probe)) { return $true }
+        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $DelaySeconds }
+    }
+    return $false
+}
+
 # ============================================================================
 # Connect
 # ============================================================================
@@ -97,6 +113,9 @@ foreach ($cleanup in @(
         if (& $cleanup.Get) {
             & $cleanup.Remove
             Write-Host "  Removed stray $($cleanup.Name)" -ForegroundColor Gray
+            if (!(Wait-ForObjectGone -Probe $cleanup.Get)) {
+                Write-Host "  WARNING: deleted $($cleanup.Name) still visible after wait — run may misbehave" -ForegroundColor Yellow
+            }
         }
     }
     catch { Write-Host "  (no stray $($cleanup.Name) to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
@@ -133,7 +152,7 @@ try {
     # Independently verify tenant state
     # ========================================================================
     Write-Host "`n== Verifying Safe Attachments policy/rule in tenant ==" -ForegroundColor Cyan
-    $saPolicy = Get-SafeAttachmentPolicy -Identity $SAPolicyName -ErrorAction SilentlyContinue
+    $saPolicy = Wait-ForRule -GetRule { Get-SafeAttachmentPolicy -Identity $SAPolicyName -ErrorAction SilentlyContinue }
     Write-Result ([bool]$saPolicy) "$SAPolicyName exists"
     if ($saPolicy) {
         Write-Result ($saPolicy.Enable -eq $true) "$SAPolicyName is enabled"
@@ -146,7 +165,7 @@ try {
     }
 
     Write-Host "`n== Verifying Safe Links policy/rule in tenant ==" -ForegroundColor Cyan
-    $slPolicy = Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue
+    $slPolicy = Wait-ForRule -GetRule { Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue }
     Write-Result ([bool]$slPolicy) "$SLPolicyName exists"
     if ($slPolicy) {
         # Safe Links policies have no top-level enabled toggle (confirmed
@@ -188,7 +207,10 @@ finally {
         @{ Get = { Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeLinksPolicy -Identity $SLPolicyName -Confirm:$false -ErrorAction Stop }; Name = $SLPolicyName }
     )) {
         try {
-            if (& $cleanup.Get) {
+            # Poll before concluding there's nothing to delete — an object
+            # created seconds ago by the second run may not be visible yet,
+            # and skipping it here seeds the next run's stray.
+            if (Wait-ForRule -GetRule $cleanup.Get) {
                 & $cleanup.Remove
                 Write-Host "  Deleted $($cleanup.Name)" -ForegroundColor Gray
             }

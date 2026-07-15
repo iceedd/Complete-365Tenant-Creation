@@ -163,18 +163,33 @@ finally {
     # Cleanup — always runs
     # ========================================================================
     Write-Host "`n== Cleaning up E2E distribution list ==" -ForegroundColor Cyan
-    try {
-        if (Wait-ForDistributionGroup -Identity $E2EMailNickname -MaxAttempts 3 -DelaySeconds 10) {
-            Remove-DistributionGroup -Identity $E2EMailNickname -Confirm:$false -ErrorAction Stop
-            Write-Host "  Deleted group $E2EDisplayName" -ForegroundColor Gray
+    # Removal itself can fail transiently with "object ... couldn't be found
+    # on <DC>" while the group demonstrably exists — Exchange routes the
+    # delete to a domain controller the new object hasn't replicated to yet
+    # (confirmed live; that stray then broke the NEXT run). Retry the whole
+    # find-and-delete a few times before giving up.
+    $deleted = $false
+    for ($cleanupAttempt = 1; $cleanupAttempt -le 4 -and -not $deleted; $cleanupAttempt++) {
+        try {
+            if (Wait-ForDistributionGroup -Identity $E2EMailNickname -MaxAttempts 3 -DelaySeconds 10) {
+                Remove-DistributionGroup -Identity $E2EMailNickname -Confirm:$false -ErrorAction Stop
+                Write-Host "  Deleted group $E2EDisplayName" -ForegroundColor Gray
+            }
+            else {
+                Write-Host "  No group to delete" -ForegroundColor Gray
+            }
+            $deleted = $true
         }
-        else {
-            Write-Host "  No group to delete" -ForegroundColor Gray
+        catch {
+            if ($cleanupAttempt -lt 4) {
+                Write-Host "  Delete failed ($($_.Exception.Message)) — retrying in 15s ($cleanupAttempt/4)..." -ForegroundColor Gray
+                Start-Sleep -Seconds 15
+            }
+            else {
+                Write-Host "  WARNING: could not delete group $($E2EDisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "  Manually delete the '$E2EDisplayName' distribution list in the test tenant" -ForegroundColor Yellow
+            }
         }
-    }
-    catch {
-        Write-Host "  WARNING: could not delete group $($E2EDisplayName): $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "  Manually delete the '$E2EDisplayName' distribution list in the test tenant" -ForegroundColor Yellow
     }
 
     Remove-Item $DLConfigPath, $ResultPath -ErrorAction SilentlyContinue

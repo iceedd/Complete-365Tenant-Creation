@@ -50,23 +50,29 @@ function Write-Result {
     else       { Write-Host "  FAIL  $Message" -ForegroundColor Red; $script:failures++ }
 }
 
-function Wait-ForAntiPhishRule {
-    <#
-    .SYNOPSIS
-        Polls Get-AntiPhishRule with backoff — Exchange Online has a short
-        directory-replication lag between rule creation and the object being
-        consistently queryable (confirmed live: New-AntiPhishRule can
-        immediately-afterwards report "already has rule ... associated with
-        it" while Get-AntiPhishRule still returns nothing for that rule).
-    #>
-    param([string]$Identity, [int]$MaxAttempts = 6, [int]$DelaySeconds = 10)
-
+# Exchange Online Defender policy/rule reads are eventually consistent in
+# BOTH directions (confirmed live across full-sweep runs): a just-created
+# object can be invisible to Get-* for up to ~a minute, and a just-DELETED
+# object can keep appearing — one run's Get-AntiPhishRule still returned a
+# rule 6 seconds after the pre-clean deleted it, making the script skip rule
+# creation entirely. Every existence decision therefore polls.
+function Wait-ForDefenderObject {
+    param([scriptblock]$Probe, [int]$MaxAttempts = 6, [int]$DelaySeconds = 10)
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        $rule = Get-AntiPhishRule -Identity $Identity -ErrorAction SilentlyContinue
-        if ($rule) { return $rule }
+        $obj = & $Probe
+        if ($obj) { return $obj }
         if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $DelaySeconds }
     }
     return $null
+}
+
+function Wait-ForDefenderObjectGone {
+    param([scriptblock]$Probe, [int]$MaxAttempts = 12, [int]$DelaySeconds = 10)
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if (-not (& $Probe)) { return $true }
+        if ($attempt -lt $MaxAttempts) { Start-Sleep -Seconds $DelaySeconds }
+    }
+    return $false
 }
 
 # ============================================================================
@@ -86,6 +92,12 @@ try {
     if (Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue) {
         Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
         Write-Host "  Removed stray rule $RuleName" -ForegroundColor Gray
+        # Wait for the deletion to become visible — otherwise the script's
+        # own Get-AntiPhishRule can still see the deleted rule and wrongly
+        # skip rule creation (confirmed live).
+        if (!(Wait-ForDefenderObjectGone { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue })) {
+            Write-Host "  WARNING: deleted rule still visible after wait — run may misbehave" -ForegroundColor Yellow
+        }
     }
 }
 catch { Write-Host "  (no stray rule to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
@@ -93,6 +105,9 @@ try {
     if (Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
         Remove-AntiPhishPolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
         Write-Host "  Removed stray policy $PolicyName" -ForegroundColor Gray
+        if (!(Wait-ForDefenderObjectGone { Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue })) {
+            Write-Host "  WARNING: deleted policy still visible after wait — run may misbehave" -ForegroundColor Yellow
+        }
     }
 }
 catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
@@ -122,7 +137,7 @@ try {
     # Independently verify tenant state
     # ========================================================================
     Write-Host "`n== Verifying policy/rule in tenant ==" -ForegroundColor Cyan
-    $policy = Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue
+    $policy = Wait-ForDefenderObject { Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue }
     Write-Result ([bool]$policy) "$PolicyName exists"
     if ($policy) {
         Write-Result ($policy.Enabled -eq $true) "$PolicyName is enabled"
@@ -130,7 +145,7 @@ try {
         Write-Result ($policy.PhishThresholdLevel -eq 2) "$PolicyName has the expected phish threshold level"
     }
 
-    $rule = Wait-ForAntiPhishRule -Identity $RuleName
+    $rule = Wait-ForDefenderObject { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue }
     Write-Result ([bool]$rule) "$RuleName exists"
     if ($rule) {
         Write-Result ($rule.AntiPhishPolicy -eq $PolicyName) "$RuleName is linked to $PolicyName"
@@ -155,7 +170,10 @@ finally {
     # ========================================================================
     Write-Host "`n== Cleaning up E2E anti-phishing policy/rule ==" -ForegroundColor Cyan
     try {
-        if (Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue) {
+        # Poll before concluding there's nothing to delete — a rule created
+        # seconds ago by the second run may not be visible yet, and skipping
+        # it here seeds the next run's stray (confirmed live).
+        if (Wait-ForDefenderObject { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue }) {
             Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
             Write-Host "  Deleted rule $RuleName" -ForegroundColor Gray
         }

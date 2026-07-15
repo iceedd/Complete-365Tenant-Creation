@@ -294,8 +294,23 @@ function New-DistributionListFromConfig {
         return @{ Success = $true; Group = $newGroup }
     }
     catch {
-        Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
-        return @{ Success = $false; Error = $_.Exception.Message }
+        # Exchange Online directory reads are eventually consistent: the
+        # exists-check can miss a group created moments earlier, and the
+        # duplicate New-DistributionGroup then fails (confirmed live with
+        # 'Required field ExternalDirectoryObjectId was not returned from
+        # Graph API'). Re-check with polling before declaring failure — if
+        # the group is there, the requested end state already holds.
+        $creationError = $_.Exception.Message
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            $existing = Get-DistributionGroup -Identity $Config.PrimaryEmail -ErrorAction SilentlyContinue
+            if ($existing) {
+                Write-Host "     Already exists (detected after failed create — directory lag), skipping" -ForegroundColor Yellow
+                return @{ Success = $true; Skipped = $true; Group = $existing }
+            }
+            if ($attempt -lt 6) { Start-Sleep -Seconds 10 }
+        }
+        Write-Host "     Failed: $creationError" -ForegroundColor Red
+        return @{ Success = $false; Error = $creationError }
     }
 }
 
@@ -371,7 +386,14 @@ function Start-DistributionListCreation {
 
             $result = New-DistributionListFromConfig -Config $config
             if ($result.Success) {
-                $results.Created += $primaryEmail
+                # Skipped=$true means the create raced a group that already
+                # existed (directory lag) — report it as skipped, not created.
+                if ($result.ContainsKey('Skipped') -and $result.Skipped) {
+                    $results.Skipped += $primaryEmail
+                }
+                else {
+                    $results.Created += $primaryEmail
+                }
             }
             else {
                 $results.Failed += @{ Name = $primaryEmail; Error = $result.Error }
