@@ -302,10 +302,14 @@ function New-SharedMailboxItem {
             MessageCopyForSendOnBehalfEnabled = $true
         }
 
+        # $null = : any pipeline output here would corrupt this function's
+        # hashtable return value, and strict mode then crashes the caller's
+        # .Success read (confirmed live — the crash only appeared on runs
+        # where this retry path executed).
         $maxAttempts = 6
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
-                Set-Mailbox @configParams -ErrorAction Stop
+                $null = Set-Mailbox @configParams -ErrorAction Stop
                 break
             }
             catch {
@@ -387,7 +391,11 @@ function Start-SharedMailboxCreation {
                 Description  = if ($mbConfig.ContainsKey('Description')) { $mbConfig.Description } else { '' }
             }
 
-            $result = New-SharedMailboxItem -Config $config
+            # Select -Last 1: the hashtable return is always the function's
+            # LAST output, so this stays correct even if a cmdlet inside it
+            # leaks an object into the pipeline (defence-in-depth for the
+            # pollution class that has bitten several scripts).
+            $result = New-SharedMailboxItem -Config $config | Select-Object -Last 1
             if ($result.Success) {
                 $results.Created += $emailAddress
             }
@@ -448,7 +456,11 @@ function Start-SharedMailboxCreation {
             Write-Host ("   " + "-" * 50) -ForegroundColor Gray
             Write-Host "   $($config.DisplayName)..." -ForegroundColor White
 
-            $result = New-SharedMailboxItem -Config $config
+            # Select -Last 1: the hashtable return is always the function's
+            # LAST output, so this stays correct even if a cmdlet inside it
+            # leaks an object into the pipeline (defence-in-depth for the
+            # pollution class that has bitten several scripts).
+            $result = New-SharedMailboxItem -Config $config | Select-Object -Last 1
 
             if ($result.Success) {
                 $totalCreated++
