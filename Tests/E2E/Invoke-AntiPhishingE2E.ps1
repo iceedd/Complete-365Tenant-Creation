@@ -33,7 +33,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot   = $PSScriptRoot | Split-Path | Split-Path
-$E2EPrefix  = "E2E-"
+# Unique per-run prefix: Exchange Online Defender object reads are not
+# monotonic across sessions — a rule deleted by the pre-clean (and confirmed
+# gone by polling) was STILL returned to the script's own Get-*Rule seconds
+# later (confirmed live), so no amount of test-side waiting makes a reused
+# fixed name safe. A name that has never existed cannot produce stale reads.
+# Fully-deleted leftovers from older runs are swept best-effort below.
+$E2EPrefix  = "E2E-$([guid]::NewGuid().ToString('n').Substring(0, 6))-"
 $PolicyName = "${E2EPrefix}Default Anti-Phishing Policy"
 $RuleName   = "${E2EPrefix}Default Anti-Phishing Rule"
 
@@ -85,32 +91,21 @@ $conn = Get-ConnectionInformation
 if (!$conn -or $conn.State -ne 'Connected') { throw "Expected Connected state, got $($conn.State)" }
 Write-Host "  Connected to $($conn.Organization)" -ForegroundColor Green
 
-# Pre-clean any stray leftovers from a previous run's incomplete cleanup, so
-# this run's "created a new policy and rule" assertion is reliable.
-Write-Host "`n== Pre-cleaning any stray E2E policy/rule ==" -ForegroundColor Cyan
+# Sweep stray E2E-* leftovers from previous runs' incomplete cleanups. This
+# run's own names are unique, so strays can't break it — the sweep just
+# keeps the test tenant tidy, best-effort.
+Write-Host "`n== Sweeping stray E2E anti-phishing policies/rules ==" -ForegroundColor Cyan
 try {
-    if (Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue) {
-        Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
-        Write-Host "  Removed stray rule $RuleName" -ForegroundColor Gray
-        # Wait for the deletion to become visible — otherwise the script's
-        # own Get-AntiPhishRule can still see the deleted rule and wrongly
-        # skip rule creation (confirmed live).
-        if (!(Wait-ForDefenderObjectGone { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue })) {
-            Write-Host "  WARNING: deleted rule still visible after wait — run may misbehave" -ForegroundColor Yellow
-        }
+    foreach ($stray in @(Get-AntiPhishRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'E2E-*' })) {
+        try { Remove-AntiPhishRule -Identity $stray.Name -Confirm:$false -ErrorAction Stop; Write-Host "  Removed stray rule $($stray.Name)" -ForegroundColor Gray }
+        catch { Write-Host "  (stray rule $($stray.Name) not removable: $($_.Exception.Message))" -ForegroundColor Gray }
+    }
+    foreach ($stray in @(Get-AntiPhishPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'E2E-*' })) {
+        try { Remove-AntiPhishPolicy -Identity $stray.Name -Confirm:$false -ErrorAction Stop; Write-Host "  Removed stray policy $($stray.Name)" -ForegroundColor Gray }
+        catch { Write-Host "  (stray policy $($stray.Name) not removable: $($_.Exception.Message))" -ForegroundColor Gray }
     }
 }
-catch { Write-Host "  (no stray rule to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
-try {
-    if (Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
-        Remove-AntiPhishPolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
-        Write-Host "  Removed stray policy $PolicyName" -ForegroundColor Gray
-        if (!(Wait-ForDefenderObjectGone { Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue })) {
-            Write-Host "  WARNING: deleted policy still visible after wait — run may misbehave" -ForegroundColor Yellow
-        }
-    }
-}
-catch { Write-Host "  (no stray policy to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
+catch { Write-Host "  (stray sweep failed: $($_.Exception.Message))" -ForegroundColor Gray }
 
 try {
     # ========================================================================
@@ -169,27 +164,41 @@ finally {
     # Cleanup — always runs
     # ========================================================================
     Write-Host "`n== Cleaning up E2E anti-phishing policy/rule ==" -ForegroundColor Cyan
-    try {
-        # Poll before concluding there's nothing to delete — a rule created
-        # seconds ago by the second run may not be visible yet, and skipping
-        # it here seeds the next run's stray (confirmed live).
-        if (Wait-ForDefenderObject { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue }) {
-            Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
-            Write-Host "  Deleted rule $RuleName" -ForegroundColor Gray
+    # Both the find and the delete need retries: an object created seconds
+    # ago may not be visible yet (skipping it seeds a stray), and the delete
+    # itself can land on a domain controller the object hasn't replicated to
+    # ("couldn't be found on <DC>" for an object that demonstrably exists —
+    # both confirmed live).
+    $ruleDeleted = $false
+    for ($cleanupAttempt = 1; $cleanupAttempt -le 4 -and -not $ruleDeleted; $cleanupAttempt++) {
+        try {
+            if (Wait-ForDefenderObject { Get-AntiPhishRule -Identity $RuleName -ErrorAction SilentlyContinue } -MaxAttempts 3) {
+                Remove-AntiPhishRule -Identity $RuleName -Confirm:$false -ErrorAction Stop
+                Write-Host "  Deleted rule $RuleName" -ForegroundColor Gray
+            }
+            $ruleDeleted = $true
+        }
+        catch {
+            if ($cleanupAttempt -lt 4) { Write-Host "  Rule delete failed — retrying in 15s ($cleanupAttempt/4)..." -ForegroundColor Gray; Start-Sleep -Seconds 15 }
+            else { Write-Host "  WARNING: could not delete rule $($RuleName): $($_.Exception.Message)" -ForegroundColor Yellow }
         }
     }
-    catch {
-        Write-Host "  WARNING: could not delete rule $($RuleName): $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-    try {
-        if (Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
-            Remove-AntiPhishPolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
-            Write-Host "  Deleted policy $PolicyName" -ForegroundColor Gray
+    $policyDeleted = $false
+    for ($cleanupAttempt = 1; $cleanupAttempt -le 4 -and -not $policyDeleted; $cleanupAttempt++) {
+        try {
+            if (Get-AntiPhishPolicy -Identity $PolicyName -ErrorAction SilentlyContinue) {
+                Remove-AntiPhishPolicy -Identity $PolicyName -Confirm:$false -ErrorAction Stop
+                Write-Host "  Deleted policy $PolicyName" -ForegroundColor Gray
+            }
+            $policyDeleted = $true
         }
-    }
-    catch {
-        Write-Host "  WARNING: could not delete policy $($PolicyName): $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "  Manually delete the '$PolicyName' anti-phish policy in the test tenant" -ForegroundColor Yellow
+        catch {
+            if ($cleanupAttempt -lt 4) { Write-Host "  Policy delete failed — retrying in 15s ($cleanupAttempt/4)..." -ForegroundColor Gray; Start-Sleep -Seconds 15 }
+            else {
+                Write-Host "  WARNING: could not delete policy $($PolicyName): $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "  Manually delete the '$PolicyName' anti-phish policy in the test tenant" -ForegroundColor Yellow
+            }
+        }
     }
 
     Remove-Item $APConfigPath, $ResultPath -ErrorAction SilentlyContinue

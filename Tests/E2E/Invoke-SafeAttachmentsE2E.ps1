@@ -35,7 +35,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot  = $PSScriptRoot | Split-Path | Split-Path
-$E2EPrefix = "E2E-"
+# Unique per-run prefix: Exchange Online Defender object reads are not
+# monotonic across sessions — a rule deleted by the pre-clean (and confirmed
+# gone by polling) was STILL returned to the script's own Get-*Rule seconds
+# later (confirmed live), so no amount of test-side waiting makes a reused
+# fixed name safe. A name that has never existed cannot produce stale reads.
+# Fully-deleted leftovers from older runs are swept best-effort below.
+$E2EPrefix    = "E2E-$([guid]::NewGuid().ToString('n').Substring(0, 6))-"
 
 $SAPolicyName = "${E2EPrefix}Default Safe Attachments Policy"
 $SARuleName   = "${E2EPrefix}Default Safe Attachments Rule"
@@ -103,22 +109,21 @@ Write-Host "  Connected to $($conn.Organization)" -ForegroundColor Green
 # Pre-clean any stray leftovers from a previous run's incomplete cleanup, so
 # this run's "created a new policy and rule" assertions are reliable.
 Write-Host "`n== Pre-cleaning any stray E2E policies/rules ==" -ForegroundColor Cyan
-foreach ($cleanup in @(
-    @{ Get = { Get-SafeAttachmentRule -Identity $SARuleName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeAttachmentRule -Identity $SARuleName -Confirm:$false -ErrorAction Stop }; Name = $SARuleName }
-    @{ Get = { Get-SafeAttachmentPolicy -Identity $SAPolicyName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeAttachmentPolicy -Identity $SAPolicyName -Confirm:$false -ErrorAction Stop }; Name = $SAPolicyName }
-    @{ Get = { Get-SafeLinksRule -Identity $SLRuleName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeLinksRule -Identity $SLRuleName -Confirm:$false -ErrorAction Stop }; Name = $SLRuleName }
-    @{ Get = { Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeLinksPolicy -Identity $SLPolicyName -Confirm:$false -ErrorAction Stop }; Name = $SLPolicyName }
+# This run's own names are unique per run, so strays can't break it — the
+# sweep just keeps the test tenant tidy, best-effort.
+foreach ($sweep in @(
+    @{ List = { Get-SafeAttachmentRule -ErrorAction SilentlyContinue };   Remove = { param($n) Remove-SafeAttachmentRule -Identity $n -Confirm:$false -ErrorAction Stop };   Kind = 'Safe Attachments rule' }
+    @{ List = { Get-SafeAttachmentPolicy -ErrorAction SilentlyContinue }; Remove = { param($n) Remove-SafeAttachmentPolicy -Identity $n -Confirm:$false -ErrorAction Stop }; Kind = 'Safe Attachments policy' }
+    @{ List = { Get-SafeLinksRule -ErrorAction SilentlyContinue };        Remove = { param($n) Remove-SafeLinksRule -Identity $n -Confirm:$false -ErrorAction Stop };        Kind = 'Safe Links rule' }
+    @{ List = { Get-SafeLinksPolicy -ErrorAction SilentlyContinue };      Remove = { param($n) Remove-SafeLinksPolicy -Identity $n -Confirm:$false -ErrorAction Stop };      Kind = 'Safe Links policy' }
 )) {
     try {
-        if (& $cleanup.Get) {
-            & $cleanup.Remove
-            Write-Host "  Removed stray $($cleanup.Name)" -ForegroundColor Gray
-            if (!(Wait-ForObjectGone -Probe $cleanup.Get)) {
-                Write-Host "  WARNING: deleted $($cleanup.Name) still visible after wait — run may misbehave" -ForegroundColor Yellow
-            }
+        foreach ($stray in @((& $sweep.List) | Where-Object { $_.Name -like 'E2E-*' })) {
+            try { & $sweep.Remove $stray.Name; Write-Host "  Removed stray $($sweep.Kind) $($stray.Name)" -ForegroundColor Gray }
+            catch { Write-Host "  (stray $($sweep.Kind) $($stray.Name) not removable: $($_.Exception.Message))" -ForegroundColor Gray }
         }
     }
-    catch { Write-Host "  (no stray $($cleanup.Name) to remove, or removal failed: $($_.Exception.Message))" -ForegroundColor Gray }
+    catch { Write-Host "  (stray $($sweep.Kind) sweep failed: $($_.Exception.Message))" -ForegroundColor Gray }
 }
 
 try {
@@ -206,18 +211,26 @@ finally {
         @{ Get = { Get-SafeLinksRule -Identity $SLRuleName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeLinksRule -Identity $SLRuleName -Confirm:$false -ErrorAction Stop }; Name = $SLRuleName }
         @{ Get = { Get-SafeLinksPolicy -Identity $SLPolicyName -ErrorAction SilentlyContinue }; Remove = { Remove-SafeLinksPolicy -Identity $SLPolicyName -Confirm:$false -ErrorAction Stop }; Name = $SLPolicyName }
     )) {
+        # Both the find and the delete need retries: an object created
+        # seconds ago may not be visible yet, and the delete itself can land
+        # on a domain controller the object hasn't replicated to ("couldn't
+        # be found on <DC>" — both confirmed live).
+        $itemDone = $false
+        for ($cleanupAttempt = 1; $cleanupAttempt -le 4 -and -not $itemDone; $cleanupAttempt++) {
         try {
-            # Poll before concluding there's nothing to delete — an object
-            # created seconds ago by the second run may not be visible yet,
-            # and skipping it here seeds the next run's stray.
-            if (Wait-ForRule -GetRule $cleanup.Get) {
+            if (Wait-ForRule -GetRule $cleanup.Get -MaxAttempts 3) {
                 & $cleanup.Remove
                 Write-Host "  Deleted $($cleanup.Name)" -ForegroundColor Gray
             }
+            $itemDone = $true
         }
         catch {
-            Write-Host "  WARNING: could not delete $($cleanup.Name): $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "  Manually delete '$($cleanup.Name)' in the test tenant" -ForegroundColor Yellow
+            if ($cleanupAttempt -lt 4) { Write-Host "  Delete of $($cleanup.Name) failed — retrying in 15s ($cleanupAttempt/4)..." -ForegroundColor Gray; Start-Sleep -Seconds 15 }
+            else {
+                Write-Host "  WARNING: could not delete $($cleanup.Name): $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "  Manually delete '$($cleanup.Name)' in the test tenant" -ForegroundColor Yellow
+            }
+        }
         }
     }
 

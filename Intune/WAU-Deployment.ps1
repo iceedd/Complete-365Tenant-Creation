@@ -562,8 +562,24 @@ function New-WAUStoreApp {
                 )
             }
 
+            # A just-created Store app can transiently reject its first
+            # /assign call with 400 BadRequest while Intune finishes
+            # provisioning it (confirmed live: identical call succeeded in
+            # four consecutive CI runs, then failed once seconds after app
+            # creation) — retry before treating it as a real failure.
             $assignUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($newApp.id)/assign"
-            $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10)
+            $maxAttempts = 5
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                try {
+                    $null = Invoke-MgGraphRequest -Uri $assignUri -Method POST -Body ($assignmentBody | ConvertTo-Json -Depth 10) -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($attempt -eq $maxAttempts) { throw }
+                    Write-Host "     Assignment not accepted yet ($($_.Exception.Message)) — retrying in 15s ($attempt/$maxAttempts)..." -ForegroundColor Gray
+                    Start-Sleep -Seconds 15
+                }
+            }
             Write-Host "     Assigned to $TargetGroup (Required)" -ForegroundColor Green
         }
 
