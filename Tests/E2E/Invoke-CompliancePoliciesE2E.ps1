@@ -40,6 +40,22 @@ $PolicyConfigPath = Join-Path $PSScriptRoot 'compliance-policies.e2e.json'
 $GroupResultPath  = Join-Path ([IO.Path]::GetTempPath()) "dg-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 $PolicyResultPath = Join-Path ([IO.Path]::GetTempPath()) "cp-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 
+# Compliance-Policies.ps1's Get-PolicyDefinitions downloads
+# CompliancePolicies_Complete.json from GitHub (defaulting to
+# $Global:GitHubBranch = "main" when unset — only Main-Menu.ps1 normally
+# sets this), so invoking it directly here would silently test whatever
+# policy JSON is on main, not this branch's checked-out copy. Confirmed
+# live: this is what made the earlier Windows-policy-trim run look like a
+# read-after-write consistency bug — it was actually reconciling against
+# main's still-untrimmed definition the whole time. Point it at this run's
+# actual branch so JSON-only changes are covered too.
+$Global:GitHubRepo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'iceedd/Complete-365Tenant-Creation' }
+$Global:GitHubBranch = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME }
+    elseif ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF }
+    else { (git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null) }
+if (!$Global:GitHubBranch) { $Global:GitHubBranch = 'main' }
+Write-Host "Using GitHub branch '$Global:GitHubBranch' for policy definition downloads" -ForegroundColor Gray
+
 $policyConfig = Get-Content $PolicyConfigPath -Raw | ConvertFrom-Json
 $E2EPrefix = $policyConfig.NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
@@ -142,13 +158,6 @@ try {
             Write-Host "        failed policy: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
         }
     }
-
-    # A PATCH that reports success can still read back stale values seconds
-    # later (confirmed live: bitLockerEnabled/osMinimumVersion read fresh
-    # immediately, passwordRequired/storageRequireEncryption did not) — the
-    # same read-after-write lag seen elsewhere in this tenant's Graph APIs.
-    Write-Host "`n== Waiting 20s for PATCH to become read-consistent ==" -ForegroundColor Cyan
-    Start-Sleep -Seconds 20
 
     # ========================================================================
     # Independently verify tenant state via Graph. Uses Invoke-MgGraphRequest

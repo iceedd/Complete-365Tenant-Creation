@@ -41,6 +41,21 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot         = $PSScriptRoot | Split-Path | Split-Path
 $GroupConfigPath  = Join-Path $PSScriptRoot 'device-groups.e2e.json'
 $PolicyConfigPath = Join-Path $PSScriptRoot 'configuration-policies.e2e.json'
+
+# Configuration-Policies.ps1's Get-PolicyDefinitions downloads
+# AllPolicies_Complete.json from GitHub (defaulting to $Global:GitHubBranch =
+# "main" when unset — only Main-Menu.ps1 normally sets this), so invoking it
+# directly here would silently test whatever policy JSON is currently on
+# main, not this branch's checked-out copy (confirmed live: a policy added
+# only on this branch never appeared — "Loaded 18 policy definitions" instead
+# of 19, no download error, no local-fallback message, just silently stale).
+# Point it at this run's actual branch so JSON-only changes are covered too.
+$Global:GitHubRepo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'iceedd/Complete-365Tenant-Creation' }
+$Global:GitHubBranch = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME }
+    elseif ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF }
+    else { (git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null) }
+if (!$Global:GitHubBranch) { $Global:GitHubBranch = 'main' }
+Write-Host "Using GitHub branch '$Global:GitHubBranch' for policy definition downloads" -ForegroundColor Gray
 $GroupResultPath  = Join-Path ([IO.Path]::GetTempPath()) "dg-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 $PolicyResultPath = Join-Path ([IO.Path]::GetTempPath()) "cfp-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 
