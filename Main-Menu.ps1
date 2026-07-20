@@ -9,6 +9,13 @@
 .AUTHOR
     BITS
 .VERSION
+    2.1 - Fix Connect-SharePointOnline: import the SPO module with
+          -UseWindowsPowerShell (it's Windows PowerShell-only) and install it
+          via a real powershell.exe process rather than PS7's Install-Module,
+          which lands in a module path the -UseWindowsPowerShell compat
+          session can't see. Previously this failed silently and every
+          SharePoint script would then report "Not connected to SharePoint
+          Online" despite the menu showing SharePoint as available.
     2.0
 #>
 
@@ -16,7 +23,7 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Script version — compared against GitHub on startup for self-update
-$Script:MenuVersion = "2.0"
+$Script:MenuVersion = "2.1"
 
 # Global Variables
 $Global:TenantConnection = $null
@@ -1513,20 +1520,47 @@ function Connect-SharePointOnline {
             return $false
         }
 
-        # Best-effort: also connect the SPO module for scripts that use SPO cmdlets
-        if (!(Get-Module -ListAvailable -Name 'Microsoft.Online.SharePoint.PowerShell')) {
-            Write-Host "   Installing Microsoft.Online.SharePoint.PowerShell..." -ForegroundColor Yellow
-            Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
+        # Best-effort: also connect the SPO module for scripts that use SPO cmdlets.
+        # The SPO Management Shell is Windows PowerShell-only — Microsoft's own
+        # docs require importing it with -UseWindowsPowerShell from PS7, and that
+        # compatibility session only sees modules installed via a REAL Windows
+        # PowerShell process. Install-Module run from pwsh (as this used to do)
+        # lands in a different module path the compat session can't see, so
+        # Connect-SPOService silently never becomes available — every SharePoint
+        # script's own Get-SPOTenant probe then fails with "Not connected to
+        # SharePoint Online" even though this function still returns $true
+        # (confirmed live). Shell out to powershell.exe for the install instead.
+        if (!$IsWindows) {
+            Write-Host "   ⚠️  SharePoint Online module requires Windows — skipping (site creation/sharing cmdlets will not work on this OS)" -ForegroundColor Yellow
         }
-        try {
-            Import-Module Microsoft.Online.SharePoint.PowerShell -Force -ErrorAction Stop
-            try { Disconnect-SPOService -ErrorAction Stop } catch {}
-            Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
-            Write-Host "   SPO module: connected" -ForegroundColor Green
-        }
-        catch {
-            Write-Host "   ⚠️  SPO module unavailable — site creation/sharing cmdlets will not work" -ForegroundColor Yellow
-            Write-Host "      To fix: ensure the 'SharePoint Online Remote PowerShell' app is consented in your tenant" -ForegroundColor Gray
+        else {
+            try {
+                # Single-quoted here-string: no interpolation, so $_ reaches
+                # the child powershell.exe process literally.
+                $installScript = @'
+try {
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Online.SharePoint.PowerShell)) {
+        Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    }
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+'@
+                powershell.exe -NoProfile -NonInteractive -Command $installScript 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell module install failed (exit $LASTEXITCODE)" }
+
+                Import-Module Microsoft.Online.SharePoint.PowerShell -UseWindowsPowerShell -WarningAction SilentlyContinue -ErrorAction Stop
+                try { Disconnect-SPOService -ErrorAction Stop } catch {}
+                Connect-SPOService -Url $spoAdminUrl -ErrorAction Stop
+                Write-Host "   SPO module: connected" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "   ⚠️  SPO module unavailable — site creation/sharing cmdlets will not work" -ForegroundColor Yellow
+                Write-Host "      $($_.Exception.Message)" -ForegroundColor Gray
+                Write-Host "      To fix: ensure the 'SharePoint Online Remote PowerShell' app is consented in your tenant" -ForegroundColor Gray
+            }
         }
 
         return $true

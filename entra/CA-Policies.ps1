@@ -9,6 +9,9 @@
 .AUTHOR
     BITS
 .VERSION
+    2.2 - Auto-create the UK named location when the CA-GEO groups exist (so
+          C007 geo-blocking is actually provisioned instead of silently
+          skipped) and add C008 - Block Device Code Flow.
     2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing. 2.0 standardized UX with preview mode and auto-fix.
 .PARAMETER NonInteractive
@@ -209,22 +212,46 @@ function Test-Prerequisites {
         Write-Host "   Geo groups not found - C007 (Block Outside UK) will be skipped" -ForegroundColor Yellow
     }
 
-    # Check for UK named location (optional — C007 skipped if missing)
-    Write-Host "   Checking for UK named location (optional)..." -ForegroundColor Gray
+    # Check for UK named location — created automatically when the geo groups
+    # exist but the location doesn't, so C007 no longer silently depends on a
+    # manual prerequisite. Prefix-aware so E2E runs create/clean "E2E-UK"
+    # while production (empty prefix) gets "UK".
+    Write-Host "   Checking for UK named location..." -ForegroundColor Gray
+    $locationName = "$($script:RunConfig.NamePrefix)UK"
     $ukLocation = $null
     try {
         $locations = Invoke-MgGraphRequest -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" `
             -ErrorAction Stop
-        $ukLocation = $locations.value | Where-Object { $_.displayName -eq "UK" } | Select-Object -First 1
+        $ukLocation = $locations.value | Where-Object { $_.displayName -eq $locationName } | Select-Object -First 1
     }
     catch { }
 
     if ($ukLocation) {
         Write-Host "   UK named location found (ID: $($ukLocation.id))" -ForegroundColor Green
     }
+    elseif ($geoUkGroup -and $geoIntlGroup) {
+        Write-Host "   Creating named location '$locationName' (United Kingdom)..." -ForegroundColor Gray
+        try {
+            $ukLocation = Invoke-MgGraphRequest -Method POST `
+                -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" `
+                -ContentType 'application/json' `
+                -Body (@{
+                    '@odata.type'                     = '#microsoft.graph.countryNamedLocation'
+                    displayName                       = $locationName
+                    countriesAndRegions               = @('GB')
+                    includeUnknownCountriesAndRegions = $false
+                } | ConvertTo-Json) -ErrorAction Stop
+            Write-Host "   Created named location '$locationName' (ID: $($ukLocation.id))" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   Could not create named location: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "   C007 will be skipped" -ForegroundColor Yellow
+            $ukLocation = $null
+        }
+    }
     else {
-        Write-Host "   UK named location not found - C007 will be skipped" -ForegroundColor Yellow
+        Write-Host "   Geo groups absent - named location not needed, C007 will be skipped" -ForegroundColor Yellow
     }
 
     Write-Host ""
@@ -503,6 +530,29 @@ function Get-PolicyDefinitions {
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("exchangeActiveSync", "other")
+                users = @{
+                    includeUsers = @("All")
+                    excludeGroups = @($NoMfaGroupId)
+                }
+            }
+            grantControls = @{
+                builtInControls = @("block")
+                operator = "OR"
+            }
+        },
+        @{
+            displayName = "C008 - Block Device Code Flow"
+            state = $PolicyState
+            conditions = @{
+                applications = @{ includeApplications = @("All") }
+                clientAppTypes = @("all")
+                # Device code flow is a common phishing vector and legitimate
+                # use is rare. Safe for this repo's own tooling: interactive
+                # runs sign in via browser (never device code — verified: no
+                # script uses -UseDeviceCode/-DeviceCode), and CI uses
+                # app-only certificate auth, which is not a user sign-in and
+                # is never evaluated by user-scoped CA policies.
+                authenticationFlows = @{ transferMethods = "deviceCodeFlow" }
                 users = @{
                     includeUsers = @("All")
                     excludeGroups = @($NoMfaGroupId)

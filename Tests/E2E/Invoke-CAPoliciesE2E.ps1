@@ -14,15 +14,15 @@
          PolicyMode ReportOnly) — the real script, same file the menu calls.
          ReportOnly is mandatory here: most of these policies target "All"
          users, and this runs in a shared test tenant, so Enabled would
-         actually enforce block/MFA rules for real traffic. C007 (the
-         geo-restriction policy) is expected to be skipped: it also requires
-         a "UK" named location, which no script in this repo creates — that
-         is an existing manual prerequisite, not something this test sets up.
-      3. Verifies the 6 expected policies exist, are report-only, and
-         exclude the E2E NoMFA group
+         actually enforce block/MFA rules for real traffic. The script
+         auto-creates the (prefixed) UK named location when the geo groups
+         exist, so C007 is expected to be CREATED, not skipped.
+      3. Verifies all 8 expected policies exist, are report-only, exclude
+         the E2E NoMFA group, and that C007 references the geo group and
+         named location and C008 blocks the device code flow
       4. Re-runs the script to prove idempotency
-      5. Deletes every E2E- prefixed CA policy and group in a finally block
-         that always runs, so cleanup happens even on failure
+      5. Deletes every E2E- prefixed CA policy, named location, and group in
+         a finally block that always runs, so cleanup happens even on failure
 
     Only objects whose displayName starts with the E2E prefix are ever
     deleted or asserted on.
@@ -51,8 +51,9 @@ $E2EPrefix = $caConfig.NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
 if ($caConfig.PolicyMode -ne 'ReportOnly') { throw "E2E config must use PolicyMode ReportOnly — refusing to risk enforcing policies in a shared tenant" }
 
-# The 6 policies CA-Policies.ps1 creates without a UK named location (C007
-# additionally needs one, which no script in this repo provisions)
+# All 8 policies CA-Policies.ps1 creates. C007 depends on the geo groups
+# (created by the Security-Groups prerequisite step below) and the UK named
+# location, which the script now auto-creates when those groups exist.
 $ExpectedPolicyNames = @(
     'C001 - Block High Risk Users'
     'C002 - MFA Required for All Users'
@@ -60,6 +61,8 @@ $ExpectedPolicyNames = @(
     'C004 - Require Password Change for High Risk Users'
     'C005 - Require MFA for Risky Sign-Ins'
     'C006 - Block Legacy Authentication'
+    'C008 - Block Device Code Flow'
+    'C007 - Block Sign-In Outside UK (UK Users)'
 )
 
 $failures = 0
@@ -134,10 +137,31 @@ try {
         Write-Result ($noMfaGroup -and (@($policy.Conditions.Users.ExcludeGroups) -contains $noMfaGroup.Id)) "$fullName excludes the E2E NoMFA group"
     }
 
-    # C007 requires a UK named location this repo doesn't provision — confirm
-    # it's correctly absent rather than silently missing for a wrong reason
+    # The UK named location must have been auto-created (prefix-aware), and
+    # C007 must actually reference the geo groups and that location
+    Write-Host "`n== Verifying auto-created named location and C007/C008 wiring ==" -ForegroundColor Cyan
+    $locations = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" -ErrorAction Stop
+    $ukLocation = @($locations.value) | Where-Object { $_.displayName -eq "${E2EPrefix}UK" } | Select-Object -First 1
+    Write-Result ([bool]$ukLocation) "${E2EPrefix}UK named location was auto-created"
+    if ($ukLocation) {
+        Write-Result (@($ukLocation.countriesAndRegions) -contains 'GB') "${E2EPrefix}UK named location covers GB"
+    }
+
+    $geoUkGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-GEO-UK'" -ErrorAction SilentlyContinue
     $c007 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C007 - Block Sign-In Outside UK (UK Users)'" -ErrorAction SilentlyContinue
-    Write-Result (!$c007) "C007 correctly skipped (no UK named location in test tenant)"
+    if ($c007 -and $ukLocation -and $geoUkGroup) {
+        Write-Result (@($c007.Conditions.Users.IncludeGroups) -contains $geoUkGroup.Id) "C007 targets the E2E CA-GEO-UK group"
+        Write-Result (@($c007.Conditions.Locations.ExcludeLocations) -contains $ukLocation.id) "C007 excludes the ${E2EPrefix}UK named location"
+    }
+
+    # C008's authenticationFlows condition isn't surfaced by every SDK model
+    # version — assert via a raw Graph read instead
+    $c008 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C008 - Block Device Code Flow'" -ErrorAction SilentlyContinue
+    if ($c008) {
+        $c008Raw = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c008.Id)" -ErrorAction Stop
+        Write-Result ($c008Raw.conditions.authenticationFlows.transferMethods -match 'deviceCodeFlow') `
+            "C008 blocks the device code flow authentication transfer method"
+    }
 
     # ========================================================================
     # Idempotency: a second run must skip everything and create nothing
@@ -171,6 +195,24 @@ finally {
     catch {
         Write-Host "  WARNING: policy cleanup query failed: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "  Manually delete CA policies prefixed '$E2EPrefix' in the test tenant" -ForegroundColor Yellow
+    }
+
+    # Named locations must be deleted AFTER the policies that reference them
+    Write-Host "`n== Cleaning up E2E named locations ==" -ForegroundColor Cyan
+    try {
+        $locations = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" -ErrorAction Stop
+        foreach ($loc in @($locations.value | Where-Object { $_.displayName -like "$E2EPrefix*" })) {
+            try {
+                Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations/$($loc.id)" -ErrorAction Stop
+                Write-Host "  Deleted named location $($loc.displayName)" -ForegroundColor Gray
+            }
+            catch {
+                Write-Host "  WARNING: could not delete named location $($loc.displayName): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+    }
+    catch {
+        Write-Host "  WARNING: named location cleanup query failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 
     Write-Host "`n== Cleaning up E2E groups ==" -ForegroundColor Cyan
