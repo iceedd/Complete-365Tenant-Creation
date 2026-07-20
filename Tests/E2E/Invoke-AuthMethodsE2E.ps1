@@ -80,6 +80,11 @@ $ctx = Get-MgContext
 if ($ctx.AuthType -ne 'AppOnly') { throw "Expected AppOnly auth, got $($ctx.AuthType)" }
 Write-Host "  Connected to tenant $($ctx.TenantId)" -ForegroundColor Green
 
+$testUserId = $null
+$testUserUpn = $null
+$originalPerUserMfaState = $null
+$testUserAddedToGroup = $false
+
 try {
     # ========================================================================
     # Prerequisite: create the NoMFA group Auth-Methods depends on
@@ -90,6 +95,31 @@ try {
 
     Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
     Start-Sleep -Seconds 30
+
+    # ========================================================================
+    # Set up a real legacy-per-user-MFA scenario to prove Clear-LegacyPerUserMfa
+    # actually clears it: put a real user in the E2E NoMFA group with legacy
+    # per-user MFA forced to 'enabled' first, so there is something to clear.
+    # ========================================================================
+    Write-Host "`n== Setting up legacy per-user MFA test scenario ==" -ForegroundColor Cyan
+    $noMfaGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}NoMFA Exclusion Group'" -ErrorAction Stop
+    $testUser = (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users?`$filter=accountEnabled eq true&`$top=1" -ErrorAction Stop).value[0]
+    $testUserId = $testUser.id
+    $testUserUpn = $testUser.userPrincipalName
+    Write-Host "  Using $testUserUpn as the test member" -ForegroundColor Gray
+
+    $originalPerUserMfaState = (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/users/$testUserId/authentication/requirements" -ErrorAction Stop).perUserMfaState
+    Invoke-MgGraphRequest -Method PATCH -Uri "https://graph.microsoft.com/beta/users/$testUserId/authentication/requirements" `
+        -Body (@{ perUserMfaState = 'enabled' } | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
+    Write-Host "  Forced perUserMfaState to 'enabled' (was: $originalPerUserMfaState)" -ForegroundColor Gray
+
+    Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/groups/$($noMfaGroup.Id)/members/`$ref" `
+        -Body (@{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$testUserId" } | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
+    $testUserAddedToGroup = $true
+    Write-Host "  Added $testUserUpn to ${E2EPrefix}NoMFA Exclusion Group" -ForegroundColor Gray
+
+    Write-Host "`n== Waiting 20s for group membership replication ==" -ForegroundColor Cyan
+    Start-Sleep -Seconds 20
 
     # ========================================================================
     # Execute the real script, unattended, in this session
@@ -109,8 +139,12 @@ try {
         $result = Get-Content $AuthResultPath -Raw | ConvertFrom-Json
         Write-Result ([bool]$result.Success) "Script reported success (updated: $(@($result.Updated).Count), failed: $(@($result.Failed).Count))"
         Write-Result ([bool]$result.CampaignConfigured) "Script reports registration campaign configured"
+        Write-Result (@($result.LegacyMfaCleared) -contains $testUserUpn) "Script reports clearing legacy per-user MFA for $testUserUpn"
         foreach ($fail in @($result.Failed)) {
             Write-Host "        failed method: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
+        }
+        foreach ($fail in @($result.LegacyMfaFailed)) {
+            Write-Host "        failed legacy MFA clear: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
         }
     }
 
@@ -139,6 +173,10 @@ try {
     $excludedIds = @($campaign.excludeTargets | ForEach-Object { $_.id })
     Write-Result ($noMfaGroup -and ($excludedIds -contains $noMfaGroup.Id)) "Registration campaign excludes the E2E NoMFA group"
 
+    Write-Host "`n== Verifying legacy per-user MFA was cleared ==" -ForegroundColor Cyan
+    $afterState = (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/users/$testUserId/authentication/requirements" -ErrorAction Stop).perUserMfaState
+    Write-Result ($afterState -eq 'disabled') "$testUserUpn perUserMfaState is 'disabled' (actual: $afterState)"
+
     # ========================================================================
     # Idempotency: a second run must also succeed (unconditional PATCH calls,
     # so "idempotent" here means "safe to re-run", not "skips work")
@@ -152,6 +190,33 @@ try {
         "Second run also succeeded with no failures"
 }
 finally {
+    # ========================================================================
+    # Restore the test user to exactly how it was found: remove it from the
+    # E2E group and put perUserMfaState back to its original value (only if
+    # that wasn't already 'disabled', which is also this cleanup's no-op case).
+    # ========================================================================
+    if ($testUserId) {
+        Write-Host "`n== Restoring test user state ==" -ForegroundColor Cyan
+        if ($testUserAddedToGroup) {
+            try {
+                $noMfaGroupForCleanup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}NoMFA Exclusion Group'" -ErrorAction SilentlyContinue
+                if ($noMfaGroupForCleanup) {
+                    Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/groups/$($noMfaGroupForCleanup.Id)/members/$testUserId/`$ref" -ErrorAction Stop
+                    Write-Host "  Removed $testUserUpn from ${E2EPrefix}NoMFA Exclusion Group" -ForegroundColor Gray
+                }
+            }
+            catch { Write-Host "  WARNING: could not remove $testUserUpn from the E2E group: $($_.Exception.Message)" -ForegroundColor Yellow }
+        }
+        if ($originalPerUserMfaState -and $originalPerUserMfaState -ne 'disabled') {
+            try {
+                Invoke-MgGraphRequest -Method PATCH -Uri "https://graph.microsoft.com/beta/users/$testUserId/authentication/requirements" `
+                    -Body (@{ perUserMfaState = $originalPerUserMfaState } | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
+                Write-Host "  Restored perUserMfaState to '$originalPerUserMfaState' on $testUserUpn" -ForegroundColor Gray
+            }
+            catch { Write-Host "  WARNING: could not restore perUserMfaState on $($testUserUpn): $($_.Exception.Message)" -ForegroundColor Yellow }
+        }
+    }
+
     # ========================================================================
     # Cleanup — always runs; deletes ONLY the prefix-matched prerequisite group.
     # The auth method / registration campaign settings themselves are tenant-
