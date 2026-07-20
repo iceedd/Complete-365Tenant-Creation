@@ -2025,7 +2025,8 @@
     "technologies": "mdm,microsoftSense",
     "platforms": "windows10",
     "createdDateTime": "2025-07-29T09:11:39.4155062Z"
-  },
+  }
+,
   {
     "settings": [
       {
@@ -2109,3 +2110,4 @@
     "platforms": "windows10"
   }
 ]
+          
