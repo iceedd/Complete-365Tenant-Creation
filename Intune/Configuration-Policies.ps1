@@ -456,18 +456,22 @@ function New-ConfigurationPolicyItem {
     }
     catch {
         $errorMessage = $_.Exception.Message
-        # Try to get more details from the response
-        if ($_.ErrorDetails.Message) {
+        # Try to get more details from the response. Capture ErrorDetails.Message
+        # into a local variable first — $_ inside the nested catch below refers to
+        # the ConvertFrom-Json failure, not this outer exception, so referencing
+        # $_.ErrorDetails there throws under strict mode (confirmed live).
+        $rawDetails = $_.ErrorDetails.Message
+        if ($rawDetails) {
             try {
-                $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                $errorDetails = $rawDetails | ConvertFrom-Json
                 if ($errorDetails.error.message) {
                     $errorMessage = "$errorMessage - $($errorDetails.error.message)"
                 }
                 else {
-                    $errorMessage = "$errorMessage - RAW: $($_.ErrorDetails.Message)"
+                    $errorMessage = "$errorMessage - RAW: $rawDetails"
                 }
             } catch {
-                $errorMessage = "$errorMessage - RAW(unparsed): $($_.ErrorDetails.Message)"
+                $errorMessage = "$errorMessage - RAW(unparsed): $rawDetails"
             }
         }
         else {
