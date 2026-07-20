@@ -9,6 +9,9 @@
 .AUTHOR
     BITS
 .VERSION
+    2.2 - Added the WindowsHelloforBusiness Settings Catalog profile (PIN
+          recovery, min/max PIN length, PIN history, biometrics) assigned to
+          Windows Devices (Autopilot), per live request.
     2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing.
 .PARAMETER NonInteractive
@@ -101,6 +104,7 @@ $PolicyAssignments = @{
     "Tamper Protection" = @("Windows Devices (Autopilot)")
     "Web Sign-in Policy" = @("Windows Devices (Autopilot)")
     "NGP Windows Default Policy" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+    "WindowsHelloforBusiness" = @("Windows Devices (Autopilot)")
 }
 
 # Apply configured prefixes (test isolation: E2E runs use "E2E-" so created

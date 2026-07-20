@@ -77,6 +77,7 @@ $ExpectedPolicyAssignments = [ordered]@{
     "${E2EPrefix}Tamper Protection"                           = @("${E2EPrefix}Windows Devices (Autopilot)")
     "${E2EPrefix}Web Sign-in Policy"                          = @("${E2EPrefix}Windows Devices (Autopilot)")
     "${E2EPrefix}NGP Windows Default Policy"                  = @("${E2EPrefix}Windows Devices (Autopilot)", "${E2EPrefix}Corporate Owned Devices")
+    "${E2EPrefix}WindowsHelloforBusiness"                     = @("${E2EPrefix}Windows Devices (Autopilot)")
 }
 
 $failures = 0
@@ -153,6 +154,31 @@ try {
         foreach ($groupName in $ExpectedPolicyAssignments[$policyName]) {
             $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
             Write-Result ($group -and ($assignedGroupIds -contains $group.Id)) "$policyName is assigned to $groupName"
+        }
+
+        # WindowsHelloforBusiness: independently confirm the actual applied
+        # setting VALUES, not just that some policy object with this name
+        # exists — this is what actually proves the settingDefinitionIds are
+        # real and correctly accepted by this tenant's Settings Catalog.
+        if ($policyName -eq "${E2EPrefix}WindowsHelloforBusiness") {
+            $whfbSettings = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($policy.id)')/settings" -Method GET -ErrorAction Stop
+            $root = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -eq 'device_vendor_msft_passportforwork_devicewide' } | Select-Object -First 1
+            Write-Result ([bool]$root -and $root.settingInstance.choiceSettingValue.value -eq 'device_vendor_msft_passportforwork_devicewide_1') "WHfB is enabled (device-wide)"
+
+            if ($root) {
+                $children = @($root.settingInstance.choiceSettingValue.children)
+                $pinRecovery = $children | Where-Object { $_.settingDefinitionId -like '*enablepinrecovery' } | Select-Object -First 1
+                $pinMin      = $children | Where-Object { $_.settingDefinitionId -like '*pinminimumlength' } | Select-Object -First 1
+                $pinMax      = $children | Where-Object { $_.settingDefinitionId -like '*pinmaximumlength' } | Select-Object -First 1
+                $pinHistory  = $children | Where-Object { $_.settingDefinitionId -like '*pinhistory' } | Select-Object -First 1
+                Write-Result ($pinRecovery -and $pinRecovery.choiceSettingValue.value -like '*_1') "WHfB PIN recovery is enabled"
+                Write-Result ($pinMin -and $pinMin.simpleSettingValue.value -eq 6) "WHfB minimum PIN length is 6"
+                Write-Result ($pinMax -and $pinMax.simpleSettingValue.value -eq 127) "WHfB maximum PIN length is 127"
+                Write-Result ($pinHistory -and $pinHistory.simpleSettingValue.value -eq 5) "WHfB PIN history is 5"
+            }
+
+            $biometrics = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -like '*biometrics_usebiometrics' } | Select-Object -First 1
+            Write-Result ([bool]$biometrics -and $biometrics.settingInstance.choiceSettingValue.value -like '*_1') "WHfB biometrics is allowed"
         }
     }
 
