@@ -105,6 +105,22 @@ try {
     $oldWindowsPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method POST -Body $oldWindowsPolicyBody -ErrorAction Stop
     Write-Host "  Created old-style policy (ID: $($oldWindowsPolicy.id)), passwordRequired=true, bitLockerEnabled=false" -ForegroundColor Gray
 
+    # Assign it too — an already-existing policy in a real tenant would have
+    # been assigned when the script first created it. Without this, the
+    # "reconcile settings but leave assignment alone" behaviour has nothing
+    # to actually leave alone, and the assignment assertions below would
+    # fail for a reason unrelated to what they're meant to test.
+    $oldWindowsAssignTargets = @()
+    foreach ($groupName in $ExpectedPolicyAssignments["${E2EPrefix}Windows 10/11 Basic Compliance"]) {
+        $g = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
+        if ($g) { $oldWindowsAssignTargets += @{ target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = $g.Id } } }
+    }
+    if ($oldWindowsAssignTargets.Count -gt 0) {
+        Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($oldWindowsPolicy.id)')/assign" `
+            -Method POST -Body (@{ assignments = $oldWindowsAssignTargets } | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        Write-Host "  Assigned old-style policy to $($oldWindowsAssignTargets.Count) group(s)" -ForegroundColor Gray
+    }
+
     # ========================================================================
     # Execute the real script, unattended, in this session
     # ========================================================================
@@ -126,6 +142,13 @@ try {
             Write-Host "        failed policy: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
         }
     }
+
+    # A PATCH that reports success can still read back stale values seconds
+    # later (confirmed live: bitLockerEnabled/osMinimumVersion read fresh
+    # immediately, passwordRequired/storageRequireEncryption did not) — the
+    # same read-after-write lag seen elsewhere in this tenant's Graph APIs.
+    Write-Host "`n== Waiting 20s for PATCH to become read-consistent ==" -ForegroundColor Cyan
+    Start-Sleep -Seconds 20
 
     # ========================================================================
     # Independently verify tenant state via Graph. Uses Invoke-MgGraphRequest
