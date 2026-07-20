@@ -463,7 +463,15 @@ function New-ConfigurationPolicyItem {
                 if ($errorDetails.error.message) {
                     $errorMessage = "$errorMessage - $($errorDetails.error.message)"
                 }
-            } catch { }
+                else {
+                    $errorMessage = "$errorMessage - RAW: $($_.ErrorDetails.Message)"
+                }
+            } catch {
+                $errorMessage = "$errorMessage - RAW(unparsed): $($_.ErrorDetails.Message)"
+            }
+        }
+        else {
+            $errorMessage = "$errorMessage - (no ErrorDetails.Message on exception)"
         }
         Write-Host "     Failed: $errorMessage" -ForegroundColor Red
         return @{ Success = $false; Error = $errorMessage }
