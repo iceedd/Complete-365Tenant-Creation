@@ -83,6 +83,29 @@ try {
     Start-Sleep -Seconds 30
 
     # ========================================================================
+    # Pre-create the Windows policy under its OLD (pre-trim) definition, to
+    # prove New-CompliancePolicy's "already exists" path actually reconciles
+    # settings on a tenant that has the policy from before it was trimmed to
+    # BitLocker + minimum OS only — not just skips silently forever.
+    # ========================================================================
+    Write-Host "`n== Pre-creating Windows policy under its old (untrimmed) definition ==" -ForegroundColor Cyan
+    $oldWindowsPolicyBody = @{
+        '@odata.type'      = '#microsoft.graph.windows10CompliancePolicy'
+        displayName        = "${E2EPrefix}Windows 10/11 Basic Compliance"
+        passwordRequired   = $true
+        passwordMinimumLength = 8
+        passwordRequiredType = 'alphanumeric'
+        osMinimumVersion   = '10.0.18362'
+        bitLockerEnabled   = $false
+        storageRequireEncryption = $true
+        scheduledActionsForRule = @(
+            @{ ruleName = 'PasswordRequired'; scheduledActionConfigurations = @(@{ actionType = 'block'; gracePeriodHours = 0 }) }
+        )
+    } | ConvertTo-Json -Depth 10
+    $oldWindowsPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method POST -Body $oldWindowsPolicyBody -ErrorAction Stop
+    Write-Host "  Created old-style policy (ID: $($oldWindowsPolicy.id)), passwordRequired=true, bitLockerEnabled=false" -ForegroundColor Gray
+
+    # ========================================================================
     # Execute the real script, unattended, in this session
     # ========================================================================
     Write-Host "`n== Running Compliance-Policies.ps1 (non-interactive) ==" -ForegroundColor Cyan
@@ -128,6 +151,17 @@ try {
         foreach ($groupName in $ExpectedPolicyAssignments[$policyName]) {
             $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
             Write-Result ($group -and ($assignedGroupIds -contains $group.Id)) "$policyName is assigned to $groupName"
+        }
+
+        # Windows: confirm the script's PATCH-reconcile path actually
+        # overwrote the old (pre-created above) fuller definition with the
+        # trimmed BitLocker + minimum-OS-only settings, and left the
+        # assignment (checked above) untouched in doing so.
+        if ($policyName -eq "${E2EPrefix}Windows 10/11 Basic Compliance") {
+            Write-Result ($policy.bitLockerEnabled -eq $true) "$policyName has bitLockerEnabled=true"
+            Write-Result ([bool]$policy.osMinimumVersion) "$policyName has an osMinimumVersion set (actual: $($policy.osMinimumVersion))"
+            Write-Result ($policy.passwordRequired -eq $false) "$policyName reconciled passwordRequired to false (was true pre-existing)"
+            Write-Result ($policy.storageRequireEncryption -eq $false) "$policyName reconciled storageRequireEncryption to false (was true pre-existing)"
         }
     }
 
