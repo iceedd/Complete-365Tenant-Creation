@@ -416,12 +416,29 @@ function New-CompliancePolicy {
             # never move an in-place policy to different groups than an
             # engineer has since configured.
             try {
+                # scheduledActionsForRule 400s on PATCH even though the
+                # identical payload is accepted on POST (confirmed live) —
+                # Graph only accepts it as part of initial creation; updates
+                # apparently need the dedicated scheduleActionsForRules
+                # action instead. Nothing here changes scheduled actions, so
+                # just drop it from the reconciliation body.
+                $patchPolicy = $cleanPolicy.Clone()
+                $patchPolicy.Remove('scheduledActionsForRule')
+
                 $updateUri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies/$($existingPolicy.id)"
-                $null = Invoke-MgGraphRequest -Uri $updateUri -Method PATCH -Body ($cleanPolicy | ConvertTo-Json -Depth 20) -ErrorAction Stop
+                $null = Invoke-MgGraphRequest -Uri $updateUri -Method PATCH -Body ($patchPolicy | ConvertTo-Json -Depth 20) -ErrorAction Stop
                 Write-Host "     Already exists — settings reconciled (assignment unchanged)" -ForegroundColor Yellow
             }
             catch {
-                Write-Host "     Already exists — could not reconcile settings: $($_.Exception.Message)" -ForegroundColor Yellow
+                $errorMessage = $_.Exception.Message
+                if ($_.ErrorDetails.Message) {
+                    try {
+                        $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                        if ($errorDetails.error.message) { $errorMessage = "$errorMessage - $($errorDetails.error.message)" }
+                    }
+                    catch { }
+                }
+                Write-Host "     Already exists — could not reconcile settings: $errorMessage" -ForegroundColor Yellow
             }
             return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
         }
