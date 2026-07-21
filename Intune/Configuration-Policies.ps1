@@ -394,12 +394,6 @@ function Update-PolicyDynamicValues {
     # Replace LAPS admin name in both policies (Enable Built-in Admin + LAPS)
     $policyJson = $policyJson -replace '"BLadmin"', "`"$LapsAdminName`""
     $policyJson = $policyJson -replace 'tenantId=', "tenantId=$($TenantInfo.TenantId)"
-    # PassportForWork (Windows Hello for Business) Settings Catalog IDs are
-    # tenant-scoped: the real setting definition is
-    # device_vendor_msft_passportforwork_<tenantGuid>_policies_..., not a
-    # literal "{tenantid}" string (confirmed live - Graph rejects the literal
-    # placeholder with "Setting Id is not found in the Settings Catalog Database").
-    $policyJson = $policyJson -replace '\{tenantid\}', $TenantInfo.TenantId
 
     return $policyJson | ConvertFrom-Json -AsHashtable
 }
