@@ -502,6 +502,20 @@ jobs:
           Remove-Item $pfxPath -Force
           "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: TEMP - Discover Windows Hello Settings Catalog IDs
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_APP_ID -CertificateThumbprint $env:CERT_THUMBPRINT -NoWelcome
+          $results = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationSettings?`$filter=contains(id,'passportforwork')&top=200" -Method GET
+          Write-Host "=== contains(id,'passportforwork') : $($results.value.Count) results ==="
+          $results.value | ForEach-Object { Write-Host "$($_.id) | baseUri=$($_.baseUri) offsetUri=$($_.offsetUri) type=$($_.'@odata.type')" }
+          $results.value | ConvertTo-Json -Depth 10 | Out-File -FilePath "$env:RUNNER_TEMP\passportforwork-settings.json"
+          Write-Host "--- Full JSON written to passportforwork-settings.json, printing below ---"
+          Get-Content "$env:RUNNER_TEMP\passportforwork-settings.json"
+
       - name: Run Configuration-Policies E2E test
         shell: pwsh
         env:
