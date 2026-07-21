@@ -193,9 +193,9 @@ try {
                 $children = @($root.settingInstance.groupSettingCollectionValue[0].children)
                 $usePassport = $children | Where-Object { $_.settingDefinitionId -like '*_policies_usepassportforwork' } | Select-Object -First 1
                 $pinRecovery = $children | Where-Object { $_.settingDefinitionId -like '*enablepinrecovery' } | Select-Object -First 1
-                $pinMin      = $children | Where-Object { $_.settingDefinitionId -like '*pinminimumlength' } | Select-Object -First 1
-                $pinMax      = $children | Where-Object { $_.settingDefinitionId -like '*pinmaximumlength' } | Select-Object -First 1
-                $pinHistory  = $children | Where-Object { $_.settingDefinitionId -like '*pinhistory' } | Select-Object -First 1
+                $pinMin      = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_minimumpinlength' } | Select-Object -First 1
+                $pinMax      = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_maximumpinlength' } | Select-Object -First 1
+                $pinHistory  = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_history' } | Select-Object -First 1
                 Write-Result ($usePassport -and $usePassport.choiceSettingValue.value -like '*_true') "WHfB is enabled (device-wide)"
                 Write-Result ($pinRecovery -and $pinRecovery.choiceSettingValue.value -like '*_true') "WHfB PIN recovery is enabled"
                 Write-Result ($pinMin -and $pinMin.simpleSettingValue.value -eq 6) "WHfB minimum PIN length is 6"
