@@ -2032,72 +2032,83 @@
       {
         "id": "0",
         "settingInstance": {
-          "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide",
-          "choiceSettingValue": {
-            "settingValueTemplateReference": null,
-            "children": [
-              {
-                "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide_policies_enablepinrecovery",
-                "choiceSettingValue": {
-                  "settingValueTemplateReference": null,
-                  "children": [],
-                  "value": "device_vendor_msft_passportforwork_devicewide_policies_enablepinrecovery_1"
+          "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}",
+          "groupSettingCollectionValue": [
+            {
+              "children": [
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_usepassportforwork",
+                  "choiceSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "children": [],
+                    "value": "device_vendor_msft_passportforwork_{tenantid}_policies_usepassportforwork_true"
+                  },
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
                 },
-                "settingInstanceTemplateReference": null,
-                "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
-              },
-              {
-                "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide_policies_pinminimumlength",
-                "settingInstanceTemplateReference": null,
-                "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
-                "simpleSettingValue": {
-                  "settingValueTemplateReference": null,
-                  "value": 6,
-                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_enablepinrecovery",
+                  "choiceSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "children": [],
+                    "value": "device_vendor_msft_passportforwork_{tenantid}_policies_enablepinrecovery_true"
+                  },
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_minimumpinlength",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 6,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_maximumpinlength",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 127,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_history",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 5,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
                 }
-              },
-              {
-                "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide_policies_pinmaximumlength",
-                "settingInstanceTemplateReference": null,
-                "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
-                "simpleSettingValue": {
-                  "settingValueTemplateReference": null,
-                  "value": 127,
-                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
-                }
-              },
-              {
-                "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide_policies_pinhistory",
-                "settingInstanceTemplateReference": null,
-                "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
-                "simpleSettingValue": {
-                  "settingValueTemplateReference": null,
-                  "value": 5,
-                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
-                }
-              }
-            ],
-            "value": "device_vendor_msft_passportforwork_devicewide_1"
-          },
+              ],
+              "settingValueTemplateReference": null
+            }
+          ],
           "settingInstanceTemplateReference": null,
-          "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+          "@odata.type": "#microsoft.graph.deviceManagementConfigurationGroupSettingCollectionInstance"
         }
       },
       {
         "id": "1",
         "settingInstance": {
-          "settingDefinitionId": "device_vendor_msft_passportforwork_devicewide_biometrics_usebiometrics",
+          "settingDefinitionId": "device_vendor_msft_passportforwork_biometrics_usebiometrics",
           "choiceSettingValue": {
             "settingValueTemplateReference": null,
             "children": [],
-            "value": "device_vendor_msft_passportforwork_devicewide_biometrics_usebiometrics_1"
+            "value": "device_vendor_msft_passportforwork_biometrics_usebiometrics_true"
           },
           "settingInstanceTemplateReference": null,
           "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
         }
       }
     ],
-    "settingCount": 6,
+    "settingCount": 2,
     "name": "WindowsHelloforBusiness",
     "description": "Windows Hello for Business: PIN recovery, PIN length/history, and biometrics",
     "templateReference": {
