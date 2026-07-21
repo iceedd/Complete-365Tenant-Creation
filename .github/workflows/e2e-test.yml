@@ -502,6 +502,95 @@ jobs:
           Remove-Item $pfxPath -Force
           "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: TEMP - Probe WHfB setting ID variants
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          Connect-MgGraph -TenantId $env:M365_TENANT_ID -ClientId $env:M365_APP_ID -CertificateThumbprint $env:CERT_THUMBPRINT -NoWelcome
+          $org = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
+          $tenantId = $org.value[0].id
+          Write-Host "TenantId length=$($tenantId.Length) dashCount=$(($tenantId.ToCharArray() | Where-Object {$_ -eq '-'}).Count)"
+
+          # Check for a Microsoft-provided template for Windows Hello for Business
+          try {
+            $templates = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicyTemplates?`$filter=contains(displayName,'Hello')" -Method GET
+            Write-Host "=== Templates matching 'Hello': $($templates.value.Count) ==="
+            $templates.value | ForEach-Object { Write-Host "$($_.id) | $($_.displayName) | lifecycleState=$($_.lifecycleState)" }
+          } catch { Write-Host "Template query failed: $($_.Exception.Message)" }
+
+          function Invoke-Probe($label, $body) {
+            Write-Host "`n--- Candidate: $label ---"
+            try {
+              $result = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies" -Method POST -Body ($body | ConvertTo-Json -Depth 20) -ErrorAction Stop
+              Write-Host "SUCCESS: created $($result.id)"
+              Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($result.id)')" -Method DELETE | Out-Null
+              Write-Host "cleaned up"
+            } catch {
+              $msg = $_.Exception.Message
+              if ($_.ErrorDetails.Message) { $msg = "$msg | $($_.ErrorDetails.Message)" }
+              Write-Host "FAILED: $msg"
+            }
+          }
+
+          function New-GroupWrapperBody($label, $tid) {
+            $usepassportId = "device_vendor_msft_passportforwork_${tid}_policies_usepassportforwork"
+            @{
+              name = "PROBE-WHfB-$label-$(Get-Random)"
+              settings = @(
+                @{
+                  id = "0"
+                  settingInstance = @{
+                    settingDefinitionId = "device_vendor_msft_passportforwork_$tid"
+                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationGroupSettingCollectionInstance"
+                    groupSettingCollectionValue = @(
+                      @{
+                        children = @(
+                          @{
+                            settingDefinitionId = $usepassportId
+                            "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                            choiceSettingValue = @{ value = "${usepassportId}_true"; children = @() }
+                          }
+                        )
+                      }
+                    )
+                  }
+                }
+              )
+              technologies = "mdm"
+              platforms = "windows10"
+              templateReference = @{ templateId = "" }
+            }
+          }
+
+          function New-FlatBody($label, $tid) {
+            $usepassportId = "device_vendor_msft_passportforwork_${tid}_policies_usepassportforwork"
+            @{
+              name = "PROBE-WHfB-$label-$(Get-Random)"
+              settings = @(
+                @{
+                  id = "0"
+                  settingInstance = @{
+                    settingDefinitionId = $usepassportId
+                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                    choiceSettingValue = @{ value = "${usepassportId}_true"; children = @() }
+                  }
+                }
+              )
+              technologies = "mdm"
+              platforms = "windows10"
+              templateReference = @{ templateId = "" }
+            }
+          }
+
+          $tenantIdNoDash = $tenantId -replace '-',''
+          Invoke-Probe "group-real-guid" (New-GroupWrapperBody "group-real-guid" $tenantId)
+          Invoke-Probe "group-no-dash-guid" (New-GroupWrapperBody "group-no-dash-guid" $tenantIdNoDash)
+          Invoke-Probe "group-literal-placeholder" (New-GroupWrapperBody "group-literal-placeholder" "{tenantid}")
+          Invoke-Probe "flat-real-guid" (New-FlatBody "flat-real-guid" $tenantId)
+          Invoke-Probe "flat-literal-placeholder" (New-FlatBody "flat-literal-placeholder" "{tenantid}")
+
       - name: Run Configuration-Policies E2E test
         shell: pwsh
         env:
