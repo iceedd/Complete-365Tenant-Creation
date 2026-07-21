@@ -176,24 +176,35 @@ try {
         # exists — this is what actually proves the settingDefinitionIds are
         # real and correctly accepted by this tenant's Settings Catalog.
         if ($policyName -eq "${E2EPrefix}WindowsHelloforBusiness") {
+            # PassportForWork (Windows Hello for Business) device-scope policies are
+            # tenant-scoped in the Settings Catalog: the real settingDefinitionId is
+            # device_vendor_msft_passportforwork_{tenantid}_policies_... using the
+            # literal "{tenantid}" placeholder text - confirmed live that Graph
+            # rejects a real substituted tenant GUID here with "Setting Id is not
+            # found in the Settings Catalog Database", while the literal placeholder
+            # is accepted. The root is a settingGroupCollection (not a choice), so
+            # UsePassportForWork/EnablePinRecovery/PINComplexity settings are
+            # siblings nested in groupSettingCollectionValue[0].children.
             $whfbSettings = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($policy.id)')/settings" -Method GET -ErrorAction Stop
-            $root = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -eq 'device_vendor_msft_passportforwork_devicewide' } | Select-Object -First 1
-            Write-Result ([bool]$root -and $root.settingInstance.choiceSettingValue.value -eq 'device_vendor_msft_passportforwork_devicewide_1') "WHfB is enabled (device-wide)"
+            $root = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -eq 'device_vendor_msft_passportforwork_{tenantid}' } | Select-Object -First 1
+            Write-Result ([bool]$root) "WHfB device-wide policy group exists"
 
             if ($root) {
-                $children = @($root.settingInstance.choiceSettingValue.children)
+                $children = @($root.settingInstance.groupSettingCollectionValue[0].children)
+                $usePassport = $children | Where-Object { $_.settingDefinitionId -like '*_policies_usepassportforwork' } | Select-Object -First 1
                 $pinRecovery = $children | Where-Object { $_.settingDefinitionId -like '*enablepinrecovery' } | Select-Object -First 1
                 $pinMin      = $children | Where-Object { $_.settingDefinitionId -like '*pinminimumlength' } | Select-Object -First 1
                 $pinMax      = $children | Where-Object { $_.settingDefinitionId -like '*pinmaximumlength' } | Select-Object -First 1
                 $pinHistory  = $children | Where-Object { $_.settingDefinitionId -like '*pinhistory' } | Select-Object -First 1
-                Write-Result ($pinRecovery -and $pinRecovery.choiceSettingValue.value -like '*_1') "WHfB PIN recovery is enabled"
+                Write-Result ($usePassport -and $usePassport.choiceSettingValue.value -like '*_true') "WHfB is enabled (device-wide)"
+                Write-Result ($pinRecovery -and $pinRecovery.choiceSettingValue.value -like '*_true') "WHfB PIN recovery is enabled"
                 Write-Result ($pinMin -and $pinMin.simpleSettingValue.value -eq 6) "WHfB minimum PIN length is 6"
                 Write-Result ($pinMax -and $pinMax.simpleSettingValue.value -eq 127) "WHfB maximum PIN length is 127"
                 Write-Result ($pinHistory -and $pinHistory.simpleSettingValue.value -eq 5) "WHfB PIN history is 5"
             }
 
             $biometrics = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -like '*biometrics_usebiometrics' } | Select-Object -First 1
-            Write-Result ([bool]$biometrics -and $biometrics.settingInstance.choiceSettingValue.value -like '*_1') "WHfB biometrics is allowed"
+            Write-Result ([bool]$biometrics -and $biometrics.settingInstance.choiceSettingValue.value -like '*_true') "WHfB biometrics is allowed"
         }
     }
 
