@@ -41,6 +41,21 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot         = $PSScriptRoot | Split-Path | Split-Path
 $GroupConfigPath  = Join-Path $PSScriptRoot 'device-groups.e2e.json'
 $PolicyConfigPath = Join-Path $PSScriptRoot 'configuration-policies.e2e.json'
+
+# Configuration-Policies.ps1's Get-PolicyDefinitions downloads
+# AllPolicies_Complete.json from GitHub (defaulting to $Global:GitHubBranch =
+# "main" when unset — only Main-Menu.ps1 normally sets this), so invoking it
+# directly here would silently test whatever policy JSON is currently on
+# main, not this branch's checked-out copy (confirmed live: a policy added
+# only on this branch never appeared — "Loaded 18 policy definitions" instead
+# of 19, no download error, no local-fallback message, just silently stale).
+# Point it at this run's actual branch so JSON-only changes are covered too.
+$Global:GitHubRepo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'iceedd/Complete-365Tenant-Creation' }
+$Global:GitHubBranch = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME }
+    elseif ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF }
+    else { (git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null) }
+if (!$Global:GitHubBranch) { $Global:GitHubBranch = 'main' }
+Write-Host "Using GitHub branch '$Global:GitHubBranch' for policy definition downloads" -ForegroundColor Gray
 $GroupResultPath  = Join-Path ([IO.Path]::GetTempPath()) "dg-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 $PolicyResultPath = Join-Path ([IO.Path]::GetTempPath()) "cfp-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 
@@ -77,6 +92,7 @@ $ExpectedPolicyAssignments = [ordered]@{
     "${E2EPrefix}Tamper Protection"                           = @("${E2EPrefix}Windows Devices (Autopilot)")
     "${E2EPrefix}Web Sign-in Policy"                          = @("${E2EPrefix}Windows Devices (Autopilot)")
     "${E2EPrefix}NGP Windows Default Policy"                  = @("${E2EPrefix}Windows Devices (Autopilot)", "${E2EPrefix}Corporate Owned Devices")
+    "${E2EPrefix}WindowsHelloforBusiness"                     = @("${E2EPrefix}Windows Devices (Autopilot)")
 }
 
 $failures = 0
@@ -153,6 +169,42 @@ try {
         foreach ($groupName in $ExpectedPolicyAssignments[$policyName]) {
             $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
             Write-Result ($group -and ($assignedGroupIds -contains $group.Id)) "$policyName is assigned to $groupName"
+        }
+
+        # WindowsHelloforBusiness: independently confirm the actual applied
+        # setting VALUES, not just that some policy object with this name
+        # exists — this is what actually proves the settingDefinitionIds are
+        # real and correctly accepted by this tenant's Settings Catalog.
+        if ($policyName -eq "${E2EPrefix}WindowsHelloforBusiness") {
+            # PassportForWork (Windows Hello for Business) device-scope policies are
+            # tenant-scoped in the Settings Catalog: the real settingDefinitionId is
+            # device_vendor_msft_passportforwork_{tenantid}_policies_... using the
+            # literal "{tenantid}" placeholder text - confirmed live that Graph
+            # rejects a real substituted tenant GUID here with "Setting Id is not
+            # found in the Settings Catalog Database", while the literal placeholder
+            # is accepted. The root is a settingGroupCollection (not a choice), so
+            # UsePassportForWork/EnablePinRecovery/PINComplexity settings are
+            # siblings nested in groupSettingCollectionValue[0].children.
+            $whfbSettings = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies('$($policy.id)')/settings" -Method GET -ErrorAction Stop
+            $root = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -eq 'device_vendor_msft_passportforwork_{tenantid}' } | Select-Object -First 1
+            Write-Result ([bool]$root) "WHfB device-wide policy group exists"
+
+            if ($root) {
+                $children = @($root.settingInstance.groupSettingCollectionValue[0].children)
+                $usePassport = $children | Where-Object { $_.settingDefinitionId -like '*_policies_usepassportforwork' } | Select-Object -First 1
+                $pinRecovery = $children | Where-Object { $_.settingDefinitionId -like '*enablepinrecovery' } | Select-Object -First 1
+                $pinMin      = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_minimumpinlength' } | Select-Object -First 1
+                $pinMax      = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_maximumpinlength' } | Select-Object -First 1
+                $pinHistory  = $children | Where-Object { $_.settingDefinitionId -like '*pincomplexity_history' } | Select-Object -First 1
+                Write-Result ($usePassport -and $usePassport.choiceSettingValue.value -like '*_true') "WHfB is enabled (device-wide)"
+                Write-Result ($pinRecovery -and $pinRecovery.choiceSettingValue.value -like '*_true') "WHfB PIN recovery is enabled"
+                Write-Result ($pinMin -and $pinMin.simpleSettingValue.value -eq 6) "WHfB minimum PIN length is 6"
+                Write-Result ($pinMax -and $pinMax.simpleSettingValue.value -eq 127) "WHfB maximum PIN length is 127"
+                Write-Result ($pinHistory -and $pinHistory.simpleSettingValue.value -eq 5) "WHfB PIN history is 5"
+            }
+
+            $biometrics = $whfbSettings.value | Where-Object { $_.settingInstance.settingDefinitionId -like '*biometrics_usebiometrics' } | Select-Object -First 1
+            Write-Result ([bool]$biometrics -and $biometrics.settingInstance.choiceSettingValue.value -like '*_true') "WHfB biometrics is allowed"
         }
     }
 

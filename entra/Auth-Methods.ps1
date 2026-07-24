@@ -6,10 +6,18 @@
 .DESCRIPTION
     Enables strong authentication methods (Authenticator, FIDO2, OATH, TAP) and disables
     weak methods (SMS, Voice, Email OTP). Configures the registration campaign to exclude
-    the NoMFA Exclusion Group (break-glass accounts).
+    the NoMFA Exclusion Group (break-glass accounts), and clears legacy per-user MFA from
+    every member of that group.
 .AUTHOR
     BITS
 .VERSION
+    1.2 - Clear legacy per-user MFA (perUserMfaState) from NoMFA Exclusion Group
+          members. Live report: a break-glass account excluded from every CA
+          policy and from the registration campaign was still being prompted
+          to register MFA — legacy per-user MFA is a pre-Conditional-Access
+          mechanism set independently on the user object, unaffected by any
+          CA or registration-campaign exclusion, and is the most common cause
+          of this exact symptom.
     1.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing.
 .PARAMETER NonInteractive
@@ -66,7 +74,8 @@ $RequiredModules = @(
 )
 
 $RequiredScopes = @(
-    "Policy.ReadWrite.AuthenticationMethod"
+    "Policy.ReadWrite.AuthenticationMethod",
+    "UserAuthenticationMethod.ReadWrite.All"
 )
 
 # Authentication method definitions
@@ -261,6 +270,22 @@ function Show-RegistrationCampaignPreview {
     Write-Host ""
 }
 
+function Show-LegacyPerUserMfaPreview {
+    param([string]$NoMfaGroupId)
+
+    Write-Host "  Legacy Per-User MFA (break-glass accounts):" -ForegroundColor Yellow
+
+    if ($NoMfaGroupId) {
+        Write-Host "    - Members of the NoMFA Exclusion Group with legacy per-user MFA" -ForegroundColor Gray
+        Write-Host "      still 'Enabled'/'Enforced' will have it cleared" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "    - Skipped (NoMFA Exclusion Group not found)" -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+}
+
 # ============================================================================
 # EXECUTION
 # ============================================================================
@@ -349,6 +374,75 @@ function Set-RegistrationCampaign {
     }
 }
 
+function Clear-LegacyPerUserMfa {
+    <#
+    .SYNOPSIS
+        Clears legacy per-user MFA ("Enabled"/"Enforced") from every member of
+        the NoMFA Exclusion Group.
+    .DESCRIPTION
+        A break-glass account excluded from every Conditional Access policy
+        and from the registration campaign can still be prompted to register
+        MFA if it has legacy per-user MFA switched on — that mechanism
+        predates Conditional Access, is set independently on the user object,
+        and is not affected by any CA/registration-campaign exclusion. This
+        is the single most common cause of "excluded account still asked to
+        register" reports (typically left over from before CA-based MFA was
+        rolled out, or accidentally re-enabled via the legacy per-user MFA
+        portal). Since group membership is exactly what should exempt an
+        account from all MFA prompting here, clear it for every member.
+    #>
+    param([string]$NoMfaGroupId)
+
+    $results = @{ Cleared = @(); AlreadyClear = @(); Failed = @() }
+
+    if (!$NoMfaGroupId) {
+        Write-Host "   Legacy per-user MFA cleanup skipped (no NoMFA group)" -ForegroundColor Yellow
+        return $results
+    }
+
+    Write-Host "   Checking legacy per-user MFA on NoMFA group members..." -ForegroundColor White
+
+    try {
+        $members = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$NoMfaGroupId/transitiveMembers?`$select=id,displayName,userPrincipalName" `
+            -ErrorAction Stop
+        $users = @($members.value | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.user' })
+    }
+    catch {
+        Write-Host "     Could not enumerate group members: $($_.Exception.Message)" -ForegroundColor Red
+        return $results
+    }
+
+    foreach ($user in $users) {
+        $label = if ($user.userPrincipalName) { $user.userPrincipalName } else { $user.displayName }
+        try {
+            $current = Invoke-MgGraphRequest -Method GET `
+                -Uri "https://graph.microsoft.com/beta/users/$($user.id)/authentication/requirements" `
+                -ErrorAction Stop
+
+            if ($current.perUserMfaState -eq 'disabled') {
+                Write-Host "     ${label}: already disabled" -ForegroundColor Gray
+                $results.AlreadyClear += $label
+                continue
+            }
+
+            $body = @{ perUserMfaState = 'disabled' } | ConvertTo-Json
+            $null = Invoke-MgGraphRequest -Method PATCH `
+                -Uri "https://graph.microsoft.com/beta/users/$($user.id)/authentication/requirements" `
+                -Body $body -ContentType "application/json" -ErrorAction Stop
+
+            Write-Host "     ${label}: cleared (was $($current.perUserMfaState))" -ForegroundColor Green
+            $results.Cleared += $label
+        }
+        catch {
+            Write-Host "     ${label}: failed — $($_.Exception.Message)" -ForegroundColor Red
+            $results.Failed += @{ Name = $label; Error = $_.Exception.Message }
+        }
+    }
+
+    return $results
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -393,6 +487,7 @@ function Start-AuthMethodsConfiguration {
     Write-Host "  STEP 3: Preview" -ForegroundColor Yellow
     Show-AuthMethodPreview -CurrentStates $currentStates
     Show-RegistrationCampaignPreview -NoMfaGroupId $noMfaGroupId
+    Show-LegacyPerUserMfaPreview -NoMfaGroupId $noMfaGroupId
 
     # Confirmation (skipped in unattended mode)
     if ($script:NonInteractive) {
@@ -423,6 +518,9 @@ function Start-AuthMethodsConfiguration {
     Write-Host ""
     $campaignResult = Set-RegistrationCampaign -NoMfaGroupId $noMfaGroupId
 
+    Write-Host ""
+    $legacyMfaResults = Clear-LegacyPerUserMfa -NoMfaGroupId $noMfaGroupId
+
     # Step 5: Summary
     Write-Host ""
     Write-Host ("=" * 70) -ForegroundColor Cyan
@@ -433,11 +531,20 @@ function Start-AuthMethodsConfiguration {
     Write-Host "  Methods skipped: $($methodResults.Skipped.Count)" -ForegroundColor Yellow
     Write-Host "  Methods failed:  $($methodResults.Failed.Count)" -ForegroundColor $(if ($methodResults.Failed.Count -gt 0) { "Red" } else { "Green" })
     Write-Host "  Reg. campaign:   $(if ($campaignResult) { 'Configured' } else { 'Skipped' })" -ForegroundColor $(if ($campaignResult) { "Green" } else { "Yellow" })
+    Write-Host "  Legacy per-user MFA cleared: $($legacyMfaResults.Cleared.Count) (already clear: $($legacyMfaResults.AlreadyClear.Count), failed: $($legacyMfaResults.Failed.Count))" -ForegroundColor $(if ($legacyMfaResults.Failed.Count -gt 0) { "Yellow" } else { "Green" })
     Write-Host ""
 
     if ($methodResults.Failed.Count -gt 0) {
         Write-Host "  Failed Methods:" -ForegroundColor Red
         foreach ($fail in $methodResults.Failed) {
+            Write-Host "    - $($fail.Name): $($fail.Error)" -ForegroundColor Red
+        }
+        Write-Host ""
+    }
+
+    if ($legacyMfaResults.Failed.Count -gt 0) {
+        Write-Host "  Failed to clear legacy per-user MFA:" -ForegroundColor Red
+        foreach ($fail in $legacyMfaResults.Failed) {
             Write-Host "    - $($fail.Name): $($fail.Error)" -ForegroundColor Red
         }
         Write-Host ""
@@ -452,10 +559,12 @@ function Start-AuthMethodsConfiguration {
     # Machine-readable results for CI runners
     if ($ResultPath) {
         @{
-            Success           = ($methodResults.Failed.Count -eq 0)
-            Updated           = @($methodResults.Updated)
-            Failed            = @($methodResults.Failed)
+            Success            = ($methodResults.Failed.Count -eq 0 -and $legacyMfaResults.Failed.Count -eq 0)
+            Updated            = @($methodResults.Updated)
+            Failed             = @($methodResults.Failed)
             CampaignConfigured = $campaignResult
+            LegacyMfaCleared   = @($legacyMfaResults.Cleared)
+            LegacyMfaFailed    = @($legacyMfaResults.Failed)
         } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
         Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
     }

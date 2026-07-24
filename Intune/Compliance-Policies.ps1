@@ -10,6 +10,15 @@
 .AUTHOR
     BITS
 .VERSION
+    2.2 - Trimmed the Windows 10/11 Basic Compliance policy definition
+          (CompliancePolicies_Complete.json) down to just BitLocker required
+          + minimum OS version, per live request — the password/firewall/
+          Defender/TPM/secure-boot requirements it previously also set are
+          removed. New-CompliancePolicy now reconciles settings on an
+          already-existing policy via PATCH (assignments untouched) instead
+          of leaving it frozen at whatever it looked like on first run, so
+          this change actually reaches tenants where the fuller policy was
+          already created.
     2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing.
 .PARAMETER NonInteractive
@@ -388,11 +397,6 @@ function New-CompliancePolicy {
         $existingPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method GET
         $existingPolicy = $existingPolicies.value | Where-Object { $_.displayName -eq $policyName }
 
-        if ($existingPolicy) {
-            Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
-            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
-        }
-
         # Clean policy definition
         $cleanPolicy = $PolicyDefinition.Clone()
         $fieldsToRemove = @('id', 'createdDateTime', 'lastModifiedDateTime', 'version', '@odata.context')
@@ -400,6 +404,43 @@ function New-CompliancePolicy {
             if ($cleanPolicy.ContainsKey($field)) {
                 $cleanPolicy.Remove($field)
             }
+        }
+
+        if ($existingPolicy) {
+            # Reconcile settings on an already-existing policy so a repo
+            # change (e.g. tightening what a policy requires) actually lands
+            # on tenants that already had it created under the old
+            # definition — without this, "already exists" meant the policy
+            # was frozen at whatever it looked like on first run forever.
+            # Assignments are deliberately left untouched: a re-run should
+            # never move an in-place policy to different groups than an
+            # engineer has since configured.
+            try {
+                # scheduledActionsForRule 400s on PATCH even though the
+                # identical payload is accepted on POST (confirmed live) —
+                # Graph only accepts it as part of initial creation; updates
+                # apparently need the dedicated scheduleActionsForRules
+                # action instead. Nothing here changes scheduled actions, so
+                # just drop it from the reconciliation body.
+                $patchPolicy = $cleanPolicy.Clone()
+                $patchPolicy.Remove('scheduledActionsForRule')
+
+                $updateUri = "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies/$($existingPolicy.id)"
+                $null = Invoke-MgGraphRequest -Uri $updateUri -Method PATCH -Body ($patchPolicy | ConvertTo-Json -Depth 20) -ErrorAction Stop
+                Write-Host "     Already exists — settings reconciled (assignment unchanged)" -ForegroundColor Yellow
+            }
+            catch {
+                $errorMessage = $_.Exception.Message
+                if ($_.ErrorDetails.Message) {
+                    try {
+                        $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                        if ($errorDetails.error.message) { $errorMessage = "$errorMessage - $($errorDetails.error.message)" }
+                    }
+                    catch { }
+                }
+                Write-Host "     Already exists — could not reconcile settings: $errorMessage" -ForegroundColor Yellow
+            }
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
         }
 
         # Create policy

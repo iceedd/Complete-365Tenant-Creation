@@ -40,6 +40,22 @@ $PolicyConfigPath = Join-Path $PSScriptRoot 'compliance-policies.e2e.json'
 $GroupResultPath  = Join-Path ([IO.Path]::GetTempPath()) "dg-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 $PolicyResultPath = Join-Path ([IO.Path]::GetTempPath()) "cp-e2e-result-$([guid]::NewGuid().ToString('n')).json"
 
+# Compliance-Policies.ps1's Get-PolicyDefinitions downloads
+# CompliancePolicies_Complete.json from GitHub (defaulting to
+# $Global:GitHubBranch = "main" when unset — only Main-Menu.ps1 normally
+# sets this), so invoking it directly here would silently test whatever
+# policy JSON is on main, not this branch's checked-out copy. Confirmed
+# live: this is what made the earlier Windows-policy-trim run look like a
+# read-after-write consistency bug — it was actually reconciling against
+# main's still-untrimmed definition the whole time. Point it at this run's
+# actual branch so JSON-only changes are covered too.
+$Global:GitHubRepo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'iceedd/Complete-365Tenant-Creation' }
+$Global:GitHubBranch = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME }
+    elseif ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF }
+    else { (git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null) }
+if (!$Global:GitHubBranch) { $Global:GitHubBranch = 'main' }
+Write-Host "Using GitHub branch '$Global:GitHubBranch' for policy definition downloads" -ForegroundColor Gray
+
 $policyConfig = Get-Content $PolicyConfigPath -Raw | ConvertFrom-Json
 $E2EPrefix = $policyConfig.NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
@@ -81,6 +97,45 @@ try {
 
     Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
     Start-Sleep -Seconds 30
+
+    # ========================================================================
+    # Pre-create the Windows policy under its OLD (pre-trim) definition, to
+    # prove New-CompliancePolicy's "already exists" path actually reconciles
+    # settings on a tenant that has the policy from before it was trimmed to
+    # BitLocker + minimum OS only — not just skips silently forever.
+    # ========================================================================
+    Write-Host "`n== Pre-creating Windows policy under its old (untrimmed) definition ==" -ForegroundColor Cyan
+    $oldWindowsPolicyBody = @{
+        '@odata.type'      = '#microsoft.graph.windows10CompliancePolicy'
+        displayName        = "${E2EPrefix}Windows 10/11 Basic Compliance"
+        passwordRequired   = $true
+        passwordMinimumLength = 8
+        passwordRequiredType = 'alphanumeric'
+        osMinimumVersion   = '10.0.18362'
+        bitLockerEnabled   = $false
+        storageRequireEncryption = $true
+        scheduledActionsForRule = @(
+            @{ ruleName = 'PasswordRequired'; scheduledActionConfigurations = @(@{ actionType = 'block'; gracePeriodHours = 0 }) }
+        )
+    } | ConvertTo-Json -Depth 10
+    $oldWindowsPolicy = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method POST -Body $oldWindowsPolicyBody -ErrorAction Stop
+    Write-Host "  Created old-style policy (ID: $($oldWindowsPolicy.id)), passwordRequired=true, bitLockerEnabled=false" -ForegroundColor Gray
+
+    # Assign it too — an already-existing policy in a real tenant would have
+    # been assigned when the script first created it. Without this, the
+    # "reconcile settings but leave assignment alone" behaviour has nothing
+    # to actually leave alone, and the assignment assertions below would
+    # fail for a reason unrelated to what they're meant to test.
+    $oldWindowsAssignTargets = @()
+    foreach ($groupName in $ExpectedPolicyAssignments["${E2EPrefix}Windows 10/11 Basic Compliance"]) {
+        $g = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
+        if ($g) { $oldWindowsAssignTargets += @{ target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = $g.Id } } }
+    }
+    if ($oldWindowsAssignTargets.Count -gt 0) {
+        Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies('$($oldWindowsPolicy.id)')/assign" `
+            -Method POST -Body (@{ assignments = $oldWindowsAssignTargets } | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        Write-Host "  Assigned old-style policy to $($oldWindowsAssignTargets.Count) group(s)" -ForegroundColor Gray
+    }
 
     # ========================================================================
     # Execute the real script, unattended, in this session
@@ -128,6 +183,17 @@ try {
         foreach ($groupName in $ExpectedPolicyAssignments[$policyName]) {
             $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
             Write-Result ($group -and ($assignedGroupIds -contains $group.Id)) "$policyName is assigned to $groupName"
+        }
+
+        # Windows: confirm the script's PATCH-reconcile path actually
+        # overwrote the old (pre-created above) fuller definition with the
+        # trimmed BitLocker + minimum-OS-only settings, and left the
+        # assignment (checked above) untouched in doing so.
+        if ($policyName -eq "${E2EPrefix}Windows 10/11 Basic Compliance") {
+            Write-Result ($policy.bitLockerEnabled -eq $true) "$policyName has bitLockerEnabled=true"
+            Write-Result ([bool]$policy.osMinimumVersion) "$policyName has an osMinimumVersion set (actual: $($policy.osMinimumVersion))"
+            Write-Result ($policy.passwordRequired -eq $false) "$policyName reconciled passwordRequired to false (was true pre-existing)"
+            Write-Result ($policy.storageRequireEncryption -eq $false) "$policyName reconciled storageRequireEncryption to false (was true pre-existing)"
         }
     }
 

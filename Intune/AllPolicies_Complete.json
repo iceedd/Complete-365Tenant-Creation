@@ -2026,5 +2026,99 @@
     "platforms": "windows10",
     "createdDateTime": "2025-07-29T09:11:39.4155062Z"
   }
+,
+  {
+    "settings": [
+      {
+        "id": "0",
+        "settingInstance": {
+          "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}",
+          "groupSettingCollectionValue": [
+            {
+              "children": [
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_usepassportforwork",
+                  "choiceSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "children": [],
+                    "value": "device_vendor_msft_passportforwork_{tenantid}_policies_usepassportforwork_true"
+                  },
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_enablepinrecovery",
+                  "choiceSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "children": [],
+                    "value": "device_vendor_msft_passportforwork_{tenantid}_policies_enablepinrecovery_true"
+                  },
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_minimumpinlength",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 6,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_maximumpinlength",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 127,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
+                },
+                {
+                  "settingDefinitionId": "device_vendor_msft_passportforwork_{tenantid}_policies_pincomplexity_history",
+                  "settingInstanceTemplateReference": null,
+                  "@odata.type": "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance",
+                  "simpleSettingValue": {
+                    "settingValueTemplateReference": null,
+                    "value": 5,
+                    "@odata.type": "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                  }
+                }
+              ],
+              "settingValueTemplateReference": null
+            }
+          ],
+          "settingInstanceTemplateReference": null,
+          "@odata.type": "#microsoft.graph.deviceManagementConfigurationGroupSettingCollectionInstance"
+        }
+      },
+      {
+        "id": "1",
+        "settingInstance": {
+          "settingDefinitionId": "device_vendor_msft_passportforwork_biometrics_usebiometrics",
+          "choiceSettingValue": {
+            "settingValueTemplateReference": null,
+            "children": [],
+            "value": "device_vendor_msft_passportforwork_biometrics_usebiometrics_true"
+          },
+          "settingInstanceTemplateReference": null,
+          "@odata.type": "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+        }
+      }
+    ],
+    "settingCount": 2,
+    "name": "WindowsHelloforBusiness",
+    "description": "Windows Hello for Business: PIN recovery, PIN length/history, and biometrics",
+    "templateReference": {
+      "templateId": "",
+      "templateDisplayName": null,
+      "templateFamily": "none",
+      "templateDisplayVersion": null
+    },
+    "technologies": "mdm",
+    "platforms": "windows10"
+  }
 ]
           

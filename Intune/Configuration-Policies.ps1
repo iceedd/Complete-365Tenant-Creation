@@ -9,6 +9,9 @@
 .AUTHOR
     BITS
 .VERSION
+    2.2 - Added the WindowsHelloforBusiness Settings Catalog profile (PIN
+          recovery, min/max PIN length, PIN history, biometrics) assigned to
+          Windows Devices (Autopilot), per live request.
     2.1 - Non-interactive mode (-NonInteractive/-ConfigFile) for unattended
           E2E testing.
 .PARAMETER NonInteractive
@@ -101,6 +104,7 @@ $PolicyAssignments = @{
     "Tamper Protection" = @("Windows Devices (Autopilot)")
     "Web Sign-in Policy" = @("Windows Devices (Autopilot)")
     "NGP Windows Default Policy" = @("Windows Devices (Autopilot)", "Corporate Owned Devices")
+    "WindowsHelloforBusiness" = @("Windows Devices (Autopilot)")
 }
 
 # Apply configured prefixes (test isolation: E2E runs use "E2E-" so created
@@ -452,14 +456,26 @@ function New-ConfigurationPolicyItem {
     }
     catch {
         $errorMessage = $_.Exception.Message
-        # Try to get more details from the response
-        if ($_.ErrorDetails.Message) {
+        # Try to get more details from the response. Capture ErrorDetails.Message
+        # into a local variable first — $_ inside the nested catch below refers to
+        # the ConvertFrom-Json failure, not this outer exception, so referencing
+        # $_.ErrorDetails there throws under strict mode (confirmed live).
+        $rawDetails = $_.ErrorDetails.Message
+        if ($rawDetails) {
             try {
-                $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                $errorDetails = $rawDetails | ConvertFrom-Json
                 if ($errorDetails.error.message) {
                     $errorMessage = "$errorMessage - $($errorDetails.error.message)"
                 }
-            } catch { }
+                else {
+                    $errorMessage = "$errorMessage - RAW: $rawDetails"
+                }
+            } catch {
+                $errorMessage = "$errorMessage - RAW(unparsed): $rawDetails"
+            }
+        }
+        else {
+            $errorMessage = "$errorMessage - (no ErrorDetails.Message on exception)"
         }
         Write-Host "     Failed: $errorMessage" -ForegroundColor Red
         return @{ Success = $false; Error = $errorMessage }

@@ -29,7 +29,9 @@
     "requiredPasswordComplexity": "none",
     "passwordSignInFailureCountBeforeFactoryReset": null,
     "restrictedApps": [],
-    "roleScopeTagIds": ["0"],
+    "roleScopeTagIds": [
+      "0"
+    ],
     "scheduledActionsForRule": [
       {
         "ruleName": "PasswordRequired",
@@ -45,7 +47,7 @@
     ]
   },
   {
-    "@odata.type": "#microsoft.graph.iosCompliancePolicy", 
+    "@odata.type": "#microsoft.graph.iosCompliancePolicy",
     "displayName": "iOS Basic Compliance",
     "description": "Basic compliance requirements for iOS devices",
     "passcodeRequired": true,
@@ -67,10 +69,12 @@
     "managedEmailProfileRequired": false,
     "passcodeMinutesOfInactivityBeforeScreenTimeout": null,
     "restrictedApps": [],
-    "roleScopeTagIds": ["0"],
+    "roleScopeTagIds": [
+      "0"
+    ],
     "scheduledActionsForRule": [
       {
-        "ruleName": "PasswordRequired", 
+        "ruleName": "PasswordRequired",
         "scheduledActionConfigurations": [
           {
             "actionType": "block",
@@ -84,7 +88,7 @@
   },
   {
     "@odata.type": "#microsoft.graph.macOSCompliancePolicy",
-    "displayName": "macOS Basic Compliance", 
+    "displayName": "macOS Basic Compliance",
     "description": "Basic compliance requirements for macOS devices",
     "passwordRequired": true,
     "passwordMinimumLength": 8,
@@ -107,7 +111,9 @@
     "deviceThreatProtectionEnabled": false,
     "deviceThreatProtectionRequiredSecurityLevel": "unavailable",
     "advancedThreatProtectionRequiredSecurityLevel": "unavailable",
-    "roleScopeTagIds": ["0"],
+    "roleScopeTagIds": [
+      "0"
+    ],
     "scheduledActionsForRule": [
       {
         "ruleName": "PasswordRequired",
@@ -125,23 +131,23 @@
   {
     "@odata.type": "#microsoft.graph.windows10CompliancePolicy",
     "displayName": "Windows 10/11 Basic Compliance",
-    "description": "Basic compliance requirements for Windows 10/11 devices (no MDE required)",
-    "passwordRequired": true,
-    "passwordMinimumLength": 8,
-    "passwordRequiredType": "alphanumeric", 
+    "description": "Requires BitLocker and a minimum supported Windows OS version",
+    "passwordRequired": false,
+    "passwordMinimumLength": null,
+    "passwordRequiredType": "deviceDefault",
     "passwordMinimumCharacterSetCount": null,
-    "passwordMinutesOfInactivityBeforeLock": 15,
-    "passwordExpirationDays": 90,
-    "passwordPreviousPasswordBlockCount": 5,
+    "passwordMinutesOfInactivityBeforeLock": null,
+    "passwordExpirationDays": null,
+    "passwordPreviousPasswordBlockCount": null,
     "passwordRequiredToUnlockFromIdle": false,
-    "passwordBlockSimple": true,
+    "passwordBlockSimple": false,
     "osMinimumVersion": "10.0.18362",
     "osMaximumVersion": null,
     "mobileOsMinimumVersion": null,
     "mobileOsMaximumVersion": null,
     "validOperatingSystemBuildRanges": [],
     "bitLockerEnabled": true,
-    "storageRequireEncryption": true,
+    "storageRequireEncryption": false,
     "activeFirewallRequired": false,
     "defenderEnabled": false,
     "defenderVersion": null,
@@ -163,7 +169,9 @@
     "earlyLaunchAntiMalwareDriverEnabled": false,
     "requireHealthyDeviceReport": false,
     "wslDistributions": [],
-    "roleScopeTagIds": ["0"],
+    "roleScopeTagIds": [
+      "0"
+    ],
     "scheduledActionsForRule": [
       {
         "ruleName": "PasswordRequired",
