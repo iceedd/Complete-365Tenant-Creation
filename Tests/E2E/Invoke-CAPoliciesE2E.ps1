@@ -58,7 +58,7 @@ $ExpectedPolicyNames = @(
     'C001 - Block High Risk Users'
     'C002 - MFA Required for All Users'
     'C003 - Block Non Corporate Devices'
-    'C004 - Require Password Change for High Risk Users'
+    'C004 - Require MFA and Password Change for Medium Risk Users'
     'C005 - Require MFA for Risky Sign-Ins'
     'C006 - Block Legacy Authentication'
     'C008 - Block Device Code Flow'

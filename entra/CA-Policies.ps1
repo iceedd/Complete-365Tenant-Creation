@@ -9,6 +9,15 @@
 .AUTHOR
     BITS
 .VERSION
+    2.4 - Per-policy enforcement mode: the operator (or -ConfigFile) now
+          chooses Report-only vs Enabled independently for each CA policy,
+          instead of one global mode applied to all of them. PolicyMode
+          remains as the default for any policy without its own override.
+    2.3 - Fix C004: retarget from high to medium user risk. C001 already
+          blocks high user risk outright, and a block from any applicable CA
+          policy always wins over other policies' grant controls, so a
+          second high-user-risk policy was dead code — it could never be
+          reached.
     2.2 - Auto-create the UK named location when the CA-GEO groups exist (so
           C007 geo-blocking is actually provisioned instead of silently
           skipped) and add C008 - Block Device Code Flow.
@@ -16,8 +25,9 @@
           E2E testing. 2.0 standardized UX with preview mode and auto-fix.
 .PARAMETER NonInteractive
     Run unattended: skip all Y/N confirmations and "press any key" pauses,
-    never attempt interactive re-consent, and never prompt for policy mode
-    (uses the ConfigFile's PolicyMode instead). Used by CI E2E tests.
+    never attempt interactive re-consent, and never prompt for each policy's
+    enforcement mode (uses the ConfigFile's PolicyModes/PolicyMode instead).
+    Used by CI E2E tests.
 .PARAMETER ConfigFile
     Optional JSON file overriding run behaviour. Supported keys:
       NamePrefix                  (string) prefixed to every policy displayName
@@ -25,10 +35,16 @@
                                    script looks up (NoMFA Exclusion Group,
                                    CA-GEO-UK, CA-GEO-International)
       PolicyMode                  ("ReportOnly"|"Enabled") default ReportOnly —
-                                   E2E tests must never use Enabled: most
-                                   policies target "All" users in a shared
-                                   tenant, so Enabled would actually enforce
-                                   block/MFA rules for real traffic
+                                   the fallback used for any policy not given
+                                   its own entry in PolicyModes below. E2E
+                                   tests must never use Enabled: most policies
+                                   target "All" users in a shared tenant, so
+                                   Enabled would actually enforce block/MFA
+                                   rules for real traffic
+      PolicyModes                 (object) optional per-policy override, keyed
+                                   by policy code, e.g.
+                                   { "C001": "Enabled", "C004": "ReportOnly" }.
+                                   Policies not listed here use PolicyMode.
       AutoDisableSecurityDefaults (bool) default true — required to make any
                                    progress, since CA policies cannot be
                                    created while Security Defaults is enabled
@@ -55,6 +71,7 @@ $script:RunConfig = @{
     NamePrefix                  = ''
     GroupNamePrefix             = ''
     PolicyMode                  = 'ReportOnly'
+    PolicyModes                 = @{}
     AutoDisableSecurityDefaults = $true
     AutoCreateNoMfaGroup        = $true
 }
@@ -491,12 +508,18 @@ function Get-PolicyDefinitions {
             }
         },
         @{
-            displayName = "C004 - Require Password Change for High Risk Users"
+            # Medium, not high: C001 already blocks high user risk outright, and
+            # since a block always wins when multiple CA policies apply, a
+            # second high-user-risk policy here would never be reachable. MFA
+            # alone does NOT remediate user risk (only a password change does),
+            # so this pairs both — completing them clears the risk event and
+            # this won't re-trigger until a genuinely new risk signal appears.
+            displayName = "C004 - Require MFA and Password Change for Medium Risk Users"
             state = $PolicyState
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
-                userRiskLevels = @("high")
+                userRiskLevels = @("medium")
                 users = @{
                     includeUsers = @("All")
                     excludeGroups = @($NoMfaGroupId)
@@ -602,6 +625,70 @@ function Get-PolicyDefinitions {
 }
 
 # ============================================================================
+# PER-POLICY ENFORCEMENT MODE
+# ============================================================================
+
+function Get-PolicyCode {
+    <#
+    .SYNOPSIS
+        Extracts the short policy code (e.g. "C004") from a displayName, so
+        it still matches even when NamePrefix has been prepended (the prefix
+        has no fixed separator, so a fixed-position substring wouldn't work).
+    #>
+    param([string]$DisplayName)
+
+    $match = [regex]::Match($DisplayName, 'C\d{3}')
+    if ($match.Success) { return $match.Value }
+    return $DisplayName
+}
+
+function Set-PolicyStates {
+    <#
+    .SYNOPSIS
+        Resolves and applies an enforcement state to each policy
+        individually, mutating each policy's .state in place — Report-only
+        vs Enabled is no longer one global choice for the whole run.
+    .DESCRIPTION
+        Interactive: prompts once per policy.
+        Non-interactive: reads $script:RunConfig.PolicyModes[<code>] for a
+        per-policy override, falling back to the global
+        $script:RunConfig.PolicyMode default for any policy without one.
+    #>
+    param([array]$Policies)
+
+    foreach ($policy in $Policies) {
+        if ($script:NonInteractive) {
+            $code = Get-PolicyCode -DisplayName $policy.displayName
+            $mode = if ($script:RunConfig.PolicyModes.ContainsKey($code)) {
+                $script:RunConfig.PolicyModes[$code]
+            }
+            else {
+                $script:RunConfig.PolicyMode
+            }
+            $policy.state = if ($mode -eq 'Enabled') { 'enabled' } else { 'enabledForReportingButNotEnforced' }
+        }
+        else {
+            Write-Host ""
+            Write-Host "   $($policy.displayName)" -ForegroundColor White
+            Write-Host "   [1] Report-only  [2] Enabled" -ForegroundColor Gray
+            $choice = Read-Host "   Select mode (1 or 2)"
+
+            if ($choice -eq "2") {
+                $policy.state = 'enabled'
+                Write-Host "     -> Enabled (enforcing)" -ForegroundColor Yellow
+            }
+            else {
+                if ($choice -ne "1") {
+                    Write-Host "     Invalid selection - defaulting to Report-only for safety." -ForegroundColor Yellow
+                }
+                $policy.state = 'enabledForReportingButNotEnforced'
+                Write-Host "     -> Report-only" -ForegroundColor Cyan
+            }
+        }
+    }
+}
+
+# ============================================================================
 # PREVIEW MODE
 # ============================================================================
 
@@ -620,8 +707,8 @@ function Show-PolicyPreview {
     Write-Host ""
 
     # Header
-    Write-Host "  # | Policy Name                                  | State   | Grant" -ForegroundColor Yellow
-    Write-Host "  --|----------------------------------------------|---------|------------------" -ForegroundColor Gray
+    Write-Host "  # | Policy Name                                  | State       | Grant" -ForegroundColor Yellow
+    Write-Host "  --|----------------------------------------------|-------------|------------------" -ForegroundColor Gray
 
     $index = 1
     foreach ($policy in $Policies) {
@@ -631,14 +718,15 @@ function Show-PolicyPreview {
         $grant = ($policy.grantControls.builtInControls -join "+")
         if ($grant.Length -gt 16) { $grant = $grant.Substring(0, 13) + "..." }
 
-        Write-Host ("  {0,2} | {1,-44} | {2,-7} | {3}" -f $index, $name, $policy.state, $grant) -ForegroundColor White
+        $stateLabel = if ($policy.state -eq 'enabled') { 'Enabled' } else { 'Report-only' }
+        Write-Host ("  {0,2} | {1,-44} | {2,-11} | {3}" -f $index, $name, $stateLabel, $grant) -ForegroundColor White
         $index++
     }
 
     Write-Host ""
     Write-Host "  All policies will:" -ForegroundColor Yellow
     Write-Host "    - Exclude NoMFA Exclusion Group (break-glass accounts)" -ForegroundColor Gray
-    Write-Host "    - Be ENABLED immediately" -ForegroundColor Gray
+    Write-Host "    - Be created immediately, in the mode shown above (per policy)" -ForegroundColor Gray
     Write-Host ""
 
     Write-Host "  NoMFA Exclusion Group ID: $NoMfaGroupId" -ForegroundColor Gray
@@ -721,50 +809,8 @@ function Start-CAPolicyCreation {
     $geoIntlGroupId  = $prereqResult.GeoIntlGroupId
     $ukLocationId    = $prereqResult.UkLocationId
 
-    # Step 2: Choose policy mode
-    Write-Host "  STEP 2: Policy Mode" -ForegroundColor Yellow
-    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
-    Write-Host ""
-
-    if ($script:NonInteractive) {
-        if ($script:RunConfig.PolicyMode -eq 'Enabled') {
-            $policyState = "enabled"
-            $modeLabel = "Enabled (enforcing)"
-        }
-        else {
-            $policyState = "enabledForReportingButNotEnforced"
-            $modeLabel = "Report-only"
-        }
-        Write-Host "   Non-interactive mode: using PolicyMode '$($script:RunConfig.PolicyMode)' -> $modeLabel" -ForegroundColor Gray
-    }
-    else {
-        Write-Host "   [1] Report-only  - Policies log but do NOT enforce (recommended for new tenants)" -ForegroundColor Cyan
-        Write-Host "   [2] Enabled      - Policies enforce immediately" -ForegroundColor Yellow
-        Write-Host ""
-        $modeChoice = Read-Host "   Select mode (1 or 2)"
-
-        switch ($modeChoice) {
-            "1" {
-                $policyState = "enabledForReportingButNotEnforced"
-                $modeLabel = "Report-only"
-                Write-Host "   Mode: Report-only (monitoring only, no enforcement)" -ForegroundColor Cyan
-            }
-            "2" {
-                $policyState = "enabled"
-                $modeLabel = "Enabled (enforcing)"
-                Write-Host "   Mode: Enabled - policies will enforce immediately" -ForegroundColor Yellow
-            }
-            default {
-                Write-Host "   Invalid selection. Defaulting to Report-only for safety." -ForegroundColor Yellow
-                $policyState = "enabledForReportingButNotEnforced"
-                $modeLabel = "Report-only (default)"
-            }
-        }
-    }
-    Write-Host ""
-
-    # Step 3: Load data
-    Write-Host "  STEP 3: Loading Data" -ForegroundColor Yellow
+    # Step 2: Load data
+    Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
     $tenantInfo = Get-TenantInfo
@@ -774,14 +820,28 @@ function Start-CAPolicyCreation {
     }
     Write-Host "   Tenant: $($tenantInfo.OrganizationName)" -ForegroundColor Green
 
-    $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId -PolicyState $policyState `
+    # -PolicyState here is just a placeholder seed — Set-PolicyStates (Step 3)
+    # overwrites every policy's actual state individually right after this.
+    $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId -PolicyState "enabledForReportingButNotEnforced" `
         -GeoUkGroupId $geoUkGroupId -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId
     Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
 
-    # Step 3: Preview
+    # Step 3: Choose enforcement mode, per policy
+    Write-Host ""
+    Write-Host "  STEP 3: Policy Mode (per policy)" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    if ($script:NonInteractive) {
+        Write-Host "   Non-interactive mode: resolving each policy's mode from PolicyModes/PolicyMode" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "   Report-only logs but does NOT enforce (recommended for new tenants)." -ForegroundColor Cyan
+        Write-Host "   Enabled enforces immediately. Choose independently for each policy below." -ForegroundColor Yellow
+    }
+    Set-PolicyStates -Policies $policies
+
+    # Step 4: Preview
     Write-Host ""
     Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
-    Write-Host "   Mode: $modeLabel" -ForegroundColor Cyan
     Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId
 
     # Confirmation (skipped in unattended mode)
@@ -834,7 +894,7 @@ function Start-CAPolicyCreation {
         Start-Sleep -Milliseconds 500
     }
 
-    # Step 5: Summary
+    # Step 6: Summary
     Write-Host ""
     Write-Host ("=" * 70) -ForegroundColor Cyan
     Write-Host "  SUMMARY" -ForegroundColor Cyan
@@ -863,8 +923,14 @@ function Start-CAPolicyCreation {
     }
 
     # Important warnings
+    $enabledNow = @($policies | Where-Object { $_.state -eq 'enabled' } | ForEach-Object { $_.displayName })
     Write-Host "  IMPORTANT:" -ForegroundColor Red
-    Write-Host "    - All policies are ENABLED immediately" -ForegroundColor Yellow
+    if ($enabledNow.Count -gt 0) {
+        Write-Host "    - These policies are ENFORCING immediately: $($enabledNow -join ', ')" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "    - All policies were created in Report-only mode (no enforcement yet)" -ForegroundColor Yellow
+    }
     Write-Host "    - Add break-glass accounts to NoMFA Exclusion Group NOW" -ForegroundColor Yellow
     Write-Host "    - Test with pilot users before full deployment" -ForegroundColor Yellow
     Write-Host ""
