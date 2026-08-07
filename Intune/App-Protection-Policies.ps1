@@ -409,13 +409,23 @@ function New-AppProtectionPolicy {
                 Write-Host "     Assigned to All Users$(if ($NoMfaGroupId) { ' (NoMFA Exclusion Group excluded)' })" -ForegroundColor Green
             }
             catch {
+                # Guard with -and, not just `if ($_.ErrorDetails.Message)` -
+                # dot access on a $null ErrorDetails throws under
+                # Set-StrictMode (confirmed live: Invoke-MgGraphRequest's
+                # exception here has a $null ErrorDetails, not merely one
+                # with an empty Message). The inner catch must not reference
+                # $_ either - it would be rebound to the ConvertFrom-Json
+                # failure, not the original request exception.
                 $errorMessage = $_.Exception.Message
-                if ($_.ErrorDetails.Message) {
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
                     try {
                         $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
                         if ($errorDetails.error.message) { $errorMessage = "$errorMessage - $($errorDetails.error.message)" }
                     }
-                    catch { $errorMessage = "$errorMessage - raw: $($_.ErrorDetails.Message)" }
+                    catch { }
+                }
+                elseif ($_.Exception.InnerException) {
+                    $errorMessage = "$errorMessage - inner: $($_.Exception.InnerException.Message)"
                 }
                 Write-Host "     Assignment failed: $errorMessage" -ForegroundColor Yellow
             }
