@@ -500,19 +500,36 @@ function Test-CompliancePoliciesExist {
     try {
         $policies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceCompliancePolicies" -Method GET -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty value
-        
+
         # Check for our standard compliance policies
         $expectedPolicies = @("Android Basic Compliance", "iOS Basic Compliance", "macOS Basic Compliance", "Windows 10/11 Basic Compliance")
         $existingPolicyNames = $policies | Select-Object -ExpandProperty displayName
-        
+
         $foundPolicies = 0
         foreach ($expectedPolicy in $expectedPolicies) {
             if ($expectedPolicy -in $existingPolicyNames) {
                 $foundPolicies++
             }
         }
-        
+
         return $foundPolicies -ge 2  # At least 2 compliance policies exist (flexible threshold)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-AppProtectionPoliciesExist {
+    try {
+        $androidPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections" -Method GET -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty value
+        $iosPolicies = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections" -Method GET -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty value
+
+        $androidExists = "Android App Protection Policy" -in ($androidPolicies | Select-Object -ExpandProperty displayName)
+        $iosExists = "iOS App Protection Policy" -in ($iosPolicies | Select-Object -ExpandProperty displayName)
+
+        return $androidExists -and $iosExists
     }
     catch {
         return $false
@@ -1314,6 +1331,7 @@ function Initialize-CompletedSteps {
         ConfigPolicies = Test-ConfigPoliciesExist
         EDRPolicy = Test-EDRPolicyExists
         CompliancePolicies = Test-CompliancePoliciesExist
+        AppProtectionPolicies = Test-AppProtectionPoliciesExist
         ConditionalAccess = Test-ConditionalAccessPoliciesExist
         AdminAccounts = Test-AdminAccountsExist
     }
@@ -1330,6 +1348,7 @@ function Test-Prerequisites {
         "PasswordPolicies" { return $Global:CompletedSteps.AdminAccounts }
         "ConfigPolicies" { return $Global:CompletedSteps.DeviceGroups }
         "CompliancePolicies" { return $Global:CompletedSteps.DeviceGroups }
+        "AppProtectionPolicies" { return $Global:CompletedSteps.SecurityGroups }
         "AppDeployment" { return ($Global:CompletedSteps.DeviceGroups -and $Global:CompletedSteps.CompliancePolicies) }
         "AutopilotConfig" { return $Global:CompletedSteps.DeviceGroups }
         "ArchivePolicies" { return $Global:CompletedSteps.SecurityGroups }
@@ -1955,6 +1974,13 @@ function Show-IntuneMenu {
             Write-Host "6. 🔄 Winget Auto Update (WAU) [REQUIRES: Device Groups]" -ForegroundColor Red
         }
 
+        # App Protection Policies - Requires Security Groups (NoMFA Exclusion Group)
+        if (Test-Prerequisites -RequiredStep "AppProtectionPolicies") {
+            Write-Host "7. 🛡️ App Protection Policies (Android/iOS BYOD)" -ForegroundColor Green
+        } else {
+            Write-Host "7. 🛡️ App Protection Policies (Android/iOS BYOD) [REQUIRES: Security Groups]" -ForegroundColor Red
+        }
+
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
         
@@ -2013,6 +2039,16 @@ function Show-IntuneMenu {
                     Initialize-CompletedSteps
                 } else {
                     Write-Host "❌ Create Device Groups first!" -ForegroundColor Red
+                    Start-Sleep 2
+                }
+            }
+            "7" {
+                if (Test-Prerequisites -RequiredStep "AppProtectionPolicies") {
+                    Invoke-GitHubScript -ScriptPath "Intune/App-Protection-Policies.ps1"
+                    Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
+                    Initialize-CompletedSteps
+                } else {
+                    Write-Host "❌ Create Security Groups first!" -ForegroundColor Red
                     Start-Sleep 2
                 }
             }
