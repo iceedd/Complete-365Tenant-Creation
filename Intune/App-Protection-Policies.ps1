@@ -389,10 +389,20 @@ function New-AppProtectionPolicy {
         }
 
         if (!$skipped) {
-            # Assign: All Users, excluding the NoMFA Exclusion Group if it exists
-            $assignments = @(@{ target = @{ '@odata.type' = '#microsoft.graph.allLicensedUsersAssignmentTarget' } })
+            # Assign: All Users, excluding the NoMFA Exclusion Group if it exists.
+            # Each assignment entry needs its own @odata.type discriminator
+            # (targetedManagedAppPolicyAssignment) - Graph rejects the request
+            # with a bare 400 if it's left off, since assignments is a
+            # polymorphic collection (confirmed live).
+            $assignments = @(@{
+                '@odata.type' = '#microsoft.graph.targetedManagedAppPolicyAssignment'
+                target        = @{ '@odata.type' = '#microsoft.graph.allLicensedUsersAssignmentTarget' }
+            })
             if ($NoMfaGroupId) {
-                $assignments += @{ target = @{ '@odata.type' = '#microsoft.graph.exclusionGroupAssignmentTarget'; groupId = $NoMfaGroupId } }
+                $assignments += @{
+                    '@odata.type' = '#microsoft.graph.targetedManagedAppPolicyAssignment'
+                    target        = @{ '@odata.type' = '#microsoft.graph.exclusionGroupAssignmentTarget'; groupId = $NoMfaGroupId }
+                }
             }
             try {
                 $null = Invoke-MgGraphRequest -Uri "$baseUri('$policyId')/assign" -Method POST -Body (@{ assignments = $assignments } | ConvertTo-Json -Depth 10) -ErrorAction Stop
