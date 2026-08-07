@@ -409,7 +409,15 @@ function New-AppProtectionPolicy {
                 Write-Host "     Assigned to All Users$(if ($NoMfaGroupId) { ' (NoMFA Exclusion Group excluded)' })" -ForegroundColor Green
             }
             catch {
-                Write-Host "     Assignment failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                $errorMessage = $_.Exception.Message
+                if ($_.ErrorDetails.Message) {
+                    try {
+                        $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+                        if ($errorDetails.error.message) { $errorMessage = "$errorMessage - $($errorDetails.error.message)" }
+                    }
+                    catch { $errorMessage = "$errorMessage - raw: $($_.ErrorDetails.Message)" }
+                }
+                Write-Host "     Assignment failed: $errorMessage" -ForegroundColor Yellow
             }
         }
 
