@@ -16,10 +16,16 @@
          users, and this runs in a shared test tenant, so Enabled would
          actually enforce block/MFA rules for real traffic. The script
          auto-creates the (prefixed) UK named location when the geo groups
-         exist, so C007 is expected to be CREATED, not skipped.
-      3. Verifies all 8 expected policies exist, are report-only, exclude
-         the E2E NoMFA group, and that C007 references the geo group and
-         named location and C008 blocks the device code flow
+         exist, so C007 is expected to be CREATED, not skipped. It also
+         auto-creates the (prefixed) CA-BYOD-Windows and CA-UK-Travel-
+         Exclusion groups (AutoCreateBYODGroups defaults true), so C010/C011
+         are expected to be CREATED too, and C007 is expected to include the
+         travel exclusion group in its excludeGroups.
+      3. Verifies all 12 expected policies exist, are report-only, exclude
+         the E2E NoMFA group, and that C007 references the geo group, named
+         location and travel exclusion group; C008 blocks the device code
+         flow; C009 targets Android/iOS with app protection; C010/C011 scope
+         to the BYOD Windows group; C012 targets guests
       4. Re-runs the script to prove idempotency
       5. Deletes every E2E- prefixed CA policy, named location, and group in
          a finally block that always runs, so cleanup happens even on failure
@@ -51,9 +57,12 @@ $E2EPrefix = $caConfig.NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
 if ($caConfig.PolicyMode -ne 'ReportOnly') { throw "E2E config must use PolicyMode ReportOnly — refusing to risk enforcing policies in a shared tenant" }
 
-# All 8 policies CA-Policies.ps1 creates. C007 depends on the geo groups
+# All 12 policies CA-Policies.ps1 creates. C007 depends on the geo groups
 # (created by the Security-Groups prerequisite step below) and the UK named
 # location, which the script now auto-creates when those groups exist.
+# C010/C011 depend on the CA-BYOD-Windows group, which the script also
+# auto-creates (AutoCreateBYODGroups defaults true). C009 and C012 have no
+# group prerequisite at all.
 $ExpectedPolicyNames = @(
     'C001 - Block High Risk Users'
     'C002 - MFA Required for All Users'
@@ -63,6 +72,10 @@ $ExpectedPolicyNames = @(
     'C006 - Block Legacy Authentication'
     'C008 - Block Device Code Flow'
     'C007 - Block Sign-In Outside UK (UK Users)'
+    'C009 - BYOD Android and iOS App Protection'
+    'C010 - Windows BYOD (Browser Access)'
+    'C011 - Windows BYOD (Block Native Apps)'
+    'C012 - Guest Access'
 )
 
 $failures = 0
@@ -148,10 +161,15 @@ try {
     }
 
     $geoUkGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-GEO-UK'" -ErrorAction SilentlyContinue
+    $travelGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-UK-Travel-Exclusion'" -ErrorAction SilentlyContinue
     $c007 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C007 - Block Sign-In Outside UK (UK Users)'" -ErrorAction SilentlyContinue
     if ($c007 -and $ukLocation -and $geoUkGroup) {
         Write-Result (@($c007.Conditions.Users.IncludeGroups) -contains $geoUkGroup.Id) "C007 targets the E2E CA-GEO-UK group"
         Write-Result (@($c007.Conditions.Locations.ExcludeLocations) -contains $ukLocation.id) "C007 excludes the ${E2EPrefix}UK named location"
+    }
+    Write-Result ([bool]$travelGroup) "${E2EPrefix}CA-UK-Travel-Exclusion group was auto-created"
+    if ($c007 -and $travelGroup) {
+        Write-Result (@($c007.Conditions.Users.ExcludeGroups) -contains $travelGroup.Id) "C007 excludes the E2E UK travel exclusion group"
     }
 
     # C008's authenticationFlows condition isn't surfaced by every SDK model
@@ -161,6 +179,36 @@ try {
         $c008Raw = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c008.Id)" -ErrorAction Stop
         Write-Result ($c008Raw.conditions.authenticationFlows.transferMethods -match 'deviceCodeFlow') `
             "C008 blocks the device code flow authentication transfer method"
+    }
+
+    # C009: BYOD Android/iOS — MFA + require app protection policy
+    $c009 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C009 - BYOD Android and iOS App Protection'" -ErrorAction SilentlyContinue
+    if ($c009) {
+        Write-Result (@($c009.Conditions.Platforms.IncludePlatforms) -contains 'android' -and @($c009.Conditions.Platforms.IncludePlatforms) -contains 'iOS') `
+            "C009 targets android and iOS platforms"
+        Write-Result (@($c009.GrantControls.BuiltInControls) -contains 'compliantApplication') "C009 requires an app protection policy"
+    }
+
+    # C010/C011: Windows BYOD pair — scoped to the auto-created BYOD group
+    $byodGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-BYOD-Windows'" -ErrorAction SilentlyContinue
+    Write-Result ([bool]$byodGroup) "${E2EPrefix}CA-BYOD-Windows group was auto-created"
+    $c010 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C010 - Windows BYOD (Browser Access)'" -ErrorAction SilentlyContinue
+    if ($c010 -and $byodGroup) {
+        Write-Result (@($c010.Conditions.Users.IncludeGroups) -contains $byodGroup.Id) "C010 targets the E2E CA-BYOD-Windows group"
+        Write-Result (@($c010.Conditions.ClientAppTypes) -contains 'browser') "C010 is browser-only"
+    }
+    $c011 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C011 - Windows BYOD (Block Native Apps)'" -ErrorAction SilentlyContinue
+    if ($c011 -and $byodGroup) {
+        Write-Result (@($c011.Conditions.Users.IncludeGroups) -contains $byodGroup.Id) "C011 targets the E2E CA-BYOD-Windows group"
+        Write-Result (@($c011.GrantControls.BuiltInControls) -contains 'block') "C011 blocks native/desktop client apps"
+    }
+
+    # C012: Guest Access — MFA + daily sign-in frequency for guests, excluding
+    # mobile/mac/linux platforms
+    $c012 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C012 - Guest Access'" -ErrorAction SilentlyContinue
+    if ($c012) {
+        Write-Result ($null -ne $c012.Conditions.Users.IncludeGuestsOrExternalUsers) "C012 targets guests/external users"
+        Write-Result (@($c012.Conditions.Platforms.ExcludePlatforms) -contains 'android') "C012 excludes mobile/mac/linux platforms"
     }
 
     # ========================================================================

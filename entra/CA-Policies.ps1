@@ -9,6 +9,19 @@
 .AUTHOR
     BITS
 .VERSION
+    2.5 - Add four new CA policies based on real-world BYOD/Guest scenarios:
+          C009 - BYOD Android & iOS (MFA + require app protection policy),
+          C010 - Windows BYOD (Browser Access) (MFA, browser-only session with
+          app-enforced restrictions), C011 - Windows BYOD (Block Native Apps)
+          (blocks desktop/mobile client apps for the same Windows BYOD
+          population), C012 - Guest Access (MFA + daily sign-in frequency +
+          app-enforced restrictions for guests/external users, excluding
+          mobile/mac/linux). Also enhances C007 (Block Sign-In Outside UK)
+          with an optional UK travel exclusion group. Two new prerequisite
+          groups (Windows-BYOD, UK-Travel-Exclusion) auto-create empty,
+          mirroring the existing NoMFA Exclusion Group pattern, and are
+          optional: the policies that depend on them are skipped (not the
+          whole run) if creation fails or is declined.
     2.4 - Per-policy enforcement mode: the operator (or -ConfigFile) now
           chooses Report-only vs Enabled independently for each CA policy,
           instead of one global mode applied to all of them. PolicyMode
@@ -49,6 +62,13 @@
                                    progress, since CA policies cannot be
                                    created while Security Defaults is enabled
       AutoCreateNoMfaGroup        (bool) default true
+      AutoCreateBYODGroups        (bool) default true — covers the Windows
+                                   BYOD group (C010/C011) and the UK travel
+                                   exclusion group (C007). Unlike the NoMFA
+                                   group these are optional: if creation is
+                                   declined/disabled/fails, the policies that
+                                   depend on them are skipped rather than
+                                   blocking the whole run.
 .PARAMETER ResultPath
     Optional path to write a JSON results summary (created/skipped/failed),
     so a CI runner can assert on the outcome.
@@ -74,6 +94,7 @@ $script:RunConfig = @{
     PolicyModes                 = @{}
     AutoDisableSecurityDefaults = $true
     AutoCreateNoMfaGroup        = $true
+    AutoCreateBYODGroups        = $true
 }
 
 if ($ConfigFile) {
@@ -215,6 +236,14 @@ function Test-Prerequisites {
         return @{ Success = $false }
     }
 
+    # Check for the Windows BYOD group (optional — C010/C011 skipped if missing)
+    Write-Host "   Checking for CA-BYOD-Windows group (optional)..." -ForegroundColor Gray
+    $byodWindowsResult = Test-BYODWindowsGroup
+    $byodWindowsGroupId = if ($byodWindowsResult.Success) { $byodWindowsResult.GroupId } else { $null }
+    if (!$byodWindowsGroupId) {
+        Write-Host "   CA-BYOD-Windows unavailable - C010/C011 (Windows BYOD) will be skipped" -ForegroundColor Yellow
+    }
+
     # Check for geo-based CA groups (optional — C007 skipped if missing)
     Write-Host "   Checking for geo-based CA groups (optional)..." -ForegroundColor Gray
     $groupPrefix = $script:RunConfig.GroupNamePrefix
@@ -271,6 +300,22 @@ function Test-Prerequisites {
         Write-Host "   Geo groups absent - named location not needed, C007 will be skipped" -ForegroundColor Yellow
     }
 
+    # Check for the UK travel exclusion group — only relevant if C007 itself
+    # is actually going to be created (no point creating an unused group in
+    # tenants that don't use GEO-blocking at all). Optional: if it can't be
+    # resolved, C007 is still created, just without the travel exemption.
+    $ukTravelExclusionGroupId = $null
+    if ($geoUkGroup -and $geoIntlGroup -and $ukLocation) {
+        Write-Host "   Checking for CA-UK-Travel-Exclusion group (optional)..." -ForegroundColor Gray
+        $travelExclusionResult = Test-UkTravelExclusionGroup
+        if ($travelExclusionResult.Success) {
+            $ukTravelExclusionGroupId = $travelExclusionResult.GroupId
+        }
+        else {
+            Write-Host "   CA-UK-Travel-Exclusion unavailable - C007 will be created without a travel exemption" -ForegroundColor Yellow
+        }
+    }
+
     Write-Host ""
     # Explicit if/else rather than ?. — under Set-StrictMode (as the E2E test
     # harness enables), $geoUkGroup?.Id is parsed as a variable literally named
@@ -282,6 +327,8 @@ function Test-Prerequisites {
         GeoUkGroupId             = if ($geoUkGroup) { $geoUkGroup.Id } else { $null }
         GeoIntlGroupId           = if ($geoIntlGroup) { $geoIntlGroup.Id } else { $null }
         UkLocationId             = if ($ukLocation) { $ukLocation.id } else { $null }
+        ByodWindowsGroupId       = $byodWindowsGroupId
+        UkTravelExclusionGroupId = $ukTravelExclusionGroupId
     }
 }
 
@@ -360,66 +407,120 @@ function Test-SecurityDefaults {
     }
 }
 
-function Test-NoMfaGroup {
+function Test-OrCreateCAGroup {
     <#
     .SYNOPSIS
-        Check for NoMFA Exclusion Group and offer to create if missing
+        Looks up a security group by (prefixed) name and offers/attempts to
+        create it empty if missing — shared by every group-backed CA policy
+        prerequisite (NoMFA Exclusion Group, Windows BYOD, UK travel
+        exclusion). Interactive: prompts Y/N. Non-interactive: creates
+        automatically unless $AutoCreate is $false.
     #>
+    param(
+        [Parameter(Mandatory)][string]$GroupName,
+        [Parameter(Mandatory)][string]$Description,
+        [Parameter(Mandatory)][string]$RequiredForText,
+        [bool]$AutoCreate = $true
+    )
 
     try {
-        $groupPrefix = $script:RunConfig.GroupNamePrefix
-        $groupName = "${groupPrefix}NoMFA Exclusion Group"
-        $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction SilentlyContinue
+        $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction SilentlyContinue
 
         if ($group) {
-            Write-Host "   $groupName found (ID: $($group.Id))" -ForegroundColor Green
+            Write-Host "   $GroupName found (ID: $($group.Id))" -ForegroundColor Green
             return @{ Success = $true; GroupId = $group.Id }
         }
 
         # Group doesn't exist - offer to create
-        Write-Host "   $groupName not found" -ForegroundColor Yellow
+        Write-Host "   $GroupName not found" -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "   This group is required to exclude break-glass accounts from MFA policies." -ForegroundColor Yellow
+        Write-Host "   $RequiredForText" -ForegroundColor Yellow
         Write-Host ""
 
         if ($script:NonInteractive) {
-            if (!$script:RunConfig.AutoCreateNoMfaGroup) {
-                Write-Host "   AutoCreateNoMfaGroup is false - cannot proceed" -ForegroundColor Yellow
+            if (!$AutoCreate) {
+                Write-Host "   Auto-create disabled for $GroupName - cannot proceed" -ForegroundColor Yellow
                 return @{ Success = $false }
             }
-            Write-Host "   Non-interactive mode: creating $groupName automatically" -ForegroundColor Gray
+            Write-Host "   Non-interactive mode: creating $GroupName automatically" -ForegroundColor Gray
         }
         else {
-            Write-Host "   [Y] Create $groupName now  [N] Cancel" -ForegroundColor Gray
+            Write-Host "   [Y] Create $GroupName now  [N] Skip" -ForegroundColor Gray
             $confirm = Read-Host "   Create the group? (Y/N)"
 
             if ($confirm -notlike "Y*") {
-                Write-Host "   Cancelled - run Security Groups script first" -ForegroundColor Yellow
+                Write-Host "   Skipped - create $GroupName manually first if you need it" -ForegroundColor Yellow
                 return @{ Success = $false }
             }
         }
 
         # Create the group
-        Write-Host "   Creating $groupName..." -ForegroundColor Yellow
+        Write-Host "   Creating $GroupName..." -ForegroundColor Yellow
 
         $groupParams = @{
-            DisplayName = $groupName
-            Description = "Members excluded from MFA requirements - USE FOR BREAK-GLASS ACCOUNTS ONLY"
+            DisplayName = $GroupName
+            Description = $Description
             MailEnabled = $false
-            MailNickname = ($groupName -replace '[^a-zA-Z0-9]', '')
+            MailNickname = ($GroupName -replace '[^a-zA-Z0-9]', '')
             SecurityEnabled = $true
         }
 
         $newGroup = New-MgGroup -BodyParameter $groupParams -ErrorAction Stop
-        Write-Host "   Created $groupName (ID: $($newGroup.Id))" -ForegroundColor Green
-        Write-Host "   IMPORTANT: Add break-glass accounts to this group!" -ForegroundColor Yellow
+        Write-Host "   Created $GroupName (ID: $($newGroup.Id))" -ForegroundColor Green
+        Write-Host "   IMPORTANT: populate this group's membership as appropriate!" -ForegroundColor Yellow
 
         return @{ Success = $true; GroupId = $newGroup.Id; Created = $true }
     }
     catch {
-        Write-Host "   Error with NoMFA group: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Error with ${GroupName}: $($_.Exception.Message)" -ForegroundColor Red
         return @{ Success = $false; Error = $_.Exception.Message }
     }
+}
+
+function Test-NoMfaGroup {
+    <#
+    .SYNOPSIS
+        Check for NoMFA Exclusion Group and offer to create if missing.
+        Unlike the other group prerequisites below, this one is REQUIRED —
+        every policy excludes it for break-glass safety, so a failure here
+        blocks the whole run (see Test-Prerequisites).
+    #>
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    return Test-OrCreateCAGroup -GroupName "${groupPrefix}NoMFA Exclusion Group" `
+        -Description "Members excluded from MFA requirements - USE FOR BREAK-GLASS ACCOUNTS ONLY" `
+        -RequiredForText "This group is required to exclude break-glass accounts from MFA policies." `
+        -AutoCreate $script:RunConfig.AutoCreateNoMfaGroup
+}
+
+function Test-BYODWindowsGroup {
+    <#
+    .SYNOPSIS
+        Check for the Windows BYOD group (C010/C011's scope) and offer to
+        create if missing. Optional — unlike NoMFA, a failure here just
+        skips C010/C011 rather than blocking the whole run, since an empty
+        or missing group only means "no Windows BYOD policies yet", not an
+        unsafe state.
+    #>
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    return Test-OrCreateCAGroup -GroupName "${groupPrefix}CA-BYOD-Windows" `
+        -Description "Users in scope for Windows BYOD Conditional Access: browser access only (MFA required), native/desktop apps blocked" `
+        -RequiredForText "This group scopes C010/C011 (Windows BYOD policies) — skipped if it can't be resolved." `
+        -AutoCreate $script:RunConfig.AutoCreateBYODGroups
+}
+
+function Test-UkTravelExclusionGroup {
+    <#
+    .SYNOPSIS
+        Check for the UK travel exclusion group (an additional C007
+        exclusion, for staff temporarily travelling outside the UK) and
+        offer to create if missing. Optional — a failure here just means
+        C007 is created without the travel exclusion, not blocked entirely.
+    #>
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    return Test-OrCreateCAGroup -GroupName "${groupPrefix}CA-UK-Travel-Exclusion" `
+        -Description "Users temporarily exempted from C007 (Block Sign-In Outside UK) while travelling — add/remove as needed, do not leave populated long-term" `
+        -RequiredForText "This group lets C007 (Block Sign-In Outside UK) exempt travelling staff — skipped if it can't be resolved." `
+        -AutoCreate $script:RunConfig.AutoCreateBYODGroups
 }
 
 # ============================================================================
@@ -451,7 +552,9 @@ function Get-PolicyDefinitions {
         [string]$PolicyState = "enabled",
         [string]$GeoUkGroupId,
         [string]$GeoIntlGroupId,
-        [string]$UkLocationId
+        [string]$UkLocationId,
+        [string]$ByodWindowsGroupId,
+        [string]$UkTravelExclusionGroupId
     )
 
     $namePrefix = $script:RunConfig.NamePrefix
@@ -589,6 +692,11 @@ function Get-PolicyDefinitions {
     ) + $(
         # C007 only added if geo groups and UK named location exist in this tenant
         if ($GeoUkGroupId -and $GeoIntlGroupId -and $UkLocationId) {
+            # Travel exclusion group is itself optional (see Test-Prerequisites)
+            # — C007 still gets created without it, just with no way to
+            # exempt travelling staff until the group is created/populated.
+            $c007ExcludeGroups = @($NoMfaGroupId, $GeoIntlGroupId)
+            if ($UkTravelExclusionGroupId) { $c007ExcludeGroups += $UkTravelExclusionGroupId }
             @(
                 @{
                     displayName = "C007 - Block Sign-In Outside UK (UK Users)"
@@ -598,7 +706,7 @@ function Get-PolicyDefinitions {
                         clientAppTypes = @("all")
                         users          = @{
                             includeGroups = @($GeoUkGroupId)
-                            excludeGroups = @($NoMfaGroupId, $GeoIntlGroupId)
+                            excludeGroups = @($c007ExcludeGroups)
                         }
                         locations      = @{
                             includeLocations = @("All")
@@ -613,6 +721,118 @@ function Get-PolicyDefinitions {
             )
         }
         else { @() }
+    ) + $(
+        # C009: BYOD Android/iOS — unconditional (no group prerequisite; reuses
+        # the NoMFA group for break-glass, same as every other policy, rather
+        # than a bespoke exclusion group — Android/iOS has no device-compliance
+        # coverage elsewhere (C003 is Windows/macOS only), so this covers that
+        # gap via app protection instead of device compliance.
+        @(
+            @{
+                displayName = "C009 - BYOD Android and iOS App Protection"
+                state       = $PolicyState
+                conditions  = @{
+                    applications   = @{ includeApplications = @("Office365") }
+                    clientAppTypes = @("all")
+                    users          = @{
+                        includeUsers  = @("All")
+                        excludeGroups = @($NoMfaGroupId)
+                    }
+                    platforms      = @{ includePlatforms = @("android", "iOS") }
+                }
+                grantControls = @{
+                    builtInControls = @("mfa", "compliantApplication")
+                    operator        = "AND"
+                }
+            }
+        )
+    ) + $(
+        # C010/C011: Windows BYOD pair — both scoped to the same include
+        # group, only added if that group could be resolved (see
+        # Test-BYODWindowsGroup). Together: browser access is allowed (MFA +
+        # app-enforced session restrictions), native/desktop apps are
+        # blocked outright — this is what actually forces BYOD Windows
+        # users onto the restricted browser path instead of e.g. the
+        # desktop Outlook/OneDrive sync client.
+        if ($ByodWindowsGroupId) {
+            @(
+                @{
+                    displayName = "C010 - Windows BYOD (Browser Access)"
+                    state       = $PolicyState
+                    conditions  = @{
+                        applications   = @{ includeApplications = @("Office365") }
+                        clientAppTypes = @("browser")
+                        users          = @{ includeGroups = @($ByodWindowsGroupId) }
+                        platforms      = @{ includePlatforms = @("windows") }
+                    }
+                    grantControls = @{
+                        builtInControls = @("mfa")
+                        operator        = "OR"
+                    }
+                    sessionControls = @{
+                        applicationEnforcedRestrictions = @{ isEnabled = $true }
+                    }
+                },
+                @{
+                    displayName = "C011 - Windows BYOD (Block Native Apps)"
+                    state       = $PolicyState
+                    conditions  = @{
+                        applications   = @{ includeApplications = @("Office365") }
+                        clientAppTypes = @("mobileAppsAndDesktopClients")
+                        users          = @{ includeGroups = @($ByodWindowsGroupId) }
+                        platforms      = @{ includePlatforms = @("windows") }
+                    }
+                    grantControls = @{
+                        builtInControls = @("block")
+                        operator        = "OR"
+                    }
+                }
+            )
+        }
+        else { @() }
+    ) + $(
+        # C012: Guest Access — targets guests/external users specifically via
+        # the built-in directory condition (not a security group), so no
+        # prerequisite needed. Excludes mobile/mac/linux platforms on
+        # purpose, matching the reference tenant: this covers Windows +
+        # unknown/other platforms only.
+        @(
+            @{
+                displayName = "C012 - Guest Access"
+                state       = $PolicyState
+                conditions  = @{
+                    applications   = @{ includeApplications = @("Office365") }
+                    clientAppTypes = @("all")
+                    users          = @{
+                        includeGuestsOrExternalUsers = @{
+                            guestOrExternalUserTypes = "internalGuest,b2bCollaborationGuest,b2bCollaborationMember,otherExternalUser"
+                            externalTenants           = @{
+                                '@odata.type'  = '#microsoft.graph.conditionalAccessAllExternalTenants'
+                                membershipKind = 'all'
+                            }
+                        }
+                    }
+                    platforms      = @{
+                        includePlatforms = @("all")
+                        excludePlatforms = @("android", "iOS", "macOS", "linux")
+                    }
+                }
+                grantControls = @{
+                    builtInControls = @("mfa")
+                    operator        = "OR"
+                }
+                sessionControls = @{
+                    applicationEnforcedRestrictions = @{ isEnabled = $true }
+                    signInFrequency = @{
+                        value               = 1
+                        type                = "days"
+                        authenticationType  = "primaryAndSecondaryAuthentication"
+                        frequencyInterval   = "timeBased"
+                        isEnabled           = $true
+                    }
+                }
+            }
+        )
     )
 
     if ($namePrefix) {
@@ -755,10 +975,17 @@ function New-ConditionalAccessPolicy {
         }
 
         # Ensure NoMFA group is in exclusions — append rather than overwrite so
-        # policies with additional exclude groups (e.g. C007's geo group) keep them
-        if ($NoMfaGroupId -and $PolicyConfig.conditions.users.excludeGroups -notcontains $NoMfaGroupId) {
-            $existingExcludes = @($PolicyConfig.conditions.users.excludeGroups) | Where-Object { $_ }
-            $PolicyConfig.conditions.users.excludeGroups = @($existingExcludes) + $NoMfaGroupId
+        # policies with additional exclude groups (e.g. C007's geo group) keep
+        # them. Bracket/ContainsKey access throughout: some policies (C010,
+        # C011, C012) don't define an excludeGroups key at all (they scope via
+        # includeGroups or includeGuestsOrExternalUsers instead), and dot
+        # access on a missing hashtable key throws under Set-StrictMode.
+        $usersBlock = $PolicyConfig.conditions.users
+        $currentExcludes = if ($usersBlock.ContainsKey('excludeGroups')) {
+            @($usersBlock['excludeGroups']) | Where-Object { $_ }
+        } else { @() }
+        if ($NoMfaGroupId -and $currentExcludes -notcontains $NoMfaGroupId) {
+            $usersBlock['excludeGroups'] = @($currentExcludes) + $NoMfaGroupId
         }
 
         # Create policy
@@ -808,6 +1035,8 @@ function Start-CAPolicyCreation {
     $geoUkGroupId    = $prereqResult.GeoUkGroupId
     $geoIntlGroupId  = $prereqResult.GeoIntlGroupId
     $ukLocationId    = $prereqResult.UkLocationId
+    $byodWindowsGroupId       = $prereqResult.ByodWindowsGroupId
+    $ukTravelExclusionGroupId = $prereqResult.UkTravelExclusionGroupId
 
     # Step 2: Load data
     Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
@@ -823,7 +1052,8 @@ function Start-CAPolicyCreation {
     # -PolicyState here is just a placeholder seed — Set-PolicyStates (Step 3)
     # overwrites every policy's actual state individually right after this.
     $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId -PolicyState "enabledForReportingButNotEnforced" `
-        -GeoUkGroupId $geoUkGroupId -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId
+        -GeoUkGroupId $geoUkGroupId -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId `
+        -ByodWindowsGroupId $byodWindowsGroupId -UkTravelExclusionGroupId $ukTravelExclusionGroupId
     Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
 
     # Step 3: Choose enforcement mode, per policy
