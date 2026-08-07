@@ -405,29 +405,25 @@ function New-AppProtectionPolicy {
                 }
             }
             try {
-                $null = Invoke-MgGraphRequest -Uri "$baseUri('$policyId')/assign" -Method POST -Body (@{ assignments = $assignments } | ConvertTo-Json -Depth 10) -ErrorAction Stop
-                Write-Host "     Assigned to All Users$(if ($NoMfaGroupId) { ' (NoMFA Exclusion Group excluded)' })" -ForegroundColor Green
+                # -SkipHttpErrorCheck: Invoke-MgGraphRequest's normal
+                # -ErrorAction Stop path throws a bare HttpRequestException
+                # with no response body attached (confirmed live: both
+                # $_.ErrorDetails and $_.Exception.InnerException were $null
+                # for a real 400 here) - there is no way to see *why* a
+                # failure happened without this. With it, the call never
+                # throws; the parsed response is returned either way, so a
+                # Graph error comes back as a normal hashtable with an
+                # 'error' key instead of an exception.
+                $assignResponse = Invoke-MgGraphRequest -Uri "$baseUri('$policyId')/assign" -Method POST -Body (@{ assignments = $assignments } | ConvertTo-Json -Depth 10) -SkipHttpErrorCheck -ErrorAction Stop
+                if ($assignResponse -is [hashtable] -and $assignResponse.ContainsKey('error')) {
+                    Write-Host "     Assignment failed: $($assignResponse.error.code) - $($assignResponse.error.message)" -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host "     Assigned to All Users$(if ($NoMfaGroupId) { ' (NoMFA Exclusion Group excluded)' })" -ForegroundColor Green
+                }
             }
             catch {
-                # Guard with -and, not just `if ($_.ErrorDetails.Message)` -
-                # dot access on a $null ErrorDetails throws under
-                # Set-StrictMode (confirmed live: Invoke-MgGraphRequest's
-                # exception here has a $null ErrorDetails, not merely one
-                # with an empty Message). The inner catch must not reference
-                # $_ either - it would be rebound to the ConvertFrom-Json
-                # failure, not the original request exception.
-                $errorMessage = $_.Exception.Message
-                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-                    try {
-                        $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
-                        if ($errorDetails.error.message) { $errorMessage = "$errorMessage - $($errorDetails.error.message)" }
-                    }
-                    catch { }
-                }
-                elseif ($_.Exception.InnerException) {
-                    $errorMessage = "$errorMessage - inner: $($_.Exception.InnerException.Message)"
-                }
-                Write-Host "     Assignment failed: $errorMessage" -ForegroundColor Yellow
+                Write-Host "     Assignment failed: $($_.Exception.Message)" -ForegroundColor Yellow
             }
         }
 
