@@ -11,11 +11,13 @@
          create the NoMFA Exclusion Group this script uses as an assignment
          exclusion
       2. Runs Intune/App-Protection-Policies.ps1 non-interactively (E2E-
-         prefix) — the real script, same file the menu calls
+         prefix) — the real script, same file the menu calls. It auto-creates
+         its own CA-BYOD-Mobile group (the required assignment target - Intune
+         app protection policies reject "All Licensed Users", confirmed live)
       3. Verifies the 2 expected policies (Android + iOS) exist via the beta
          deviceAppManagement endpoints, are targeted at the core M365 apps,
-         and are assigned to All Licensed Users with the E2E NoMFA group
-         excluded
+         and are assigned to the E2E CA-BYOD-Mobile group with the E2E NoMFA
+         group excluded
       4. Re-runs the script to prove idempotency (settings/apps reconciled,
          no duplicate policies, assignment left untouched)
       5. Deletes every E2E- prefixed app protection policy and group in a
@@ -101,6 +103,8 @@ try {
     Write-Host "`n== Verifying created policies in tenant ==" -ForegroundColor Cyan
     $noMfaGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}NoMFA Exclusion Group'" -ErrorAction SilentlyContinue
     Write-Result ([bool]$noMfaGroup) "${E2EPrefix}NoMFA Exclusion Group exists (created by Security-Groups.ps1)"
+    $byodGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-BYOD-Mobile'" -ErrorAction SilentlyContinue
+    Write-Result ([bool]$byodGroup) "${E2EPrefix}CA-BYOD-Mobile group was auto-created (required assignment target)"
 
     $expectedPolicies = @(
         @{ Name = "${E2EPrefix}Android App Protection Policy"; Endpoint = 'androidManagedAppProtections' }
@@ -123,10 +127,12 @@ try {
         $apps = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/$($expected.Endpoint)('$($policy.id)')/apps" -Method GET -ErrorAction Stop
         Write-Result (@($apps.value).Count -ge 7) "$($expected.Name) has at least 7 targeted apps (actual: $(@($apps.value).Count))"
 
-        # Assignment: All Licensed Users + exclusion group
+        # Assignment: CA-BYOD-Mobile group + NoMFA exclusion group
         $assignments = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/$($expected.Endpoint)('$($policy.id)')/assignments" -Method GET -ErrorAction Stop
-        $targetTypes = @($assignments.value | ForEach-Object { $_.target.'@odata.type' })
-        Write-Result ($targetTypes -contains '#microsoft.graph.allLicensedUsersAssignmentTarget') "$($expected.Name) is assigned to All Licensed Users"
+        if ($byodGroup) {
+            $includeAssignment = $assignments.value | Where-Object { $_.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget' }
+            Write-Result ($includeAssignment -and $includeAssignment.target.groupId -eq $byodGroup.Id) "$($expected.Name) is assigned to the E2E CA-BYOD-Mobile group"
+        }
 
         if ($noMfaGroup) {
             $exclusionAssignment = $assignments.value | Where-Object { $_.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget' }
