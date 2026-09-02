@@ -28,6 +28,7 @@ on:
           - compliance-policies
           - app-protection-policies
           - configuration-policies
+          - endpoint-analytics
           - wau-deployment
           - shared-mb-creation
           - distribution-lists
@@ -581,18 +582,78 @@ jobs:
             Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
           }
 
-  e2e-wau-deployment:
-    name: WAU-Deployment end-to-end
+  e2e-endpoint-analytics:
+    name: Endpoint-Analytics end-to-end
     runs-on: windows-latest
     timeout-minutes: 20
     # Chained after e2e-configuration-policies — this test also invokes
     # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
     # in the same tenant, so it must not run concurrently with the other
-    # eight.
+    # jobs.
     needs: e2e-configuration-policies
     if: |
       always() &&
       (needs.e2e-configuration-policies.result == 'success' || needs.e2e-configuration-policies.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'endpoint-analytics')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.DeviceManagement -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser
+
+      - name: Import auth certificate
+        shell: pwsh
+        env:
+          M365_PFX_BASE64: ${{ secrets.M365_PFX_BASE64 }}
+          M365_PFX_PASSWORD: ${{ secrets.M365_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'e2e.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:M365_PFX_BASE64))
+          $pwd = ConvertTo-SecureString $env:M365_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Remove-Item $pfxPath -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Endpoint-Analytics E2E test
+        shell: pwsh
+        env:
+          M365_TENANT_ID: ${{ secrets.M365_TENANT_ID }}
+          M365_APP_ID: ${{ secrets.M365_APP_ID }}
+        run: |
+          ./Tests/E2E/Invoke-EndpointAnalyticsE2E.ps1 `
+            -TenantId $env:M365_TENANT_ID `
+            -AppId $env:M365_APP_ID `
+            -CertificateThumbprint $env:CERT_THUMBPRINT
+
+      - name: Remove auth certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT" -ErrorAction SilentlyContinue
+          }
+
+  e2e-wau-deployment:
+    name: WAU-Deployment end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Chained after e2e-endpoint-analytics — this test also invokes
+    # Device-Groups.ps1 as a setup step and touches "E2E-" prefixed objects
+    # in the same tenant, so it must not run concurrently with the other
+    # jobs.
+    needs: e2e-endpoint-analytics
+    if: |
+      always() &&
+      (needs.e2e-endpoint-analytics.result == 'success' || needs.e2e-endpoint-analytics.result == 'skipped') &&
       (github.event_name != 'workflow_dispatch' || inputs.only_job == 'all' || inputs.only_job == 'wau-deployment')
 
     steps:
