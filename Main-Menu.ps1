@@ -1347,6 +1347,7 @@ function Test-Prerequisites {
         "UserCreation" { return $Global:CompletedSteps.SecurityGroups }
         "PasswordPolicies" { return $Global:CompletedSteps.AdminAccounts }
         "ConfigPolicies" { return $Global:CompletedSteps.DeviceGroups }
+        "EndpointAnalytics" { return $Global:CompletedSteps.DeviceGroups }
         "CompliancePolicies" { return $Global:CompletedSteps.DeviceGroups }
         "AppProtectionPolicies" { return $Global:CompletedSteps.SecurityGroups }
         "AppDeployment" { return ($Global:CompletedSteps.DeviceGroups -and $Global:CompletedSteps.CompliancePolicies) }
@@ -1981,6 +1982,13 @@ function Show-IntuneMenu {
             Write-Host "7. 🛡️ App Protection Policies (Android/iOS BYOD) [REQUIRES: Security Groups]" -ForegroundColor Red
         }
 
+        # Endpoint Analytics - Requires Device Groups
+        if (Test-Prerequisites -RequiredStep "EndpointAnalytics") {
+            Write-Host "8. 📊 Endpoint Analytics (Device Performance)" -ForegroundColor Green
+        } else {
+            Write-Host "8. 📊 Endpoint Analytics (Device Performance) [REQUIRES: Device Groups]" -ForegroundColor Red
+        }
+
         Write-Host "0. ⬅️ Back to Main Menu"
         Write-Host ""
         
@@ -2049,6 +2057,16 @@ function Show-IntuneMenu {
                     Initialize-CompletedSteps
                 } else {
                     Write-Host "❌ Create Security Groups first!" -ForegroundColor Red
+                    Start-Sleep 2
+                }
+            }
+            "8" {
+                if (Test-Prerequisites -RequiredStep "EndpointAnalytics") {
+                    Invoke-GitHubScript -ScriptPath "Intune/Endpoint-Analytics.ps1"
+                    Write-Host "🔄 Refreshing menu options..." -ForegroundColor Gray
+                    Initialize-CompletedSteps
+                } else {
+                    Write-Host "❌ Create Device Groups first!" -ForegroundColor Red
                     Start-Sleep 2
                 }
             }
