@@ -281,13 +281,17 @@ function Show-PolicyPreview {
 function New-EndpointAnalyticsPolicy {
     param([string]$GroupId)
 
+    # Every return path sets Error (to $null on success) so the caller's
+    # $result.Error works under Set-StrictMode -Version Latest (used by the
+    # E2E harness) — a hashtable missing a key throws there, it doesn't just
+    # return $null (confirmed live).
     try {
         $existingPolicies = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/deviceManagement/configurationPolicies' -Method GET
         $existingPolicy = $existingPolicies.value | Where-Object { $_.name -eq $script:PolicyName }
 
         if ($existingPolicy) {
             Write-Host '     Already exists (skipped)' -ForegroundColor Yellow
-            return @{ Success = $true; Skipped = $true; Policy = $existingPolicy }
+            return @{ Success = $true; Skipped = $true; Policy = $existingPolicy; Error = $null }
         }
 
         $policyDefinition = Get-EndpointAnalyticsPolicyDefinition
@@ -308,7 +312,7 @@ function New-EndpointAnalyticsPolicy {
         }
 
         Write-Host "     Created (ID: $($newPolicy.id))" -ForegroundColor Green
-        return @{ Success = $true; Skipped = $false; Policy = $newPolicy }
+        return @{ Success = $true; Skipped = $false; Policy = $newPolicy; Error = $null }
     }
     catch {
         $errorMessage = $_.Exception.Message
