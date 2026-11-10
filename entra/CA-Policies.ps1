@@ -9,6 +9,13 @@
 .AUTHOR
     BITS
 .VERSION
+    2.6 - C007 (Block Sign-In Outside UK) now excludes only the UK named
+          location, instead of the UK location plus "AllTrusted". The portal
+          can't display a named location and "All trusted" together, so a
+          portal save silently dropped the UK exclusion and the policy then
+          blocked UK sign-ins. Excluding the UK location alone is shown and
+          kept by the portal. Existing tenants are not changed (policies that
+          already exist are skipped): check their C007 excluded locations.
     2.5 - Add four new CA policies based on real-world BYOD/Guest scenarios:
           C009 - BYOD Android & iOS (MFA + require app protection policy),
           C010 - Windows BYOD (Browser Access) (MFA, browser-only session with
@@ -708,9 +715,17 @@ function Get-PolicyDefinitions {
                             includeGroups = @($GeoUkGroupId)
                             excludeGroups = @($c007ExcludeGroups)
                         }
+                        # Exclude the UK named location ONLY ("Selected networks and
+                        # locations" in the portal). Do NOT also add "AllTrusted":
+                        # the portal's Network blade can't show a named location and
+                        # "All trusted" together, so it displays only "All trusted",
+                        # and the next portal save of this policy (e.g. widening its
+                        # users) silently drops the UK exclusion — which turns this
+                        # into a block on every UK sign-in. A named-location-only
+                        # exclusion is displayed and preserved by the portal.
                         locations      = @{
                             includeLocations = @("All")
-                            excludeLocations = @($UkLocationId, "AllTrusted")
+                            excludeLocations = @($UkLocationId)
                         }
                     }
                     grantControls = @{

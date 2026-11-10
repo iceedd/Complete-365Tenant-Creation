@@ -166,6 +166,10 @@ try {
     if ($c007 -and $ukLocation -and $geoUkGroup) {
         Write-Result (@($c007.Conditions.Users.IncludeGroups) -contains $geoUkGroup.Id) "C007 targets the E2E CA-GEO-UK group"
         Write-Result (@($c007.Conditions.Locations.ExcludeLocations) -contains $ukLocation.id) "C007 excludes the ${E2EPrefix}UK named location"
+        # The UK location must be the ONLY excluded location: the portal can't
+        # display a named location alongside "AllTrusted", and a portal save
+        # then silently drops the UK exclusion (which blocked every UK sign-in).
+        Write-Result (@($c007.Conditions.Locations.ExcludeLocations) -notcontains 'AllTrusted') "C007 excludes the UK location only (no 'AllTrusted')"
     }
     Write-Result ([bool]$travelGroup) "${E2EPrefix}CA-UK-Travel-Exclusion group was auto-created"
     if ($c007 -and $travelGroup) {
