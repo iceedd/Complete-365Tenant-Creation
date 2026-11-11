@@ -186,6 +186,38 @@ try {
     Start-Sleep -Seconds 30
 
     # ========================================================================
+    # Compare-only: reports every policy as missing and changes NOTHING —
+    # no policy, no named location, no group membership
+    # ========================================================================
+    Write-Host "`n== Verifying the compare-only run is read-only ==" -ForegroundColor Cyan
+    $compareConfigPath = "$RunConfigPath.compare.json"
+    $compareConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+    $compareConfig['CompareOnly'] = $true
+    $compareConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $compareConfigPath -Encoding UTF8
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+        -NonInteractive -ConfigFile $compareConfigPath -ResultPath $CAResultPath
+    Remove-Item $compareConfigPath -Force -ErrorAction SilentlyContinue
+
+    $compared = if (Test-Path $CAResultPath) { Get-Content $CAResultPath -Raw | ConvertFrom-Json } else { $null }
+    Write-Result ($compared -and $compared.Success -and $compared.CompareOnly) "Compare-only run reported success"
+    if ($compared) {
+        Write-Result (@($compared.Comparison).Count -eq $ExpectedPolicyNames.Count -and @($compared.Comparison | Where-Object { $_.Status -ne 'Missing' }).Count -eq 0) `
+            "Compare-only run reported all $($ExpectedPolicyNames.Count) policies as missing"
+    }
+    $afterCompare = @(Get-MgIdentityConditionalAccessPolicy -All -ErrorAction Stop | Where-Object { $_.DisplayName -like "$E2EPrefix*" })
+    Write-Result ($afterCompare.Count -eq 0) "Compare-only run created no policies"
+    $locationsAfterCompare = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" -ErrorAction Stop
+    Write-Result (@(@($locationsAfterCompare.value) | Where-Object { $_.displayName -eq "${E2EPrefix}UK" }).Count -eq 0) "Compare-only run created no named location"
+    $noMfaBefore = Get-MgGroup -Filter "displayName eq '${E2EPrefix}NoMFA Exclusion Group'" -ErrorAction SilentlyContinue
+    if ($noMfaBefore) {
+        $membersBefore = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/groups/$($noMfaBefore.Id)/members?`$select=id" -ErrorAction Stop
+        Write-Result (@($membersBefore['value']).Count -eq 0) "Compare-only run added nobody to the E2E NoMFA group"
+    }
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    # ========================================================================
     # Failsafe: with no emergency access account the script must stop before
     # creating anything (the NoMFA Exclusion Group is still empty here)
     # ========================================================================
@@ -359,6 +391,16 @@ try {
     Write-Result (@($second.ExclusionsAdded).Count -eq 0 -and @($second.ExclusionsMissing).Count -eq 0) `
         "Second run found the exclusions already on every policy and changed none"
 
+    # The comparison must see policies this script just created as matching
+    # its own design — any "Differs" here is a false alarm in the report
+    $notMatching = @($second.Comparison | Where-Object { $_.Status -ne 'Matches' })
+    Write-Result (@($second.Comparison).Count -eq $ExpectedPolicyNames.Count -and $notMatching.Count -eq 0) `
+        "Comparison reports all $($ExpectedPolicyNames.Count) freshly created policies as matching the design"
+    foreach ($entry in $notMatching) {
+        Write-Host "        $($entry.Status): $($entry.Name)" -ForegroundColor Red
+        foreach ($difference in @($entry.Differences)) { Write-Host "          - $difference" -ForegroundColor Red }
+    }
+
     # ========================================================================
     # Failsafe: an existing policy that lacks the standard exclusions gets
     # them added, and nothing else on it changes. C007 is the test subject
@@ -449,6 +491,12 @@ try {
         $fourth = Get-Content $CAResultPath -Raw | ConvertFrom-Json
         Write-Result ((@($fourth.Updated) -join ',') -eq $c007.DisplayName) "Fourth run updated C007 and no other policy"
         Write-Result (@($fourth.Created).Count -eq 0) "Fourth run created nothing"
+        $c007Compared = @($fourth.Comparison | Where-Object { $_.Code -eq 'C007' }) | Select-Object -First 1
+        Write-Result ($c007Compared -and $c007Compared.Status -eq 'Differs' -and $c007Compared.State -eq 'Enabled' -and
+            (@($c007Compared.Differences) -match 'All trusted').Count -gt 0) `
+            "Comparison reported the old-design C007 as different, enabled, and excluding All trusted"
+        Write-Result (@($fourth.Comparison | Where-Object { $_.Code -ne 'C007' -and $_.Status -ne 'Matches' }).Count -eq 0) `
+            "Comparison reported every other policy as matching"
 
         Start-Sleep -Seconds 20
         $newRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
