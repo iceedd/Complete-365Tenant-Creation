@@ -9,6 +9,20 @@
 .AUTHOR
     BITS
 .VERSION
+    3.0 - Read-only comparison with the tenant, for tenants that already have
+          Conditional Access policies:
+          * An interactive run now starts by asking whether to COMPARE ONLY
+            or to compare and then create/update. Compare-only (also
+            -CompareOnly, or CompareOnly in the config file) reads the
+            tenant and reports, per policy, Missing / Matches / Differs with
+            each difference from the script's design, plus which groups, the
+            UK named location and emergency access account are missing. It
+            creates and changes nothing - not even the groups or Security
+            Defaults a normal run would fix first.
+          * A normal run shows the same per-policy comparison before the
+            preview, so what already exists is seen before anything is made.
+          Enabled / Report-only is shown but never counted as a difference.
+          Extra exclusions added by hand are noted, not flagged.
     2.9 - An existing C007 that is not in the current design can be brought
           up to date. The script detects a C007 that still carries its old
           name, is scoped to a group instead of all users, or excludes
@@ -93,6 +107,10 @@
     never attempt interactive re-consent, and never prompt for each policy's
     enforcement mode (uses the ConfigFile's PolicyModes/PolicyMode instead).
     Used by CI E2E tests.
+.PARAMETER CompareOnly
+    Read-only run: compare the tenant's Conditional Access policies with
+    this script's design and report the differences. Nothing is created or
+    changed. Can also be set as CompareOnly in the ConfigFile.
 .PARAMETER ConfigFile
     Optional JSON file overriding run behaviour. Supported keys:
       NamePrefix                  (string) prefixed to every policy displayName
@@ -130,6 +148,8 @@
                                    emergency access account to policies that
                                    already exist and lack them. An interactive
                                    run asks instead.
+      CompareOnly                 (bool) default false. Same as -CompareOnly:
+                                   report differences and change nothing.
       UpdateExistingC007          (bool) default false. Non-interactive only:
                                    bring an existing C007 up to the current
                                    design (all users, UK location only,
@@ -153,6 +173,7 @@
 
 param(
     [switch] $NonInteractive,
+    [switch] $CompareOnly,
     [string] $ConfigFile,
     [string] $ResultPath
 )
@@ -182,6 +203,8 @@ $script:RunConfig = @{
     UpdateExistingExclusions    = $false
     # Non-interactive only: bring an existing C007 up to the current design
     UpdateExistingC007          = $false
+    # Read-only run: report differences from the design, change nothing
+    CompareOnly                 = $false
 }
 
 if ($ConfigFile) {
@@ -201,6 +224,8 @@ if ($ConfigFile) {
         if ($script:NonInteractive) { exit 2 } else { return }
     }
 }
+
+$script:CompareOnly = [bool]$CompareOnly -or [bool]$script:RunConfig.CompareOnly
 
 $RequiredModules = @(
     'Microsoft.Graph.Authentication',
@@ -1768,6 +1793,506 @@ function New-ConditionalAccessPolicy {
 }
 
 # ============================================================================
+# COMPARISON WITH THE TENANT (read-only)
+# ============================================================================
+
+function Get-ComparisonValue {
+    <#
+    .SYNOPSIS
+        Walks nested hashtables by key path; $null when any step is missing.
+    #>
+    param($Table, [string[]]$Path)
+
+    $node = $Table
+    foreach ($key in $Path) {
+        if ($null -eq $node -or $node -isnot [System.Collections.IDictionary] -or !$node.Contains($key)) { return $null }
+        $node = $node[$key]
+    }
+    return $node
+}
+
+function ConvertTo-ComparisonSet {
+    <#
+    .SYNOPSIS
+        Normalises a policy value (array, single string, comma-separated
+        string or $null) to a sorted, lower-case, de-duplicated string array
+        so two values can be compared whatever shape Graph returned them in.
+        "None" (what Graph stores for an empty include list) counts as empty.
+    #>
+    param($Value)
+
+    $items = @()
+    foreach ($entry in @($Value)) {
+        if ($null -eq $entry) { continue }
+        foreach ($part in ([string]$entry -split ',')) {
+            $text = $part.Trim().ToLowerInvariant()
+            if ($text -and $text -ne 'none' -and $items -notcontains $text) { $items += $text }
+        }
+    }
+    return @($items | Sort-Object)
+}
+
+function Format-ComparisonSet {
+    <#
+    .SYNOPSIS
+        Renders a normalised set for the report, swapping object IDs for
+        the names in $Labels where known.
+    #>
+    param([string[]]$Set, [hashtable]$Labels = @{})
+
+    $items = @($Set | Where-Object { $_ })
+    if ($items.Count -eq 0) { return '(none)' }
+    return (@($items | ForEach-Object { if ($Labels.ContainsKey($_)) { $Labels[$_] } else { $_ } }) -join ', ')
+}
+
+function Compare-PolicyToDefinition {
+    <#
+    .SYNOPSIS
+        Compares one policy as it exists in the tenant (raw Graph hashtable)
+        with this script's definition of it. Read-only.
+    .DESCRIPTION
+        Returns Differences (settings where the tenant's policy is not what
+        the script would create) and Notes (things worth knowing that are
+        not wrong, such as extra exclusions added by hand).
+
+        Included/targeted settings must equal the definition. Exclusions
+        only have to CONTAIN the definition's: extra exclusions are noted,
+        not treated as a difference. The policy's state (Enabled /
+        Report-only) is reported separately by the caller and is never a
+        difference, because enabling a policy after review is expected.
+
+        The definition passed in must already carry the standard exclusions
+        (Add-StandardExclusions).
+    #>
+    param(
+        [hashtable]$Definition,
+        $Existing,
+        [hashtable]$Labels = @{}
+    )
+
+    $differences = @()
+    $notes = @()
+
+    if ([string]$Existing['displayName'] -ne [string]$Definition.displayName) {
+        $differences += "Name: tenant has '$($Existing['displayName'])', design has '$($Definition.displayName)'"
+    }
+
+    # Settings that must be the same on both sides
+    $exactChecks = @(
+        @{ Label = 'Applies to users';        Path = @('conditions', 'users', 'includeUsers') }
+        @{ Label = 'Applies to groups';       Path = @('conditions', 'users', 'includeGroups') }
+        @{ Label = 'Applies to roles';        Path = @('conditions', 'users', 'includeRoles') }
+        @{ Label = 'Applies to guest types';  Path = @('conditions', 'users', 'includeGuestsOrExternalUsers', 'guestOrExternalUserTypes') }
+        @{ Label = 'Target resources';        Path = @('conditions', 'applications', 'includeApplications') }
+        @{ Label = 'Excluded resources';      Path = @('conditions', 'applications', 'excludeApplications') }
+        @{ Label = 'Client app types';        Path = @('conditions', 'clientAppTypes') }
+        @{ Label = 'Included platforms';      Path = @('conditions', 'platforms', 'includePlatforms') }
+        @{ Label = 'Excluded platforms';      Path = @('conditions', 'platforms', 'excludePlatforms') }
+        @{ Label = 'Included locations';      Path = @('conditions', 'locations', 'includeLocations') }
+        @{ Label = 'User risk levels';        Path = @('conditions', 'userRiskLevels') }
+        @{ Label = 'Sign-in risk levels';     Path = @('conditions', 'signInRiskLevels') }
+        @{ Label = 'Authentication flows';    Path = @('conditions', 'authenticationFlows', 'transferMethods') }
+        @{ Label = 'Grant controls';          Path = @('grantControls', 'builtInControls') }
+    )
+    foreach ($check in $exactChecks) {
+        $want = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Definition -Path $check.Path))
+        $have = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Existing -Path $check.Path))
+        if (($want -join '|') -ne ($have -join '|')) {
+            $differences += "$($check.Label): tenant has $(Format-ComparisonSet -Set $have -Labels $Labels), design has $(Format-ComparisonSet -Set $want -Labels $Labels)"
+        }
+    }
+
+    # "Require one / require all" only means something with several controls
+    $wantControls = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Definition -Path @('grantControls', 'builtInControls')))
+    if ($wantControls.Count -gt 1) {
+        $wantOperator = ([string](Get-ComparisonValue -Table $Definition -Path @('grantControls', 'operator'))).ToUpperInvariant()
+        $haveOperator = ([string](Get-ComparisonValue -Table $Existing -Path @('grantControls', 'operator'))).ToUpperInvariant()
+        if ($wantOperator -and $wantOperator -ne $haveOperator) {
+            $differences += "Grant operator: tenant has $(if ($haveOperator) { $haveOperator } else { '(none)' }), design has $wantOperator"
+        }
+    }
+
+    # Exclusions: the tenant's policy must contain the definition's
+    $subsetChecks = @(
+        @{ Missing = 'Does not exclude group';    Extra = 'other group(s)';   Path = @('conditions', 'users', 'excludeGroups') }
+        @{ Missing = 'Does not exclude account';  Extra = 'other user(s)';    Path = @('conditions', 'users', 'excludeUsers') }
+        @{ Missing = 'Does not exclude role';     Extra = 'other role(s)';    Path = @('conditions', 'users', 'excludeRoles') }
+        @{ Missing = 'Does not exclude location'; Extra = 'other location(s)'; Path = @('conditions', 'locations', 'excludeLocations') }
+    )
+    foreach ($check in $subsetChecks) {
+        $want = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Definition -Path $check.Path))
+        $have = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Existing -Path $check.Path))
+        foreach ($item in $want) {
+            if ($have -notcontains $item) {
+                $differences += "$($check.Missing): $(Format-ComparisonSet -Set @($item) -Labels $Labels)"
+            }
+        }
+        $extra = @($have | Where-Object { $want -notcontains $_ })
+        if ($extra -contains 'alltrusted') {
+            $differences += "Excludes 'All trusted networks and locations': the portal then hides any named location next to it and drops it when the policy is saved"
+            $extra = @($extra | Where-Object { $_ -ne 'alltrusted' })
+        }
+        if ($extra.Count -gt 0) {
+            $notes += "Also excludes $($extra.Count) $($check.Extra): $(Format-ComparisonSet -Set $extra -Labels $Labels)"
+        }
+    }
+
+    # Partner (service provider / GDAP) tenants
+    $wantTenants = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Definition -Path @('conditions', 'users', 'excludeGuestsOrExternalUsers', 'externalTenants', 'members')))
+    if ($wantTenants.Count -gt 0) {
+        $haveTypes = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Existing -Path @('conditions', 'users', 'excludeGuestsOrExternalUsers', 'guestOrExternalUserTypes')))
+        $haveTenants = @()
+        if ($haveTypes -contains 'serviceprovider') {
+            $haveTenants = @(ConvertTo-ComparisonSet (Get-ComparisonValue -Table $Existing -Path @('conditions', 'users', 'excludeGuestsOrExternalUsers', 'externalTenants', 'members')))
+        }
+        foreach ($tenant in $wantTenants) {
+            if ($haveTenants -notcontains $tenant) {
+                $differences += "Does not exclude partner (GDAP) sign-ins from tenant $tenant"
+            }
+        }
+    }
+
+    # Session controls: every setting the definition makes must be the same
+    $wantSession = Get-ComparisonValue -Table $Definition -Path @('sessionControls')
+    if ($wantSession -is [System.Collections.IDictionary]) {
+        foreach ($controlName in @($wantSession.Keys)) {
+            $wantControl = $wantSession[$controlName]
+            if ($wantControl -isnot [System.Collections.IDictionary]) { continue }
+            foreach ($settingName in @($wantControl.Keys)) {
+                if ([string]$settingName -like '@*') { continue }
+                $wantSetting = [string]$wantControl[$settingName]
+                $haveSetting = [string](Get-ComparisonValue -Table $Existing -Path @('sessionControls', [string]$controlName, [string]$settingName))
+                if ($wantSetting -ne $haveSetting) {
+                    $differences += "Session control $controlName.${settingName}: tenant has $(if ($haveSetting) { $haveSetting } else { '(none)' }), design has $wantSetting"
+                }
+            }
+        }
+    }
+
+    return @{ Differences = @($differences); Notes = @($notes) }
+}
+
+function Get-ExistingPoliciesRaw {
+    <#
+    .SYNOPSIS
+        Every Conditional Access policy in the tenant, as raw Graph
+        hashtables. Read-only.
+    #>
+    $policies = @()
+    $uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies"
+    while ($uri) {
+        $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+        foreach ($policy in @($page['value'])) { if ($policy) { $policies += $policy } }
+        $uri = if ($page.ContainsKey('@odata.nextLink')) { $page['@odata.nextLink'] } else { $null }
+    }
+    return $policies
+}
+
+function Get-TenantComparison {
+    <#
+    .SYNOPSIS
+        Compares every policy definition with the tenant. Read-only.
+    .DESCRIPTION
+        One entry per definition: Status is Missing (not in the tenant),
+        Matches, or Differs (with the list of differences). A policy is
+        found under its current name or a name an earlier version used.
+        The definitions passed in must already carry the standard
+        exclusions.
+    #>
+    param(
+        [hashtable[]]$Policies,
+        [hashtable]$Labels = @{},
+        $ExistingPolicies
+    )
+
+    $stateNames = @{
+        'enabled'                           = 'Enabled'
+        'enabledForReportingButNotEnforced' = 'Report-only'
+        'disabled'                          = 'Off'
+    }
+
+    $comparison = @()
+    foreach ($definition in $Policies) {
+        $name = [string]$definition.displayName
+        $code = Get-PolicyCode -DisplayName $name
+        $names = @($name)
+        if ($script:LegacyPolicyNames.ContainsKey($code)) {
+            $names += @($script:LegacyPolicyNames[$code] | ForEach-Object { "$($script:RunConfig.NamePrefix)$_" })
+        }
+
+        $existing = $null
+        foreach ($candidate in $names) {
+            $existing = @($ExistingPolicies | Where-Object { $_ -and [string]$_['displayName'] -eq $candidate }) | Select-Object -First 1
+            if ($existing) { break }
+        }
+
+        if (!$existing) {
+            $comparison += @{ Code = $code; Name = $name; Status = 'Missing'; State = ''; Differences = @(); Notes = @() }
+            continue
+        }
+
+        $detail = Compare-PolicyToDefinition -Definition $definition -Existing $existing -Labels $Labels
+        $state = [string]$existing['state']
+        $comparison += @{
+            Code        = $code
+            Name        = $name
+            Status      = if (@($detail.Differences).Count -gt 0) { 'Differs' } else { 'Matches' }
+            State       = if ($stateNames.ContainsKey($state)) { $stateNames[$state] } else { $state }
+            Differences = @($detail.Differences)
+            Notes       = @($detail.Notes)
+        }
+    }
+    return $comparison
+}
+
+function Show-TenantComparison {
+    <#
+    .SYNOPSIS
+        Prints the comparison produced by Get-TenantComparison.
+    #>
+    param([hashtable[]]$Comparison)
+
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    foreach ($entry in $Comparison) {
+        switch ($entry.Status) {
+            'Missing' { Write-Host "   MISSING  $($entry.Name)" -ForegroundColor Cyan }
+            'Matches' { Write-Host "   MATCHES  $($entry.Name)  [$($entry.State)]" -ForegroundColor Green }
+            default   { Write-Host "   DIFFERS  $($entry.Name)  [$($entry.State)]" -ForegroundColor Yellow }
+        }
+        foreach ($difference in @($entry.Differences)) {
+            Write-Host "              - $difference" -ForegroundColor Yellow
+        }
+        foreach ($note in @($entry.Notes)) {
+            Write-Host "              ($note)" -ForegroundColor Gray
+        }
+    }
+    $missing = @($Comparison | Where-Object { $_.Status -eq 'Missing' }).Count
+    $matching = @($Comparison | Where-Object { $_.Status -eq 'Matches' }).Count
+    $differs = @($Comparison | Where-Object { $_.Status -eq 'Differs' }).Count
+    Write-Host ""
+    Write-Host "   Missing: $missing   Matches: $matching   Differs: $differs" -ForegroundColor White
+    Write-Host "   Missing = not in this tenant. Differs = in the tenant but not as this script" -ForegroundColor Gray
+    Write-Host "   would create it. Enabled / Report-only is shown but is not counted as a difference." -ForegroundColor Gray
+}
+
+function Get-TenantStateReadOnly {
+    <#
+    .SYNOPSIS
+        Looks up everything the policies depend on WITHOUT creating or
+        changing anything: the groups, the UK named location, the emergency
+        access accounts and Security Defaults.
+    .DESCRIPTION
+        Used by the compare-only run. Test-Prerequisites does the same
+        lookups for a normal run but fixes what is missing; this never does.
+        A group that does not exist gets a placeholder ID so the policy
+        definitions can still be built and compared.
+    #>
+    $groupPrefix = $script:RunConfig.GroupNamePrefix
+    $groupNames = [ordered]@{
+        NoMfa   = "${groupPrefix}NoMFA Exclusion Group"
+        Admin   = "${groupPrefix}BITS Admin Users"
+        GeoIntl = "${groupPrefix}CA-GEO-International"
+        Travel  = "${groupPrefix}CA-UK-Travel-Exclusion"
+        Byod    = "${groupPrefix}CA-BYOD-Windows"
+    }
+
+    $groups = @{}
+    foreach ($key in $groupNames.Keys) {
+        $name = $groupNames[$key]
+        $found = $null
+        try {
+            $response = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+                -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$name'&`$select=id,displayName"
+            $found = @($response['value']) | Where-Object { $_ } | Select-Object -First 1
+        }
+        catch {
+            Write-Host "   Could not look up group ${name}: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        $groups[$key] = @{
+            Name   = $name
+            Exists = [bool]$found
+            Id     = if ($found) { [string]$found['id'] } else { "missing-group:$name" }
+        }
+    }
+
+    $emergencyAccounts = @()
+    if ($groups['NoMfa'].Exists) {
+        try { $emergencyAccounts = @(Get-GroupUserMembers -GroupId $groups['NoMfa'].Id) }
+        catch { Write-Host "   Could not read $($groups['NoMfa'].Name) members: $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+    $adminMemberCount = 0
+    if ($groups['Admin'].Exists) {
+        try { $adminMemberCount = @(Get-GroupUserMembers -GroupId $groups['Admin'].Id).Count }
+        catch { Write-Host "   Could not read $($groups['Admin'].Name) members: $($_.Exception.Message)" -ForegroundColor Yellow }
+    }
+
+    $locationName = "$($script:RunConfig.NamePrefix)UK"
+    $ukLocation = $null
+    try {
+        $locations = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+            -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations"
+        $ukLocation = @($locations['value']) | Where-Object { $_ -and $_['displayName'] -eq $locationName } | Select-Object -First 1
+    }
+    catch {
+        Write-Host "   Could not read named locations: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    $securityDefaults = $null
+    try {
+        $defaults = Invoke-MgGraphRequest -Method GET -ErrorAction Stop `
+            -Uri "https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy"
+        $securityDefaults = [bool]$defaults['isEnabled']
+    }
+    catch {
+        Write-Host "   Could not read Security Defaults: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    return @{
+        Groups                  = $groups
+        EmergencyAccounts       = $emergencyAccounts
+        AdminMemberCount        = $adminMemberCount
+        UkLocationName          = $locationName
+        UkLocationExists        = [bool]$ukLocation
+        UkLocationId            = if ($ukLocation) { [string]$ukLocation['id'] } else { "missing-location:$locationName" }
+        SecurityDefaultsEnabled = $securityDefaults
+    }
+}
+
+function New-ComparisonLabels {
+    <#
+    .SYNOPSIS
+        Builds the ID -> name table the report uses in place of object IDs.
+    #>
+    param([hashtable]$Entries)
+
+    $labels = @{}
+    foreach ($id in @($Entries.Keys)) {
+        if ($id) { $labels[([string]$id).ToLowerInvariant()] = [string]$Entries[$id] }
+    }
+    # Directory Synchronization Accounts — the role C003 excludes
+    $labels['d29b2b05-8046-44ba-8758-1e26182fcf32'] = 'Directory Synchronization Accounts'
+    return $labels
+}
+
+function Start-CompareOnly {
+    <#
+    .SYNOPSIS
+        The read-only run: reports what this tenant has against what the
+        script would create, and changes nothing. No group, named location,
+        policy or group membership is created or modified, and Security
+        Defaults is left as it is.
+    #>
+    Write-Host ""
+    Write-Host "  COMPARE ONLY - nothing in the tenant will be created or changed" -ForegroundColor Cyan
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+
+    $context = Get-MgContext
+    if (!$context) {
+        Write-Host "   Not connected to Microsoft Graph. Please connect using the main menu first." -ForegroundColor Red
+        if ($ResultPath) {
+            @{ Success = $false; CompareOnly = $true; Error = 'Not connected to Microsoft Graph' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        return
+    }
+
+    $tenantState = Get-TenantStateReadOnly
+    $groups = $tenantState.Groups
+    $partnerTenantIds = @(Get-PartnerTenantIds -CurrentTenantId $context.TenantId)
+    $emergencyIds = @($tenantState.EmergencyAccounts | ForEach-Object { $_['id'] })
+
+    # What the policies depend on
+    Write-Host ""
+    Write-Host "  WHAT THE POLICIES DEPEND ON" -ForegroundColor Yellow
+    Write-Host ("   " + "-" * 50) -ForegroundColor Gray
+    $environment = @()
+    foreach ($key in @('NoMfa', 'Admin', 'GeoIntl', 'Travel', 'Byod')) {
+        $group = $groups[$key]
+        $detail = ''
+        if ($group.Exists -and $key -eq 'NoMfa') { $detail = "  ($(@($tenantState.EmergencyAccounts).Count) user member(s))" }
+        if ($group.Exists -and $key -eq 'Admin') { $detail = "  ($($tenantState.AdminMemberCount) user member(s))" }
+        Write-Host "   $(if ($group.Exists) { 'FOUND  ' } else { 'MISSING' })  Group: $($group.Name)$detail" `
+            -ForegroundColor $(if ($group.Exists) { 'Green' } else { 'Yellow' })
+        $environment += @{ Item = "Group: $($group.Name)"; Exists = $group.Exists }
+    }
+    Write-Host "   $(if ($tenantState.UkLocationExists) { 'FOUND  ' } else { 'MISSING' })  Named location: $($tenantState.UkLocationName)" `
+        -ForegroundColor $(if ($tenantState.UkLocationExists) { 'Green' } else { 'Yellow' })
+    $environment += @{ Item = "Named location: $($tenantState.UkLocationName)"; Exists = $tenantState.UkLocationExists }
+
+    if (@($tenantState.EmergencyAccounts).Count -gt 0) {
+        foreach ($account in $tenantState.EmergencyAccounts) {
+            Write-Host "   FOUND    Emergency access account: $($account['userPrincipalName'])" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "   MISSING  Emergency access account: the NoMFA Exclusion Group has no user members" -ForegroundColor Red
+    }
+    $environment += @{ Item = 'Emergency access account'; Exists = (@($tenantState.EmergencyAccounts).Count -gt 0) }
+
+    if ($groups['Admin'].Exists -and $tenantState.AdminMemberCount -eq 0) {
+        Write-Host "   NOTE     BITS Admin Users has no members: no admin account is excluded from C003" -ForegroundColor Yellow
+    }
+    if ($partnerTenantIds.Count -gt 0) {
+        Write-Host "   CONFIG   Partner (GDAP) tenants excluded from C003/C007: $($partnerTenantIds -join ', ')" -ForegroundColor Gray
+    }
+    if ($tenantState.SecurityDefaultsEnabled -eq $true) {
+        Write-Host "   NOTE     Security Defaults is ON: a normal run turns it off before creating policies" -ForegroundColor Yellow
+    }
+
+    # The policies
+    $policies = @(Get-PolicyDefinitions -NoMfaGroupId $groups['NoMfa'].Id -PolicyState 'enabledForReportingButNotEnforced' `
+            -GeoIntlGroupId $groups['GeoIntl'].Id -UkLocationId $tenantState.UkLocationId `
+            -ByodWindowsGroupId $groups['Byod'].Id -UkTravelExclusionGroupId $groups['Travel'].Id `
+            -AdminGroupId $groups['Admin'].Id -PartnerTenantIds $partnerTenantIds)
+    foreach ($policy in $policies) {
+        $null = Add-StandardExclusions -PolicyConfig $policy -NoMfaGroupId $groups['NoMfa'].Id -EmergencyAccessUserIds $emergencyIds
+    }
+
+    $labelEntries = @{ $tenantState.UkLocationId = "$($tenantState.UkLocationName) named location" }
+    foreach ($key in @($groups.Keys)) {
+        $labelEntries[$groups[$key].Id] = if ($groups[$key].Exists) { $groups[$key].Name } else { "$($groups[$key].Name) (group does not exist)" }
+    }
+    foreach ($account in $tenantState.EmergencyAccounts) { $labelEntries[$account['id']] = [string]$account['userPrincipalName'] }
+    $labels = New-ComparisonLabels -Entries $labelEntries
+
+    Write-Host ""
+    Write-Host "  POLICIES: THIS TENANT AGAINST THE SCRIPT'S DESIGN" -ForegroundColor Yellow
+    $comparison = @()
+    try {
+        $comparison = @(Get-TenantComparison -Policies $policies -Labels $labels -ExistingPolicies @(Get-ExistingPoliciesRaw))
+    }
+    catch {
+        Write-Host "   Could not read the tenant's policies: $($_.Exception.Message)" -ForegroundColor Red
+        if ($ResultPath) {
+            @{ Success = $false; CompareOnly = $true; Error = $_.Exception.Message } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+        }
+        return
+    }
+    Show-TenantComparison -Comparison $comparison
+
+    Write-Host ""
+    Write-Host "  Nothing was created or changed. Run again and choose to create and update" -ForegroundColor Cyan
+    Write-Host "  when you want the missing policies created and the differences offered as fixes." -ForegroundColor Cyan
+    Write-Host "  Only C007 and missing emergency-account exclusions are fixed by the script;" -ForegroundColor Gray
+    Write-Host "  any other difference is for you to review and change by hand." -ForegroundColor Gray
+
+    if ($ResultPath) {
+        @{
+            Success     = $true
+            CompareOnly = $true
+            Comparison  = @($comparison)
+            Environment = @($environment)
+        } | ConvertTo-Json -Depth 6 | Set-Content -Path $ResultPath -Encoding UTF8
+        Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
+    }
+
+    if (!$script:NonInteractive) {
+        Write-Host ""
+        Write-Host "  Press any key to return to menu..." -ForegroundColor Gray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 2 }
+    }
+}
+
+# ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 
@@ -1779,6 +2304,21 @@ function Start-CAPolicyCreation {
     Write-Host ("=" * 70) -ForegroundColor Cyan
     Write-Host "  Creates security policies for identity protection" -ForegroundColor Gray
     Write-Host ""
+
+    # Compare only, or compare and then create/update? Anything other than an
+    # explicit "2" is the read-only run, so a stray Enter changes nothing.
+    if (!$script:CompareOnly -and !$script:NonInteractive) {
+        Write-Host "  [1] Compare only - report what this tenant has against the script's design." -ForegroundColor Gray
+        Write-Host "      Creates and changes nothing." -ForegroundColor Gray
+        Write-Host "  [2] Compare, then create missing policies and offer fixes" -ForegroundColor Gray
+        Write-Host ""
+        $modeChoice = Read-Host "  Choose 1 or 2 (default 1)"
+        if ([string]$modeChoice -notmatch '^\s*2\s*$') { $script:CompareOnly = $true }
+    }
+    if ($script:CompareOnly) {
+        Start-CompareOnly
+        return
+    }
 
     # Step 1: Prerequisites (with auto-fix)
     Write-Host "  STEP 1: Prerequisites" -ForegroundColor Yellow
@@ -1843,9 +2383,37 @@ function Start-CAPolicyCreation {
     }
     Set-PolicyStates -Policies $policies
 
-    # Step 4: Preview
+    # Step 4: Compare with what the tenant already has (read-only)
     Write-Host ""
-    Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
+    Write-Host "  STEP 4: Comparison With This Tenant" -ForegroundColor Yellow
+    $comparison = @()
+    try {
+        # The standard exclusions go on now so the comparison sees the policy
+        # exactly as it would be created (applying them again later is a no-op)
+        foreach ($policy in $policies) {
+            $null = Add-StandardExclusions -PolicyConfig $policy -NoMfaGroupId $noMfaGroupId -EmergencyAccessUserIds $emergencyAccessUserIds
+        }
+        $labelEntries = @{}
+        if ($noMfaGroupId) { $labelEntries[$noMfaGroupId] = 'NoMFA Exclusion Group' }
+        if ($geoIntlGroupId) { $labelEntries[$geoIntlGroupId] = 'CA-GEO-International' }
+        if ($ukTravelExclusionGroupId) { $labelEntries[$ukTravelExclusionGroupId] = 'CA-UK-Travel-Exclusion' }
+        if ($byodWindowsGroupId) { $labelEntries[$byodWindowsGroupId] = 'CA-BYOD-Windows' }
+        if ($adminGroupId) { $labelEntries[$adminGroupId] = 'BITS Admin Users' }
+        if ($ukLocationId) { $labelEntries[$ukLocationId] = 'UK named location' }
+        for ($i = 0; $i -lt $emergencyAccessUserIds.Count; $i++) {
+            $labelEntries[$emergencyAccessUserIds[$i]] = if ($i -lt $emergencyAccessUpns.Count) { $emergencyAccessUpns[$i] } else { 'emergency access account' }
+        }
+        $comparison = @(Get-TenantComparison -Policies $policies -Labels (New-ComparisonLabels -Entries $labelEntries) `
+                -ExistingPolicies @(Get-ExistingPoliciesRaw))
+        Show-TenantComparison -Comparison $comparison
+    }
+    catch {
+        Write-Host "   Could not compare with the tenant: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # Step 5: Preview
+    Write-Host ""
+    Write-Host "  STEP 5: Preview" -ForegroundColor Yellow
     Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId `
         -EmergencyAccessUpns $emergencyAccessUpns -PartnerTenantIds $partnerTenantIds `
         -AdminGroupFound ([bool]$adminGroupId) -AdminGroupHasMembers $adminGroupHasMembers
@@ -1871,7 +2439,7 @@ function Start-CAPolicyCreation {
 
     # Step 5: Execute
     Write-Host ""
-    Write-Host "  STEP 5: Creating Policies" -ForegroundColor Yellow
+    Write-Host "  STEP 6: Creating Policies" -ForegroundColor Yellow
     Write-Host ("   " + "-" * 50) -ForegroundColor Gray
 
     $results = @{
@@ -2085,6 +2653,7 @@ function Start-CAPolicyCreation {
             ExclusionsAdded = @($results.ExclusionsAdded)
             ExclusionsMissing = @($results.ExclusionsMissing)
             Updated = @($results.Updated)
+            Comparison = @($comparison)
             NotUpdated = @($results.NotUpdated)
             EmergencyAccessUserIds = @($emergencyAccessUserIds)
         } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8

@@ -47,6 +47,16 @@ BeforeAll {
         'Get-MissingStandardExclusions'
         'Add-StandardExclusionsToExistingPolicy'
         'Test-ExistingC007NeedsUpdate'
+        'Get-ComparisonValue'
+        'ConvertTo-ComparisonSet'
+        'Format-ComparisonSet'
+        'Compare-PolicyToDefinition'
+        'Get-ExistingPoliciesRaw'
+        'Get-TenantComparison'
+        'Show-TenantComparison'
+        'Get-TenantStateReadOnly'
+        'New-ComparisonLabels'
+        'Start-CompareOnly'
         'Update-ExistingC007'
         'New-ConditionalAccessPolicy'
         'Get-PartnerTenantIds'
@@ -76,6 +86,7 @@ BeforeAll {
     function Invoke-MgGraphRequest { [CmdletBinding()] param($Method, $Uri, $Body, $ContentType) }
     function Get-MgIdentityConditionalAccessPolicy { [CmdletBinding()] param($Filter) }
     function New-MgIdentityConditionalAccessPolicy { [CmdletBinding()] param($BodyParameter) }
+    function Get-MgContext { [CmdletBinding()] param() }
 
     # The functions under test read their settings from script-scope
     # variables. Setting them through a function defined alongside them
@@ -730,5 +741,111 @@ Describe 'New-ConditionalAccessPolicy (existing C007 design check)' {
 
         $result.Skipped | Should -BeTrue
         $result.NeedsUpdate | Should -BeFalse
+    }
+}
+
+# ============================================================================
+# Read-only comparison with the tenant
+# ============================================================================
+Describe 'Get-TenantComparison' {
+
+    BeforeEach {
+        Set-TestState
+        $definitions = Get-TestPolicies
+        foreach ($definition in $definitions) {
+            $null = Add-StandardExclusions -PolicyConfig $definition -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+        }
+        # The tenant as Graph would return it: the same policies, round-tripped
+        # through JSON so they are separate objects from the definitions
+        $tenant = @($definitions | ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable })
+        $labels = New-ComparisonLabels -Entries @{ 'nomfa-id' = 'NoMFA Exclusion Group'; 'bg02-id' = 'bg02@contoso.test'; 'uk-id' = 'UK named location' }
+    }
+
+    It 'reports every policy as missing in an empty tenant' {
+        $comparison = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies @())
+
+        $comparison.Count | Should -Be 12
+        @($comparison | Where-Object { $_.Status -ne 'Missing' }).Count | Should -Be 0
+    }
+
+    It 'reports every policy as matching when the tenant holds the design' {
+        $comparison = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant)
+
+        @($comparison | Where-Object { $_.Status -ne 'Matches' }).Count | Should -Be 0
+        @($comparison | Where-Object { $_.State -ne 'Report-only' }).Count | Should -Be 0
+    }
+
+    It 'does not count Enabled as a difference, but shows it' {
+        ($tenant | Where-Object { $_['displayName'] -like 'C002*' })['state'] = 'enabled'
+
+        $c002 = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant) | Where-Object { $_.Code -eq 'C002' }
+
+        $c002.Status | Should -Be 'Matches'
+        $c002.State | Should -Be 'Enabled'
+    }
+
+    It 'notes, but does not flag, an exclusion added by hand' {
+        $c006Tenant = $tenant | Where-Object { $_['displayName'] -like 'C006*' }
+        $c006Tenant['conditions']['users']['excludeUsers'] = @('bg02-id', 'service-account-id')
+
+        $c006 = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant) | Where-Object { $_.Code -eq 'C006' }
+
+        $c006.Status | Should -Be 'Matches'
+        ($c006.Notes -join ' ') | Should -Match 'service-account-id'
+    }
+
+    It 'flags a policy that lacks the emergency access account, by name' {
+        $c006Tenant = $tenant | Where-Object { $_['displayName'] -like 'C006*' }
+        $c006Tenant['conditions']['users']['excludeUsers'] = @()
+
+        $c006 = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant) | Where-Object { $_.Code -eq 'C006' }
+
+        $c006.Status | Should -Be 'Differs'
+        ($c006.Differences -join ' ') | Should -Match 'Does not exclude account: bg02@contoso.test'
+    }
+
+    It 'flags a changed grant control' {
+        $c003Tenant = $tenant | Where-Object { $_['displayName'] -like 'C003*' }
+        $c003Tenant['grantControls']['builtInControls'] = @('mfa')
+
+        $c003 = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant) | Where-Object { $_.Code -eq 'C003' }
+
+        $c003.Status | Should -Be 'Differs'
+        ($c003.Differences -join ' ') | Should -Match 'Grant controls'
+    }
+
+    It 'finds the old-design C007 under its previous name and lists what is wrong with it' {
+        $c007Tenant = $tenant | Where-Object { $_['displayName'] -like 'C007*' }
+        $c007Tenant['displayName'] = 'C007 - Block Sign-In Outside UK (UK Users)'
+        $c007Tenant['state'] = 'enabled'
+        $c007Tenant['conditions']['users'] = @{ includeUsers = @(); includeGroups = @('old-uk-group-id'); excludeGroups = @('nomfa-id'); excludeUsers = @() }
+        $c007Tenant['conditions']['locations']['excludeLocations'] = @('uk-id', 'AllTrusted')
+
+        $c007 = @(Get-TenantComparison -Policies $definitions -Labels $labels -ExistingPolicies $tenant) | Where-Object { $_.Code -eq 'C007' }
+        $text = $c007.Differences -join ' | '
+
+        $c007.Status | Should -Be 'Differs'
+        $c007.State | Should -Be 'Enabled'
+        $text | Should -Match 'Name:'
+        $text | Should -Match 'Applies to users'
+        $text | Should -Match 'All trusted'
+        $text | Should -Match 'partner \(GDAP\)'
+        $text | Should -Not -Match 'Does not exclude location'
+    }
+}
+
+Describe 'Start-CompareOnly' {
+
+    It 'only ever reads from the tenant' {
+        Set-TestState -Overrides @{ CompareOnly = $true }
+        $ResultPath = $null
+        Mock Get-MgContext { [pscustomobject]@{ TenantId = '11111111-1111-1111-1111-111111111111' } }
+        Mock Invoke-MgGraphRequest { @{ value = @() } }
+        Mock New-MgIdentityConditionalAccessPolicy { }
+
+        Start-CompareOnly 6>$null
+
+        Should -Invoke Invoke-MgGraphRequest -Times 0 -Exactly -ParameterFilter { $Method -ne 'GET' }
+        Should -Invoke New-MgIdentityConditionalAccessPolicy -Times 0 -Exactly
     }
 }
