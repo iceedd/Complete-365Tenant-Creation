@@ -186,6 +186,28 @@ try {
     Start-Sleep -Seconds 30
 
     # ========================================================================
+    # Failsafe: with no emergency access account the script must stop before
+    # creating anything (the NoMFA Exclusion Group is still empty here)
+    # ========================================================================
+    Write-Host "`n== Verifying the run stops without an emergency access account ==" -ForegroundColor Cyan
+    $noAccountConfigPath = "$RunConfigPath.noaccount.json"
+    $noAccountConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+    $noAccountConfig['EmergencyAccessUpns'] = @()
+    $noAccountConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $noAccountConfigPath -Encoding UTF8
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+        -NonInteractive -ConfigFile $noAccountConfigPath -ResultPath $CAResultPath
+
+    $stopped = if (Test-Path $CAResultPath) { Get-Content $CAResultPath -Raw | ConvertFrom-Json } else { $null }
+    Write-Result ($stopped -and !$stopped.Success -and $stopped.Error -eq 'No emergency access account') `
+        "Run without an emergency access account reported that it stopped"
+    $createdAnyway = @(Get-MgIdentityConditionalAccessPolicy -All -ErrorAction Stop | Where-Object { $_.DisplayName -like "$E2EPrefix*" })
+    Write-Result ($createdAnyway.Count -eq 0) "Run without an emergency access account created no policies"
+    Remove-Item $noAccountConfigPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    # ========================================================================
     # Execute the real script, unattended, in this session
     # ========================================================================
     Write-Host "`n== Running CA-Policies.ps1 (non-interactive, ReportOnly) ==" -ForegroundColor Cyan
@@ -334,6 +356,58 @@ try {
     $second = Get-Content $CAResultPath -Raw | ConvertFrom-Json
     Write-Result ([bool]$second.Success -and @($second.Created).Count -eq 0 -and @($second.Skipped).Count -eq $ExpectedPolicyNames.Count) `
         "Second run created nothing and skipped all $($ExpectedPolicyNames.Count) policies"
+    Write-Result (@($second.ExclusionsAdded).Count -eq 0 -and @($second.ExclusionsMissing).Count -eq 0) `
+        "Second run found the exclusions already on every policy and changed none"
+
+    # ========================================================================
+    # Failsafe: an existing policy that lacks the standard exclusions gets
+    # them added, and nothing else on it changes. C007 is the test subject
+    # because it has the most to lose (its own groups, the partner exclusion
+    # and the UK location).
+    # ========================================================================
+    Write-Host "`n== Verifying exclusions are added to an existing policy ==" -ForegroundColor Cyan
+    if ($c007 -and $noMfaGroup) {
+        $c007Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c007.Id)"
+        $stripRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $stripUsers = $stripRaw['conditions']['users']
+        $stripUsers['excludeUsers'] = @()
+        $stripUsers['excludeGroups'] = @(@($stripUsers['excludeGroups']) | Where-Object { $_ -ne $noMfaGroup.Id })
+        $null = Invoke-MgGraphRequest -Method PATCH -Uri $c007Uri -ContentType 'application/json' `
+            -Body (@{ conditions = @{ users = $stripUsers } } | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        Write-Host "  Removed the NoMFA group and emergency access account from $($c007.DisplayName)" -ForegroundColor Gray
+        Start-Sleep -Seconds 20
+
+        $repairConfigPath = "$RunConfigPath.repair.json"
+        $repairConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+        $repairConfig['UpdateExistingExclusions'] = $true
+        $repairConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $repairConfigPath -Encoding UTF8
+
+        & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+            -NonInteractive -ConfigFile $repairConfigPath -ResultPath $CAResultPath
+        Remove-Item $repairConfigPath -Force -ErrorAction SilentlyContinue
+
+        $third = Get-Content $CAResultPath -Raw | ConvertFrom-Json
+        Write-Result ((@($third.ExclusionsAdded) -join ',') -eq $c007.DisplayName) "Third run added the exclusions to C007 and to no other policy"
+        Write-Result (@($third.Created).Count -eq 0) "Third run created nothing"
+
+        Start-Sleep -Seconds 20
+        $fixedRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $fixedUsers = $fixedRaw['conditions']['users']
+        Write-Result (@($fixedUsers['excludeGroups']) -contains $noMfaGroup.Id) "C007 excludes the E2E NoMFA group again"
+        Write-Result (@($fixedUsers['excludeUsers']) -contains $EmergencyUserId) "C007 lists the emergency access account directly again"
+        Write-Result (@($fixedUsers['includeUsers']) -contains 'All') "C007 still applies to all users"
+        if ($geoIntlGroup) {
+            Write-Result (@($fixedUsers['excludeGroups']) -contains $geoIntlGroup.Id) "C007 still excludes the E2E CA-GEO-International group"
+        }
+        Write-Result (@(Get-ServiceProviderExclusionTenants -RawPolicy $fixedRaw) -contains $PartnerTenantId) "C007 still excludes the partner tenant"
+        if ($ukLocation) {
+            Write-Result ((@($fixedRaw['conditions']['locations']['excludeLocations']) -join ',') -eq $ukLocation.id) "C007 still excludes the UK named location, and only that"
+        }
+        Write-Result ($fixedRaw['state'] -eq 'enabledForReportingButNotEnforced') "C007 is still report-only"
+    }
+    else {
+        Write-Result $false "C007 and the NoMFA group exist for the existing-policy exclusion test"
+    }
 }
 finally {
     # ========================================================================

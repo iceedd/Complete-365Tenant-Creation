@@ -44,6 +44,8 @@ BeforeAll {
         'Set-PolicyStates'
         'Add-StandardExclusions'
         'Test-LocationExclusionHiddenByPortal'
+        'Get-MissingStandardExclusions'
+        'Add-StandardExclusionsToExistingPolicy'
         'New-ConditionalAccessPolicy'
         'Get-PartnerTenantIds'
         'Get-GroupUserMembers'
@@ -465,5 +467,126 @@ Describe 'New-ConditionalAccessPolicy' {
 
         $result.Skipped | Should -BeTrue
         Should -Invoke New-MgIdentityConditionalAccessPolicy -Times 0 -Exactly
+    }
+}
+
+# ============================================================================
+# Existing policies: finding and adding the standard exclusions
+# ============================================================================
+Describe 'Get-MissingStandardExclusions' {
+
+    It 'reports nothing missing when the group and the account are both excluded' {
+        $policy = [pscustomobject]@{
+            Conditions = [pscustomobject]@{
+                Users = [pscustomobject]@{ ExcludeGroups = @('other-id', 'nomfa-id'); ExcludeUsers = @('bg02-id') }
+            }
+        }
+        $missing = Get-MissingStandardExclusions -ExistingPolicy $policy -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $missing.Any | Should -BeFalse
+    }
+
+    It 'reports the account missing when only the group is excluded' {
+        $policy = [pscustomobject]@{
+            Conditions = [pscustomobject]@{
+                Users = [pscustomobject]@{ ExcludeGroups = @('nomfa-id'); ExcludeUsers = @() }
+            }
+        }
+        $missing = Get-MissingStandardExclusions -ExistingPolicy $policy -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $missing.Any | Should -BeTrue
+        $missing.GroupMissing | Should -BeFalse
+        ($missing.UserIds -join ',') | Should -Be 'bg02-id'
+    }
+
+    It 'reports both missing, without throwing, on a policy with no users block' {
+        $policy = [pscustomobject]@{ Conditions = [pscustomobject]@{ Locations = $null } }
+        $missing = Get-MissingStandardExclusions -ExistingPolicy $policy -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $missing.Any | Should -BeTrue
+        $missing.GroupMissing | Should -BeTrue
+    }
+}
+
+Describe 'Add-StandardExclusionsToExistingPolicy' {
+
+    It 'adds the two exclusions, keeps the rest of the users block, and sends nothing else' {
+        Mock Invoke-MgGraphRequest {
+            @{
+                state      = 'enabled'
+                conditions = @{
+                    users     = @{ includeUsers = @('All'); excludeGroups = @('intl-id'); excludeUsers = @() }
+                    locations = @{ excludeLocations = @('uk-id') }
+                }
+            }
+        } -ParameterFilter { $Method -eq 'GET' }
+        Mock Invoke-MgGraphRequest { } -ParameterFilter { $Method -eq 'PATCH' }
+
+        $result = Add-StandardExclusionsToExistingPolicy -PolicyId 'p1' -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $result.Success | Should -BeTrue
+        Should -Invoke Invoke-MgGraphRequest -Times 1 -Exactly -ParameterFilter {
+            if ($Method -ne 'PATCH') { return $false }
+            $sent = $Body | ConvertFrom-Json -AsHashtable
+            ($sent.Keys -join ',') -eq 'conditions' -and
+            ($sent['conditions'].Keys -join ',') -eq 'users' -and
+            ((@($sent['conditions']['users']['excludeGroups']) -join ',') -eq 'intl-id,nomfa-id') -and
+            ((@($sent['conditions']['users']['excludeUsers']) -join ',') -eq 'bg02-id') -and
+            ((@($sent['conditions']['users']['includeUsers']) -join ',') -eq 'All')
+        }
+    }
+
+    It 'reports failure, without throwing, when the update is rejected' {
+        Mock Invoke-MgGraphRequest { @{ conditions = @{ users = @{ includeUsers = @('All') } } } } -ParameterFilter { $Method -eq 'GET' }
+        Mock Invoke-MgGraphRequest { throw 'BadRequest' } -ParameterFilter { $Method -eq 'PATCH' }
+
+        $result = Add-StandardExclusionsToExistingPolicy -PolicyId 'p1' -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $result.Success | Should -BeFalse
+        $result.Error | Should -Match 'BadRequest'
+    }
+}
+
+Describe 'New-ConditionalAccessPolicy (existing policy exclusions)' {
+
+    BeforeEach {
+        Set-TestState
+        $c007 = Get-TestPolicies | Where-Object { $_.displayName -like 'C007*' }
+        Mock New-MgIdentityConditionalAccessPolicy { }
+    }
+
+    It 'flags an existing policy that lacks the emergency access account' {
+        Mock Get-MgIdentityConditionalAccessPolicy {
+            [pscustomobject]@{
+                Id          = 'current-id'
+                DisplayName = 'C007 - Block Sign-In Outside UK'
+                Conditions  = [pscustomobject]@{
+                    Locations = [pscustomobject]@{ ExcludeLocations = @('uk-id') }
+                    Users     = [pscustomobject]@{ ExcludeGroups = @('nomfa-id'); ExcludeUsers = @() }
+                }
+            }
+        }
+
+        $result = New-ConditionalAccessPolicy -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id') 6>$null
+
+        $result.Skipped | Should -BeTrue
+        $result.MissingExclusions | Should -BeTrue
+    }
+
+    It 'does not flag an existing policy that already has both exclusions' {
+        Mock Get-MgIdentityConditionalAccessPolicy {
+            [pscustomobject]@{
+                Id          = 'current-id'
+                DisplayName = 'C007 - Block Sign-In Outside UK'
+                Conditions  = [pscustomobject]@{
+                    Locations = [pscustomobject]@{ ExcludeLocations = @('uk-id') }
+                    Users     = [pscustomobject]@{ ExcludeGroups = @('nomfa-id'); ExcludeUsers = @('bg02-id') }
+                }
+            }
+        }
+
+        $result = New-ConditionalAccessPolicy -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id') 6>$null
+
+        $result.MissingExclusions | Should -BeFalse
     }
 }

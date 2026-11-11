@@ -9,6 +9,17 @@
 .AUTHOR
     BITS
 .VERSION
+    2.8 - Two more failsafes for the emergency access account:
+          * The run now STOPS before creating anything when there is no
+            emergency access account (empty NoMFA Exclusion Group and no
+            account given at the prompt / in EmergencyAccessUpns). It used
+            to carry on with a warning.
+          * Policies that already exist are still not recreated, but each
+            one is checked for the NoMFA Exclusion Group and the emergency
+            access account. Any that lack them are listed and the script
+            offers to add them (UpdateExistingExclusions in non-interactive
+            runs). Only those two exclusions are added; nothing else on the
+            policy is changed.
     2.7 - Lockout safeguards, after C007 locked a whole tenant out:
           * C007 (Block Sign-In Outside UK) now applies to ALL users, guests
             included, instead of the hand-maintained CA-GEO-UK group. People
@@ -100,7 +111,13 @@
                                    (break-glass) account to add to the NoMFA
                                    Exclusion Group when that group is empty.
                                    Only read in non-interactive runs; an
-                                   interactive run asks instead.
+                                   interactive run asks instead. With no
+                                   account the run stops.
+      UpdateExistingExclusions    (bool) default false. Non-interactive only:
+                                   add the NoMFA Exclusion Group and the
+                                   emergency access account to policies that
+                                   already exist and lack them. An interactive
+                                   run asks instead.
       AutoDisableSecurityDefaults (bool) default true — required to make any
                                    progress, since CA policies cannot be
                                    created while Security Defaults is enabled
@@ -144,6 +161,9 @@ $script:RunConfig = @{
     PartnerTenantIds            = @('23212a04-40b3-4ade-8101-f6804f754ab6')
     # Non-interactive only: account(s) to add to an EMPTY NoMFA Exclusion Group
     EmergencyAccessUpns         = @()
+    # Non-interactive only: add the standard exclusions to EXISTING policies
+    # that lack them (an interactive run asks)
+    UpdateExistingExclusions    = $false
 }
 
 if ($ConfigFile) {
@@ -293,6 +313,17 @@ function Test-Prerequisites {
     # than left as an "add them afterwards" reminder.
     Write-Host "   Checking emergency access accounts (NoMFA Exclusion Group members)..." -ForegroundColor Gray
     $emergencyAccess = Resolve-EmergencyAccessAccounts -NoMfaGroupId $noMfaGroupResult.GroupId
+
+    # No emergency access account = nobody who can undo a bad policy. Stop
+    # here, before anything is created, rather than carry on with a warning.
+    if (@($emergencyAccess.UserIds).Count -eq 0) {
+        Write-Host ""
+        Write-Host "   STOPPED: no emergency access (break-glass) account." -ForegroundColor Red
+        Write-Host "   No policies were created or changed. Create or choose the account kept for" -ForegroundColor Red
+        Write-Host "   emergencies, then run this again and enter its UPN when asked" -ForegroundColor Red
+        Write-Host "   (non-interactive: set EmergencyAccessUpns in the config file)." -ForegroundColor Red
+        return @{ Success = $false; Error = 'No emergency access account' }
+    }
 
     # Admin group (optional — excluded from C003 only)
     Write-Host "   Checking for BITS Admin Users group (optional)..." -ForegroundColor Gray
@@ -618,9 +649,8 @@ function Resolve-EmergencyAccessAccounts {
         (non-interactive) and adds it to the group.
 
         Returns the accounts' object IDs so each policy can also list them
-        directly (see Add-StandardExclusions). An empty result is allowed —
-        the run continues with a clear warning — because every policy that
-        can block a sign-in is created Report-only regardless.
+        directly (see Add-StandardExclusions). An empty result is returned
+        as-is; Test-Prerequisites stops the run when it gets one.
     #>
     param([Parameter(Mandatory)][string]$NoMfaGroupId)
 
@@ -645,14 +675,14 @@ function Resolve-EmergencyAccessAccounts {
         if ($script:NonInteractive) {
             $upnsToAdd = @($script:RunConfig.EmergencyAccessUpns | Where-Object { $_ })
             if ($upnsToAdd.Count -eq 0) {
-                Write-Host "   Non-interactive mode: no EmergencyAccessUpns configured - continuing without one" -ForegroundColor Yellow
+                Write-Host "   Non-interactive mode: no EmergencyAccessUpns configured" -ForegroundColor Yellow
             }
         }
         else {
             Write-Host "   Enter the account kept for emergencies only (long random password, no MFA)," -ForegroundColor Gray
             Write-Host "   for example BITS-Admin-BG02@yourdomain. It will be added to $groupName." -ForegroundColor Gray
             for ($attempt = 1; $attempt -le 3; $attempt++) {
-                $entered = Read-Host "   Emergency access account UPN (blank to skip)"
+                $entered = Read-Host "   Emergency access account UPN (blank to stop)"
                 $entered = if ($entered) { $entered.Trim() } else { '' }
                 if (!$entered) { break }
                 if (Find-UserByUpn -Upn $entered) { $upnsToAdd = @($entered); break }
@@ -692,7 +722,7 @@ function Resolve-EmergencyAccessAccounts {
         }
     }
     else {
-        Write-Host "   WARNING: no emergency access account will be excluded from the policies" -ForegroundColor Red
+        Write-Host "   No emergency access account was found or given" -ForegroundColor Red
     }
 
     return @{
@@ -1440,6 +1470,76 @@ function Add-StandardExclusions {
     return $PolicyConfig
 }
 
+function Get-MissingStandardExclusions {
+    <#
+    .SYNOPSIS
+        Says which of the two standard exclusions (NoMFA Exclusion Group,
+        emergency access accounts) a policy that ALREADY EXISTS lacks.
+    .DESCRIPTION
+        Read-only. Property lookups go through PSObject.Properties so a
+        policy object without a Users block doesn't throw under StrictMode.
+    #>
+    param(
+        $ExistingPolicy,
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUserIds
+    )
+
+    $excludedGroups = @()
+    $excludedUsers = @()
+    $conditions = if ($ExistingPolicy -and $ExistingPolicy.PSObject.Properties['Conditions']) { $ExistingPolicy.Conditions } else { $null }
+    $users = if ($conditions -and $conditions.PSObject.Properties['Users']) { $conditions.Users } else { $null }
+    if ($users) {
+        if ($users.PSObject.Properties['ExcludeGroups']) { $excludedGroups = @($users.ExcludeGroups | Where-Object { $_ }) }
+        if ($users.PSObject.Properties['ExcludeUsers']) { $excludedUsers = @($users.ExcludeUsers | Where-Object { $_ }) }
+    }
+
+    $groupMissing = [bool]$NoMfaGroupId -and ($excludedGroups -notcontains $NoMfaGroupId)
+    $missingUserIds = @($EmergencyAccessUserIds | Where-Object { $_ -and ($excludedUsers -notcontains $_) })
+
+    return @{
+        GroupMissing = $groupMissing
+        UserIds      = $missingUserIds
+        Any          = ($groupMissing -or $missingUserIds.Count -gt 0)
+    }
+}
+
+function Add-StandardExclusionsToExistingPolicy {
+    <#
+    .SYNOPSIS
+        Adds the NoMFA Exclusion Group and the emergency access accounts to
+        a policy that already exists. Nothing else on the policy is changed.
+    .DESCRIPTION
+        Reads the policy's users block as it stands, appends the two
+        exclusions (Add-StandardExclusions, so existing exclusions are kept
+        and nothing is duplicated) and writes the whole users block back.
+        The whole block is sent, not just the two lists, so the result is
+        the same whether Graph merges or replaces the block on update. The
+        policy's state, locations, apps and grant controls are not sent.
+    #>
+    param(
+        [string]$PolicyId,
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUserIds
+    )
+
+    $uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$PolicyId"
+    try {
+        $current = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+        $usersBlock = $current['conditions']['users']
+        $wrapper = @{ conditions = @{ users = $usersBlock } }
+        $null = Add-StandardExclusions -PolicyConfig $wrapper -NoMfaGroupId $NoMfaGroupId `
+            -EmergencyAccessUserIds $EmergencyAccessUserIds
+
+        $null = Invoke-MgGraphRequest -Method PATCH -Uri $uri -ContentType 'application/json' `
+            -Body ($wrapper | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        return @{ Success = $true }
+    }
+    catch {
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
 function Test-LocationExclusionHiddenByPortal {
     <#
     .SYNOPSIS
@@ -1489,8 +1589,10 @@ function New-ConditionalAccessPolicy {
         if ($existingPolicy) {
             Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
 
-            # Existing policies are never modified, but one known-dangerous
-            # state is worth saying out loud every time it is seen.
+            # Existing policies are not modified here. Two things are checked
+            # and reported back: a known-dangerous location state, and whether
+            # the standard exclusions are missing (the caller offers to add
+            # those once every policy has been looked at).
             $existingLocations = @()
             if ($existingPolicy.Conditions -and $existingPolicy.Conditions.Locations) {
                 $existingLocations = @($existingPolicy.Conditions.Locations.ExcludeLocations)
@@ -1503,7 +1605,12 @@ function New-ConditionalAccessPolicy {
                 Write-Host "     the named location - for C007 that blocks every UK sign-in. Do NOT save it from" -ForegroundColor Red
                 Write-Host "     the portal. Set its excluded locations to the named location only." -ForegroundColor Red
             }
-            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true; Warning = $warning }
+            $missing = Get-MissingStandardExclusions -ExistingPolicy $existingPolicy -NoMfaGroupId $NoMfaGroupId `
+                -EmergencyAccessUserIds $EmergencyAccessUserIds
+            if ($missing.Any) {
+                Write-Host "     Does not exclude the emergency access account / NoMFA Exclusion Group" -ForegroundColor Yellow
+            }
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true; Warning = $warning; MissingExclusions = $missing.Any }
         }
 
         # NoMFA group + emergency access accounts, on every policy
@@ -1514,7 +1621,7 @@ function New-ConditionalAccessPolicy {
         $newPolicy = New-MgIdentityConditionalAccessPolicy -BodyParameter $PolicyConfig -ErrorAction Stop
 
         Write-Host "     Created successfully (ID: $($newPolicy.Id))" -ForegroundColor Green
-        return @{ Success = $true; Policy = $newPolicy; Skipped = $false; Warning = $null }
+        return @{ Success = $true; Policy = $newPolicy; Skipped = $false; Warning = $null; MissingExclusions = $false }
     }
     catch {
         Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -1543,7 +1650,8 @@ function Start-CAPolicyCreation {
         Write-Host ""
         Write-Host "  Prerequisites not met. Please resolve issues and try again." -ForegroundColor Red
         if ($ResultPath) {
-            @{ Success = $false; Error = 'Prerequisites not met' } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
+            $prereqError = if ($prereqResult.ContainsKey('Error')) { $prereqResult.Error } else { 'Prerequisites not met' }
+            @{ Success = $false; Error = $prereqError } | ConvertTo-Json | Set-Content -Path $ResultPath -Encoding UTF8
         }
         if (!$script:NonInteractive) {
             Write-Host ""
@@ -1633,7 +1741,10 @@ function Start-CAPolicyCreation {
         Skipped = @()
         Failed = @()
         Warnings = @()
+        ExclusionsAdded = @()
+        ExclusionsMissing = @()
     }
+    $needExclusions = @()
 
     foreach ($policy in $policies) {
         Write-Host "   $($policy.DisplayName)..." -ForegroundColor White
@@ -1645,6 +1756,9 @@ function Start-CAPolicyCreation {
             if ($result.Warning) { $results.Warnings += $result.Warning }
             if ($result.Skipped) {
                 $results.Skipped += $policy.DisplayName
+                if ($result.MissingExclusions) {
+                    $needExclusions += @{ Id = $result.Policy.Id; Name = $result.Policy.DisplayName }
+                }
             }
             else {
                 $results.Created += $policy.DisplayName
@@ -1655,6 +1769,46 @@ function Start-CAPolicyCreation {
         }
 
         Start-Sleep -Milliseconds 500
+    }
+
+    # Existing policies that lack the standard exclusions: offer to add them
+    if ($needExclusions.Count -gt 0) {
+        Write-Host ""
+        Write-Host "   These existing policies do NOT exclude the emergency access account and/or" -ForegroundColor Yellow
+        Write-Host "   the NoMFA Exclusion Group:" -ForegroundColor Yellow
+        foreach ($item in $needExclusions) {
+            Write-Host "     - $($item.Name)" -ForegroundColor White
+        }
+
+        $addThem = $false
+        if ($script:NonInteractive) {
+            $addThem = [bool]$script:RunConfig.UpdateExistingExclusions
+            if (!$addThem) {
+                Write-Host "   Non-interactive mode: UpdateExistingExclusions is off - left unchanged" -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "   Adding them changes only each policy's excluded users and groups." -ForegroundColor Gray
+            $answer = Read-Host "   Add the emergency access account and NoMFA Exclusion Group to these policies? (Y/N)"
+            $addThem = $answer -like "Y*"
+        }
+
+        foreach ($item in $needExclusions) {
+            if (!$addThem) {
+                $results.ExclusionsMissing += $item.Name
+                continue
+            }
+            $update = Add-StandardExclusionsToExistingPolicy -PolicyId $item.Id -NoMfaGroupId $noMfaGroupId `
+                -EmergencyAccessUserIds $emergencyAccessUserIds
+            if ($update.Success) {
+                Write-Host "   Exclusions added: $($item.Name)" -ForegroundColor Green
+                $results.ExclusionsAdded += $item.Name
+            }
+            else {
+                Write-Host "   Could not update $($item.Name): $($update.Error)" -ForegroundColor Red
+                $results.ExclusionsMissing += $item.Name
+            }
+        }
     }
 
     # Step 6: Summary
@@ -1697,10 +1851,13 @@ function Start-CAPolicyCreation {
     if ($emergencyAccessUpns.Count -gt 0) {
         Write-Host "    - Emergency access account(s) excluded from every new policy: $($emergencyAccessUpns -join ', ')" -ForegroundColor Yellow
     }
-    else {
-        Write-Host "    - NO emergency access account is excluded: the NoMFA Exclusion Group is empty." -ForegroundColor Red
-        Write-Host "      Do NOT enable any policy until an emergency access account is in that group" -ForegroundColor Red
-        Write-Host "      and you have tested that it can sign in." -ForegroundColor Red
+    if ($results.ExclusionsAdded.Count -gt 0) {
+        Write-Host "    - Exclusions added to $($results.ExclusionsAdded.Count) existing polic(y/ies): $($results.ExclusionsAdded -join ', ')" -ForegroundColor Yellow
+    }
+    if ($results.ExclusionsMissing.Count -gt 0) {
+        Write-Host "    - These existing policies still do NOT exclude the emergency access account:" -ForegroundColor Red
+        Write-Host "      $($results.ExclusionsMissing -join ', ')" -ForegroundColor Red
+        Write-Host "      Do NOT enable or widen them until they do." -ForegroundColor Red
     }
     if ($adminGroupId -and !$adminGroupHasMembers) {
         Write-Host "    - BITS Admin Users is empty: check its members before enabling C003" -ForegroundColor Yellow
@@ -1728,6 +1885,8 @@ function Start-CAPolicyCreation {
             Skipped = @($results.Skipped)
             Failed  = @($results.Failed)
             Warnings = @($results.Warnings)
+            ExclusionsAdded = @($results.ExclusionsAdded)
+            ExclusionsMissing = @($results.ExclusionsMissing)
             EmergencyAccessUserIds = @($emergencyAccessUserIds)
         } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
         Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
