@@ -408,6 +408,67 @@ try {
     else {
         Write-Result $false "C007 and the NoMFA group exist for the existing-policy exclusion test"
     }
+
+    # ========================================================================
+    # An existing C007 in the OLD design is brought up to the current one.
+    # The policy is put back the way older versions of the script left it:
+    # old name, scoped to a group, UK + "AllTrusted" excluded, and Enabled.
+    # Enabled is safe here only because it is scoped to an EMPTY E2E group.
+    # ========================================================================
+    Write-Host "`n== Verifying an existing old-design C007 is updated ==" -ForegroundColor Cyan
+    if ($c007 -and $noMfaGroup -and $ukLocation -and $byodGroup) {
+        $c007Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c007.Id)"
+        $legacyName = "${E2EPrefix}C007 - Block Sign-In Outside UK (UK Users)"
+        $oldRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $oldUsers = $oldRaw['conditions']['users']
+        $oldUsers['includeUsers'] = @()
+        $oldUsers['includeGroups'] = @($byodGroup.Id)
+        $oldUsers['excludeUsers'] = @()
+        $oldUsers['excludeGroups'] = @()
+        $oldUsers['excludeGuestsOrExternalUsers'] = $null
+        $null = Invoke-MgGraphRequest -Method PATCH -Uri $c007Uri -ContentType 'application/json' -Body (@{
+                displayName = $legacyName
+                state       = 'enabled'
+                conditions  = @{
+                    users     = $oldUsers
+                    locations = @{ includeLocations = @('All'); excludeLocations = @($ukLocation.id, 'AllTrusted') }
+                }
+            } | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        Write-Host "  Put C007 back into the old design: $legacyName" -ForegroundColor Gray
+        Start-Sleep -Seconds 20
+
+        $updateConfigPath = "$RunConfigPath.update.json"
+        $updateConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+        $updateConfig['UpdateExistingC007'] = $true
+        $updateConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $updateConfigPath -Encoding UTF8
+
+        & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+            -NonInteractive -ConfigFile $updateConfigPath -ResultPath $CAResultPath
+        Remove-Item $updateConfigPath -Force -ErrorAction SilentlyContinue
+
+        $fourth = Get-Content $CAResultPath -Raw | ConvertFrom-Json
+        Write-Result ((@($fourth.Updated) -join ',') -eq $c007.DisplayName) "Fourth run updated C007 and no other policy"
+        Write-Result (@($fourth.Created).Count -eq 0) "Fourth run created nothing"
+
+        Start-Sleep -Seconds 20
+        $newRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $newUsers = $newRaw['conditions']['users']
+        Write-Result ($newRaw['displayName'] -eq $c007.DisplayName) "Updated C007 has its current name"
+        Write-Result ($newRaw['state'] -eq 'enabledForReportingButNotEnforced') "Updated C007 was forced from Enabled to report-only"
+        Write-Result (@($newUsers['includeUsers']) -contains 'All') "Updated C007 applies to all users"
+        Write-Result (@($newUsers['includeGroups'] | Where-Object { $_ }).Count -eq 0) "Updated C007 is no longer scoped to a group"
+        Write-Result ((@($newRaw['conditions']['locations']['excludeLocations']) -join ',') -eq $ukLocation.id) "Updated C007 excludes the UK named location only (AllTrusted removed)"
+        Write-Result (@($newUsers['excludeGroups']) -contains $noMfaGroup.Id) "Updated C007 excludes the E2E NoMFA group"
+        Write-Result (@($newUsers['excludeUsers']) -contains $EmergencyUserId) "Updated C007 lists the emergency access account directly"
+        if ($geoIntlGroup) {
+            Write-Result (@($newUsers['excludeGroups']) -contains $geoIntlGroup.Id) "Updated C007 excludes the E2E CA-GEO-International group"
+        }
+        Write-Result (@(Get-ServiceProviderExclusionTenants -RawPolicy $newRaw) -contains $PartnerTenantId) "Updated C007 excludes the partner tenant"
+        Write-Result (@($newRaw['grantControls']['builtInControls']) -contains 'block') "Updated C007 still blocks"
+    }
+    else {
+        Write-Result $false "C007, the NoMFA group, the UK location and the BYOD group exist for the C007 update test"
+    }
 }
 finally {
     # ========================================================================

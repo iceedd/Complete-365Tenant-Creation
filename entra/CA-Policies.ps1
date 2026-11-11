@@ -9,6 +9,18 @@
 .AUTHOR
     BITS
 .VERSION
+    2.9 - An existing C007 that is not in the current design can be brought
+          up to date. The script detects a C007 that still carries its old
+          name, is scoped to a group instead of all users, or excludes
+          "AllTrusted" (the state the portal hides and drops on save), and
+          offers to update it (UpdateExistingC007 in non-interactive runs):
+          all users, the UK named location as the only kind of excluded
+          location ("Selected networks and locations"), the standard and
+          partner exclusions, the current name, and Report-only. It is
+          always put into Report-only because the change makes it apply to
+          people it did not apply to before. Exclusions already on the
+          policy are kept; nothing is removed except "AllTrusted" and the
+          old include group.
     2.8 - Two more failsafes for the emergency access account:
           * The run now STOPS before creating anything when there is no
             emergency access account (empty NoMFA Exclusion Group and no
@@ -118,6 +130,10 @@
                                    emergency access account to policies that
                                    already exist and lack them. An interactive
                                    run asks instead.
+      UpdateExistingC007          (bool) default false. Non-interactive only:
+                                   bring an existing C007 up to the current
+                                   design (all users, UK location only,
+                                   Report-only). An interactive run asks.
       AutoDisableSecurityDefaults (bool) default true — required to make any
                                    progress, since CA policies cannot be
                                    created while Security Defaults is enabled
@@ -164,6 +180,8 @@ $script:RunConfig = @{
     # Non-interactive only: add the standard exclusions to EXISTING policies
     # that lack them (an interactive run asks)
     UpdateExistingExclusions    = $false
+    # Non-interactive only: bring an existing C007 up to the current design
+    UpdateExistingC007          = $false
 }
 
 if ($ConfigFile) {
@@ -1540,6 +1558,119 @@ function Add-StandardExclusionsToExistingPolicy {
     }
 }
 
+function Test-ExistingC007NeedsUpdate {
+    <#
+    .SYNOPSIS
+        True when a C007 that already exists is not in the current design:
+        it has an older name, is not scoped to all users, or its excluded
+        locations hold "AllTrusted" or no named location at all.
+    .DESCRIPTION
+        Read-only. Its state (Enabled / Report-only) is deliberately not
+        part of the test: a C007 already in the current design that someone
+        has enabled after review must be left alone.
+    #>
+    param(
+        $ExistingPolicy,
+        [string]$ExpectedName
+    )
+
+    if ([string]$ExistingPolicy.DisplayName -ne $ExpectedName) { return $true }
+
+    $includeUsers = @()
+    $excludeLocations = @()
+    $conditions = if ($ExistingPolicy.PSObject.Properties['Conditions']) { $ExistingPolicy.Conditions } else { $null }
+    if ($conditions) {
+        $users = if ($conditions.PSObject.Properties['Users']) { $conditions.Users } else { $null }
+        if ($users -and $users.PSObject.Properties['IncludeUsers']) { $includeUsers = @($users.IncludeUsers | Where-Object { $_ }) }
+        $locations = if ($conditions.PSObject.Properties['Locations']) { $conditions.Locations } else { $null }
+        if ($locations -and $locations.PSObject.Properties['ExcludeLocations']) { $excludeLocations = @($locations.ExcludeLocations | Where-Object { $_ }) }
+    }
+
+    if ($includeUsers -notcontains 'All') { return $true }
+    if ($excludeLocations -contains 'AllTrusted') { return $true }
+    if ($excludeLocations.Count -eq 0) { return $true }
+    return $false
+}
+
+function Update-ExistingC007 {
+    <#
+    .SYNOPSIS
+        Brings a C007 that already exists up to the current design.
+    .DESCRIPTION
+        Sets, on the existing policy:
+          - the current name
+          - Report-only (always: the change makes the policy apply to people
+            it did not apply to before, so it must be reviewed before it
+            enforces again)
+          - all users, with the old include group removed
+          - excluded locations = the named location(s) only, never
+            "AllTrusted" ("Selected networks and locations" in the portal)
+          - the definition's excluded groups and partner (GDAP) exclusion,
+            plus the NoMFA Exclusion Group and emergency access accounts
+        Exclusions already on the policy (users, groups, roles, named
+        locations) are kept. Apps, client app types and grant controls are
+        not sent, so they stay as they are.
+    #>
+    param(
+        [string]$PolicyId,
+        [hashtable]$PolicyConfig,
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUserIds
+    )
+
+    $uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$PolicyId"
+    try {
+        $current = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+        $usersBlock = $current['conditions']['users']
+        $targetUsers = $PolicyConfig.conditions.users
+
+        $usersBlock['includeUsers'] = @('All')
+        $usersBlock['includeGroups'] = @()
+        $usersBlock['includeRoles'] = @()
+        $usersBlock['includeGuestsOrExternalUsers'] = $null
+
+        $currentGroups = if ($usersBlock.ContainsKey('excludeGroups')) { @($usersBlock['excludeGroups'] | Where-Object { $_ }) } else { @() }
+        $targetGroups = if ($targetUsers.ContainsKey('excludeGroups')) { @($targetUsers['excludeGroups'] | Where-Object { $_ }) } else { @() }
+        $usersBlock['excludeGroups'] = @(@($currentGroups) + @($targetGroups) | Select-Object -Unique)
+
+        if ($targetUsers.ContainsKey('excludeGuestsOrExternalUsers') -and $targetUsers['excludeGuestsOrExternalUsers']) {
+            $usersBlock['excludeGuestsOrExternalUsers'] = $targetUsers['excludeGuestsOrExternalUsers']
+        }
+
+        $wrapper = @{ conditions = @{ users = $usersBlock } }
+        $null = Add-StandardExclusions -PolicyConfig $wrapper -NoMfaGroupId $NoMfaGroupId `
+            -EmergencyAccessUserIds $EmergencyAccessUserIds
+
+        # Named locations already excluded are kept; "AllTrusted" is dropped
+        $currentLocations = @()
+        $currentLocationBlock = $current['conditions']['locations']
+        if ($currentLocationBlock -and $currentLocationBlock.ContainsKey('excludeLocations')) {
+            $currentLocations = @($currentLocationBlock['excludeLocations'] | Where-Object { $_ -and $_ -ne 'AllTrusted' })
+        }
+        $targetLocations = @($PolicyConfig.conditions.locations.excludeLocations | Where-Object { $_ })
+        $excludeLocations = @(@($currentLocations) + @($targetLocations) | Select-Object -Unique)
+        if ($excludeLocations.Count -eq 0) { throw 'No UK named location to exclude' }
+
+        $body = @{
+            displayName = $PolicyConfig.displayName
+            state       = 'enabledForReportingButNotEnforced'
+            conditions  = @{
+                users     = $usersBlock
+                locations = @{
+                    includeLocations = @('All')
+                    excludeLocations = $excludeLocations
+                }
+            }
+        }
+        $null = Invoke-MgGraphRequest -Method PATCH -Uri $uri -ContentType 'application/json' `
+            -Body ($body | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        return @{ Success = $true; WasEnabled = ([string]$current['state'] -eq 'enabled') }
+    }
+    catch {
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
 function Test-LocationExclusionHiddenByPortal {
     <#
     .SYNOPSIS
@@ -1610,7 +1741,14 @@ function New-ConditionalAccessPolicy {
             if ($missing.Any) {
                 Write-Host "     Does not exclude the emergency access account / NoMFA Exclusion Group" -ForegroundColor Yellow
             }
-            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true; Warning = $warning; MissingExclusions = $missing.Any }
+            $needsUpdate = $false
+            if ((Get-PolicyCode -DisplayName $policyName) -eq 'C007') {
+                $needsUpdate = Test-ExistingC007NeedsUpdate -ExistingPolicy $existingPolicy -ExpectedName $policyName
+                if ($needsUpdate) {
+                    Write-Host "     Not in the current C007 design (name, all users, UK location only)" -ForegroundColor Yellow
+                }
+            }
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true; Warning = $warning; MissingExclusions = $missing.Any; NeedsUpdate = $needsUpdate }
         }
 
         # NoMFA group + emergency access accounts, on every policy
@@ -1621,7 +1759,7 @@ function New-ConditionalAccessPolicy {
         $newPolicy = New-MgIdentityConditionalAccessPolicy -BodyParameter $PolicyConfig -ErrorAction Stop
 
         Write-Host "     Created successfully (ID: $($newPolicy.Id))" -ForegroundColor Green
-        return @{ Success = $true; Policy = $newPolicy; Skipped = $false; Warning = $null; MissingExclusions = $false }
+        return @{ Success = $true; Policy = $newPolicy; Skipped = $false; Warning = $null; MissingExclusions = $false; NeedsUpdate = $false }
     }
     catch {
         Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -1743,8 +1881,11 @@ function Start-CAPolicyCreation {
         Warnings = @()
         ExclusionsAdded = @()
         ExclusionsMissing = @()
+        Updated = @()
+        NotUpdated = @()
     }
     $needExclusions = @()
+    $needUpdate = @()
 
     foreach ($policy in $policies) {
         Write-Host "   $($policy.DisplayName)..." -ForegroundColor White
@@ -1753,10 +1894,13 @@ function Start-CAPolicyCreation {
             -EmergencyAccessUserIds $emergencyAccessUserIds
 
         if ($result.Success) {
-            if ($result.Warning) { $results.Warnings += $result.Warning }
+            if ($result.Warning -and !$result.NeedsUpdate) { $results.Warnings += $result.Warning }
             if ($result.Skipped) {
                 $results.Skipped += $policy.DisplayName
-                if ($result.MissingExclusions) {
+                if ($result.NeedsUpdate) {
+                    $needUpdate += @{ Id = $result.Policy.Id; Name = $result.Policy.DisplayName; Config = $policy; Warning = $result.Warning }
+                }
+                elseif ($result.MissingExclusions) {
                     $needExclusions += @{ Id = $result.Policy.Id; Name = $result.Policy.DisplayName }
                 }
             }
@@ -1769,6 +1913,52 @@ function Start-CAPolicyCreation {
         }
 
         Start-Sleep -Milliseconds 500
+    }
+
+    # An existing C007 that is not in the current design: offer to update it
+    foreach ($item in $needUpdate) {
+        Write-Host ""
+        Write-Host "   $($item.Name) already exists and is NOT in the current design." -ForegroundColor Yellow
+        Write-Host "   Updating it will:" -ForegroundColor Yellow
+        Write-Host "     - rename it to $($item.Config.displayName)" -ForegroundColor Gray
+        Write-Host "     - apply it to ALL users (guests included) instead of a group" -ForegroundColor Gray
+        Write-Host "     - exclude the UK named location only (Selected networks and locations)," -ForegroundColor Gray
+        Write-Host "       removing 'All trusted networks and locations'" -ForegroundColor Gray
+        Write-Host "     - add the emergency access, NoMFA, international, travel and partner exclusions" -ForegroundColor Gray
+        Write-Host "     - set it to REPORT-ONLY, even if it is Enabled now. It will stop blocking" -ForegroundColor Gray
+        Write-Host "       sign-ins from outside the UK until you enable it again after review." -ForegroundColor Gray
+
+        $doUpdate = $false
+        if ($script:NonInteractive) {
+            $doUpdate = [bool]$script:RunConfig.UpdateExistingC007
+            if (!$doUpdate) {
+                Write-Host "   Non-interactive mode: UpdateExistingC007 is off - left unchanged" -ForegroundColor Yellow
+            }
+        }
+        else {
+            $answer = Read-Host "   Update this policy now? (Y/N)"
+            $doUpdate = $answer -like "Y*"
+        }
+
+        $update = if ($doUpdate) {
+            Update-ExistingC007 -PolicyId $item.Id -PolicyConfig $item.Config -NoMfaGroupId $noMfaGroupId `
+                -EmergencyAccessUserIds $emergencyAccessUserIds
+        } else { $null }
+
+        if ($update -and $update.Success) {
+            Write-Host "   Updated: $($item.Config.displayName) (now Report-only)" -ForegroundColor Green
+            $results.Updated += $item.Config.displayName
+            if ($update.WasEnabled) {
+                $results.Warnings += "$($item.Config.displayName) was Enabled and is now Report-only: it is NOT blocking sign-ins from outside the UK until you enable it again."
+            }
+        }
+        else {
+            if ($update) { Write-Host "   Could not update $($item.Name): $($update.Error)" -ForegroundColor Red }
+            $results.NotUpdated += $item.Name
+            if ($item.Warning) { $results.Warnings += $item.Warning }
+            # Left as it was, so it still needs the standard exclusions checked
+            $needExclusions += @{ Id = $item.Id; Name = $item.Name }
+        }
     }
 
     # Existing policies that lack the standard exclusions: offer to add them
@@ -1851,6 +2041,13 @@ function Start-CAPolicyCreation {
     if ($emergencyAccessUpns.Count -gt 0) {
         Write-Host "    - Emergency access account(s) excluded from every new policy: $($emergencyAccessUpns -join ', ')" -ForegroundColor Yellow
     }
+    if ($results.Updated.Count -gt 0) {
+        Write-Host "    - Updated to the current design, now Report-only: $($results.Updated -join ', ')" -ForegroundColor Yellow
+    }
+    if ($results.NotUpdated.Count -gt 0) {
+        Write-Host "    - NOT in the current design (left unchanged): $($results.NotUpdated -join ', ')" -ForegroundColor Red
+        Write-Host "      Do NOT widen its users or save it from the portal until it is updated." -ForegroundColor Red
+    }
     if ($results.ExclusionsAdded.Count -gt 0) {
         Write-Host "    - Exclusions added to $($results.ExclusionsAdded.Count) existing polic(y/ies): $($results.ExclusionsAdded -join ', ')" -ForegroundColor Yellow
     }
@@ -1887,6 +2084,8 @@ function Start-CAPolicyCreation {
             Warnings = @($results.Warnings)
             ExclusionsAdded = @($results.ExclusionsAdded)
             ExclusionsMissing = @($results.ExclusionsMissing)
+            Updated = @($results.Updated)
+            NotUpdated = @($results.NotUpdated)
             EmergencyAccessUserIds = @($emergencyAccessUserIds)
         } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
         Write-Host "  Results written to $ResultPath" -ForegroundColor Gray

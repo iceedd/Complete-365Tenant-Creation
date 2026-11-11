@@ -46,6 +46,8 @@ BeforeAll {
         'Test-LocationExclusionHiddenByPortal'
         'Get-MissingStandardExclusions'
         'Add-StandardExclusionsToExistingPolicy'
+        'Test-ExistingC007NeedsUpdate'
+        'Update-ExistingC007'
         'New-ConditionalAccessPolicy'
         'Get-PartnerTenantIds'
         'Get-GroupUserMembers'
@@ -588,5 +590,145 @@ Describe 'New-ConditionalAccessPolicy (existing policy exclusions)' {
         $result = New-ConditionalAccessPolicy -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id') 6>$null
 
         $result.MissingExclusions | Should -BeFalse
+    }
+}
+
+# ============================================================================
+# Existing C007: detecting and updating one that is not in the current design
+# ============================================================================
+Describe 'Test-ExistingC007NeedsUpdate' {
+
+    BeforeAll {
+        function New-ExistingC007 {
+            param(
+                [string]$Name = 'C007 - Block Sign-In Outside UK',
+                [string[]]$IncludeUsers = @('All'),
+                [string[]]$ExcludeLocations = @('uk-id')
+            )
+            [pscustomobject]@{
+                Id          = 'existing-id'
+                DisplayName = $Name
+                Conditions  = [pscustomobject]@{
+                    Users     = [pscustomobject]@{ IncludeUsers = $IncludeUsers; ExcludeGroups = @(); ExcludeUsers = @() }
+                    Locations = [pscustomobject]@{ ExcludeLocations = $ExcludeLocations }
+                }
+            }
+        }
+    }
+
+    It 'leaves a C007 that is already in the current design alone' {
+        Test-ExistingC007NeedsUpdate -ExistingPolicy (New-ExistingC007) -ExpectedName 'C007 - Block Sign-In Outside UK' | Should -BeFalse
+    }
+
+    It 'flags a C007 under its previous name' {
+        Test-ExistingC007NeedsUpdate -ExistingPolicy (New-ExistingC007 -Name 'C007 - Block Sign-In Outside UK (UK Users)') `
+            -ExpectedName 'C007 - Block Sign-In Outside UK' | Should -BeTrue
+    }
+
+    It 'flags a C007 that is scoped to a group instead of all users' {
+        Test-ExistingC007NeedsUpdate -ExistingPolicy (New-ExistingC007 -IncludeUsers @()) -ExpectedName 'C007 - Block Sign-In Outside UK' | Should -BeTrue
+    }
+
+    It 'flags a C007 that excludes AllTrusted, with or without the UK location' -ForEach @(
+        @{ Locations = @('uk-id', 'AllTrusted') }
+        @{ Locations = @('AllTrusted') }
+    ) {
+        Test-ExistingC007NeedsUpdate -ExistingPolicy (New-ExistingC007 -ExcludeLocations $Locations) -ExpectedName 'C007 - Block Sign-In Outside UK' | Should -BeTrue
+    }
+
+    It 'flags a C007 with no excluded location at all' {
+        Test-ExistingC007NeedsUpdate -ExistingPolicy (New-ExistingC007 -ExcludeLocations @()) -ExpectedName 'C007 - Block Sign-In Outside UK' | Should -BeTrue
+    }
+}
+
+Describe 'Update-ExistingC007' {
+
+    BeforeEach {
+        Set-TestState
+        $c007 = Get-TestPolicies | Where-Object { $_.displayName -like 'C007*' }
+    }
+
+    It 'sends the current design, keeps existing exclusions, drops AllTrusted and forces Report-only' {
+        Mock Invoke-MgGraphRequest {
+            @{
+                state      = 'enabled'
+                conditions = @{
+                    users     = @{
+                        includeUsers  = @()
+                        includeGroups = @('old-uk-group-id')
+                        excludeGroups = @('custom-group-id')
+                        excludeUsers  = @('custom-user-id')
+                    }
+                    locations = @{ includeLocations = @('All'); excludeLocations = @('uk-id', 'AllTrusted') }
+                }
+            }
+        } -ParameterFilter { $Method -eq 'GET' }
+        Mock Invoke-MgGraphRequest { } -ParameterFilter { $Method -eq 'PATCH' }
+
+        $result = Update-ExistingC007 -PolicyId 'old-id' -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $result.Success | Should -BeTrue
+        $result.WasEnabled | Should -BeTrue
+        Should -Invoke Invoke-MgGraphRequest -Times 1 -Exactly -ParameterFilter {
+            if ($Method -ne 'PATCH') { return $false }
+            $sent = $Body | ConvertFrom-Json -AsHashtable
+            $users = $sent['conditions']['users']
+            ($sent['displayName'] -eq 'C007 - Block Sign-In Outside UK') -and
+            ($sent['state'] -eq 'enabledForReportingButNotEnforced') -and
+            ((@($users['includeUsers']) -join ',') -eq 'All') -and
+            (@($users['includeGroups']).Count -eq 0) -and
+            ((@($users['excludeGroups'] | Sort-Object) -join ',') -eq 'custom-group-id,intl-id,nomfa-id,travel-id') -and
+            ((@($users['excludeUsers'] | Sort-Object) -join ',') -eq 'bg02-id,custom-user-id') -and
+            ($users['excludeGuestsOrExternalUsers']['guestOrExternalUserTypes'] -match 'serviceProvider') -and
+            ((@($sent['conditions']['locations']['excludeLocations']) -join ',') -eq 'uk-id') -and
+            (!$sent.ContainsKey('grantControls')) -and
+            (!$sent['conditions'].ContainsKey('applications'))
+        }
+    }
+
+    It 'reports failure, without throwing, when the update is rejected' {
+        Mock Invoke-MgGraphRequest {
+            @{ state = 'enabled'; conditions = @{ users = @{ includeUsers = @() }; locations = $null } }
+        } -ParameterFilter { $Method -eq 'GET' }
+        Mock Invoke-MgGraphRequest { throw 'BadRequest' } -ParameterFilter { $Method -eq 'PATCH' }
+
+        $result = Update-ExistingC007 -PolicyId 'old-id' -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id')
+
+        $result.Success | Should -BeFalse
+        $result.Error | Should -Match 'BadRequest'
+    }
+}
+
+Describe 'New-ConditionalAccessPolicy (existing C007 design check)' {
+
+    BeforeEach {
+        Set-TestState
+        Mock New-MgIdentityConditionalAccessPolicy { }
+        Mock Get-MgIdentityConditionalAccessPolicy {
+            [pscustomobject]@{
+                Id          = 'current-id'
+                DisplayName = 'whatever the filter matched'
+                Conditions  = [pscustomobject]@{
+                    Users     = [pscustomobject]@{ IncludeUsers = @(); ExcludeGroups = @(); ExcludeUsers = @() }
+                    Locations = [pscustomobject]@{ ExcludeLocations = @('AllTrusted') }
+                }
+            }
+        }
+    }
+
+    It 'flags an existing C007 that is not in the current design' {
+        $c007 = Get-TestPolicies | Where-Object { $_.displayName -like 'C007*' }
+        $result = New-ConditionalAccessPolicy -PolicyConfig $c007 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id') 6>$null
+
+        $result.Skipped | Should -BeTrue
+        $result.NeedsUpdate | Should -BeTrue
+    }
+
+    It 'never flags a policy other than C007' {
+        $c006 = Get-TestPolicies | Where-Object { $_.displayName -like 'C006*' }
+        $result = New-ConditionalAccessPolicy -PolicyConfig $c006 -NoMfaGroupId 'nomfa-id' -EmergencyAccessUserIds @('bg02-id') 6>$null
+
+        $result.Skipped | Should -BeTrue
+        $result.NeedsUpdate | Should -BeFalse
     }
 }
