@@ -139,15 +139,12 @@ $SecurityGroups = @(
         MembershipType = "Dynamic"
         AssignIntuneRole = $true
     },
-    @{
-        Name = "CA-GEO-UK"
-        Description = "Users subject to UK geo-based Conditional Access restriction (C007). Add all UK-based users."
-        GroupType = "Assigned"
-        MembershipType = "Manual"
-    },
+    # No "CA-GEO-UK" group any more: C007 (Block Sign-In Outside UK) applies to
+    # ALL users, so nobody has to be added to a group to be covered by it.
+    # This group is the exception list instead.
     @{
         Name = "CA-GEO-International"
-        Description = "Users excluded from UK geo restriction (C007) due to legitimate international travel or remote working requirements."
+        Description = "Users and guests EXCLUDED from the UK geo restriction (C007) because they are based outside the UK. C007 applies to everyone else. Use CA-UK-Travel-Exclusion for temporary travel."
         GroupType = "Assigned"
         MembershipType = "Manual"
     }

@@ -34,13 +34,12 @@ $ResultPath = Join-Path ([IO.Path]::GetTempPath()) "sg-e2e-result-$([guid]::NewG
 $E2EPrefix = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
 
-# The six static groups Security-Groups.ps1 creates, with expected membership types
+# The five static groups Security-Groups.ps1 creates, with expected membership types
 $ExpectedGroups = @(
     @{ Name = 'NoMFA Exclusion Group';   Dynamic = $false },
     @{ Name = 'BITS Admin Users';        Dynamic = $true  },
     @{ Name = 'SSPR Eligible Users';     Dynamic = $true  },
     @{ Name = 'Helpdesk Operator Group'; Dynamic = $true  },
-    @{ Name = 'CA-GEO-UK';               Dynamic = $false },
     @{ Name = 'CA-GEO-International';    Dynamic = $false }
 )
 

@@ -7,28 +7,32 @@
     it creates.
 .DESCRIPTION
     Connects to Microsoft Graph with certificate-based app-only auth, then:
-      1. Runs entra/Security-Groups.ps1 non-interactively (E2E- prefix) to
-         create the prerequisite groups CA-Policies depends on (NoMFA
-         Exclusion Group, CA-GEO-UK, CA-GEO-International)
-      2. Runs entra/CA-Policies.ps1 non-interactively (E2E- prefix,
+      1. Creates a disabled, throwaway user to stand in for the tenant's
+         emergency access (break-glass) account
+      2. Runs entra/Security-Groups.ps1 non-interactively (E2E- prefix) to
+         create the prerequisite groups CA-Policies looks up (NoMFA
+         Exclusion Group, BITS Admin Users, CA-GEO-International)
+      3. Runs entra/CA-Policies.ps1 non-interactively (E2E- prefix,
          PolicyMode ReportOnly) — the real script, same file the menu calls.
          ReportOnly is mandatory here: most of these policies target "All"
          users, and this runs in a shared test tenant, so Enabled would
-         actually enforce block/MFA rules for real traffic. The script
-         auto-creates the (prefixed) UK named location when the geo groups
-         exist, so C007 is expected to be CREATED, not skipped. It also
-         auto-creates the (prefixed) CA-BYOD-Windows and CA-UK-Travel-
-         Exclusion groups (AutoCreateBYODGroups defaults true), so C010/C011
-         are expected to be CREATED too, and C007 is expected to include the
-         travel exclusion group in its excludeGroups.
-      3. Verifies all 12 expected policies exist, are report-only, exclude
-         the E2E NoMFA group, and that C007 references the geo group, named
-         location and travel exclusion group; C008 blocks the device code
-         flow; C009 targets Android/iOS with app protection; C010/C011 scope
-         to the BYOD Windows group; C012 targets guests
-      4. Re-runs the script to prove idempotency
-      5. Deletes every E2E- prefixed CA policy, named location, and group in
-         a finally block that always runs, so cleanup happens even on failure
+         actually enforce MFA rules for real traffic. The script auto-creates
+         the (prefixed) UK named location, CA-BYOD-Windows and CA-UK-Travel-
+         Exclusion groups, so all 12 policies are expected to be CREATED.
+         The NoMFA Exclusion Group starts empty, so the script is expected
+         to add the configured emergency access account to it.
+      4. Verifies all 12 expected policies exist, are report-only (including
+         one the config deliberately asks to be Enabled), exclude the E2E
+         NoMFA group AND list the emergency access account directly; that
+         C007 applies to all users, excludes only the UK named location, the
+         international and travel groups and the partner (GDAP) tenant; that
+         C003 excludes the admin group and the partner tenant; C008 blocks
+         the device code flow; C009 targets Android/iOS with app protection;
+         C010/C011 scope to the BYOD Windows group; C012 targets guests
+      5. Re-runs the script to prove idempotency
+      6. Deletes every E2E- prefixed CA policy, named location, and group,
+         and the throwaway user, in a finally block that always runs, so
+         cleanup happens even on failure
 
     Only objects whose displayName starts with the E2E prefix are ever
     deleted or asserted on.
@@ -57,12 +61,26 @@ $E2EPrefix = $caConfig.NamePrefix
 if (!$E2EPrefix) { throw "E2E config must set a NamePrefix — refusing to run without test isolation" }
 if ($caConfig.PolicyMode -ne 'ReportOnly') { throw "E2E config must use PolicyMode ReportOnly — refusing to risk enforcing policies in a shared tenant" }
 
-# All 12 policies CA-Policies.ps1 creates. C007 depends on the geo groups
-# (created by the Security-Groups prerequisite step below) and the UK named
-# location, which the script now auto-creates when those groups exist.
-# C010/C011 depend on the CA-BYOD-Windows group, which the script also
-# auto-creates (AutoCreateBYODGroups defaults true). C009 and C012 have no
-# group prerequisite at all.
+# The run-time config is the checked-in one plus three values set here:
+#  - EmergencyAccessUpns: the throwaway user created below, whose UPN depends
+#    on the tenant's default domain and so can't live in a static JSON file
+#  - PartnerTenantIds: stated explicitly so the assertions below check what
+#    this test passed, not whatever the script's default happens to be
+#  - PolicyModes: asks for C001 to be ENABLED. C001 can block sign-ins, so the
+#    script must ignore that and create it Report-only — this is the live
+#    proof that the Report-only lock holds. C001 is used because, were the
+#    lock ever broken, it would only affect users flagged as high risk for
+#    the minute or two before cleanup.
+$RunConfigPath   = Join-Path ([IO.Path]::GetTempPath()) "ca-e2e-config-$([guid]::NewGuid().ToString('n')).json"
+$PartnerTenantId = '23212a04-40b3-4ade-8101-f6804f754ab6'
+$EmergencyUserId = $null
+$EmergencyUpn    = $null
+
+# All 12 policies CA-Policies.ps1 creates. C007 needs only the UK named
+# location, which the script auto-creates. C010/C011 depend on the
+# CA-BYOD-Windows group, which the script also auto-creates
+# (AutoCreateBYODGroups defaults true). C009 and C012 have no group
+# prerequisite at all.
 $ExpectedPolicyNames = @(
     'C001 - Block High Risk Users'
     'C002 - MFA Required for All Users'
@@ -70,8 +88,8 @@ $ExpectedPolicyNames = @(
     'C004 - Require MFA and Password Change for Medium Risk Users'
     'C005 - Require MFA for Risky Sign-Ins'
     'C006 - Block Legacy Authentication'
+    'C007 - Block Sign-In Outside UK'
     'C008 - Block Device Code Flow'
-    'C007 - Block Sign-In Outside UK (UK Users)'
     'C009 - BYOD Android and iOS App Protection'
     'C010 - Windows BYOD (Browser Access)'
     'C011 - Windows BYOD (Block Native Apps)'
@@ -86,6 +104,26 @@ function Write-Result {
     else       { Write-Host "  FAIL  $Message" -ForegroundColor Red; $script:failures++ }
 }
 
+function Get-ServiceProviderExclusionTenants {
+    <#
+    .SYNOPSIS
+        From a raw Graph policy (hashtable), returns the tenant IDs whose
+        service provider (GDAP) users the policy excludes — an empty array
+        when it has no such exclusion. Bracket/ContainsKey access throughout:
+        Graph returns the key with a null value on policies without it, and
+        dot access on a missing key throws under Set-StrictMode.
+    #>
+    param($RawPolicy)
+
+    $users = $RawPolicy['conditions']['users']
+    $external = if ($users -and $users.ContainsKey('excludeGuestsOrExternalUsers')) { $users['excludeGuestsOrExternalUsers'] } else { $null }
+    if (!$external) { return @() }
+    if ([string]$external['guestOrExternalUserTypes'] -notmatch 'serviceProvider') { return @() }
+    $tenants = $external['externalTenants']
+    if (!$tenants -or !$tenants.ContainsKey('members')) { return @() }
+    return @($tenants['members'])
+}
+
 # ============================================================================
 # Connect
 # ============================================================================
@@ -98,6 +136,46 @@ Write-Host "  Connected to tenant $($ctx.TenantId)" -ForegroundColor Green
 
 try {
     # ========================================================================
+    # Prerequisite: a throwaway emergency access account
+    # ========================================================================
+    # Disabled, random password, no roles or licences — it only has to exist
+    # so the script has an account to add to the NoMFA Exclusion Group and to
+    # list directly on every policy. Raw Graph calls: this job doesn't
+    # install Microsoft.Graph.Users.
+    Write-Host "`n== Creating throwaway emergency access account ==" -ForegroundColor Cyan
+    $org = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/organization?`$select=verifiedDomains" -ErrorAction Stop
+    $defaultDomain = (@(@($org['value'])[0]['verifiedDomains']) | Where-Object { $_['isDefault'] } | Select-Object -First 1)['name']
+    $EmergencyUpn = "${E2EPrefix}CA-Emergency@$defaultDomain"
+
+    # A leftover from an interrupted run would make the create fail
+    try {
+        $leftover = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($EmergencyUpn))?`$select=id" -ErrorAction Stop
+        Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/users/$($leftover['id'])" -ErrorAction Stop
+        Write-Host "  Removed leftover $EmergencyUpn from an earlier run" -ForegroundColor Gray
+        Start-Sleep -Seconds 10
+    }
+    catch { }
+
+    $newUser = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/users" -ContentType 'application/json' -Body (@{
+            accountEnabled    = $false
+            displayName       = "${E2EPrefix}CA-Emergency"
+            mailNickname      = "${E2EPrefix}CA-Emergency"
+            userPrincipalName = $EmergencyUpn
+            passwordProfile   = @{
+                forceChangePasswordNextSignIn = $true
+                password                      = "E2e!$([guid]::NewGuid().ToString('N'))aA9"
+            }
+        } | ConvertTo-Json) -ErrorAction Stop
+    $EmergencyUserId = $newUser['id']
+    Write-Host "  Created $EmergencyUpn (disabled, ID: $EmergencyUserId)" -ForegroundColor Green
+
+    $runConfig = Get-Content $CAConfigPath -Raw | ConvertFrom-Json -AsHashtable
+    $runConfig['EmergencyAccessUpns'] = @($EmergencyUpn)
+    $runConfig['PartnerTenantIds']    = @($PartnerTenantId)
+    $runConfig['PolicyModes']         = @{ C001 = 'Enabled' }
+    $runConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $RunConfigPath -Encoding UTF8
+
+    # ========================================================================
     # Prerequisite: create the groups CA-Policies depends on
     # ========================================================================
     Write-Host "`n== Creating prerequisite groups (Security-Groups.ps1) ==" -ForegroundColor Cyan
@@ -108,11 +186,33 @@ try {
     Start-Sleep -Seconds 30
 
     # ========================================================================
+    # Failsafe: with no emergency access account the script must stop before
+    # creating anything (the NoMFA Exclusion Group is still empty here)
+    # ========================================================================
+    Write-Host "`n== Verifying the run stops without an emergency access account ==" -ForegroundColor Cyan
+    $noAccountConfigPath = "$RunConfigPath.noaccount.json"
+    $noAccountConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+    $noAccountConfig['EmergencyAccessUpns'] = @()
+    $noAccountConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $noAccountConfigPath -Encoding UTF8
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+        -NonInteractive -ConfigFile $noAccountConfigPath -ResultPath $CAResultPath
+
+    $stopped = if (Test-Path $CAResultPath) { Get-Content $CAResultPath -Raw | ConvertFrom-Json } else { $null }
+    Write-Result ($stopped -and !$stopped.Success -and $stopped.Error -eq 'No emergency access account') `
+        "Run without an emergency access account reported that it stopped"
+    $createdAnyway = @(Get-MgIdentityConditionalAccessPolicy -All -ErrorAction Stop | Where-Object { $_.DisplayName -like "$E2EPrefix*" })
+    Write-Result ($createdAnyway.Count -eq 0) "Run without an emergency access account created no policies"
+    Remove-Item $noAccountConfigPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $CAResultPath) { Remove-Item $CAResultPath -Force }
+
+    # ========================================================================
     # Execute the real script, unattended, in this session
     # ========================================================================
     Write-Host "`n== Running CA-Policies.ps1 (non-interactive, ReportOnly) ==" -ForegroundColor Cyan
     & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
-        -NonInteractive -ConfigFile $CAConfigPath -ResultPath $CAResultPath
+        -NonInteractive -ConfigFile $RunConfigPath -ResultPath $CAResultPath
 
     Write-Host "`n== Waiting 30s for directory replication ==" -ForegroundColor Cyan
     Start-Sleep -Seconds 30
@@ -130,6 +230,8 @@ try {
         foreach ($fail in @($result.Failed)) {
             Write-Host "        failed policy: $($fail.Name) — $($fail.Error)" -ForegroundColor Red
         }
+        Write-Result (@($result.Created).Count -eq $ExpectedPolicyNames.Count) "Script created all $($ExpectedPolicyNames.Count) policies"
+        Write-Result (@($result.EmergencyAccessUserIds) -contains $EmergencyUserId) "Script reported the emergency access account it excluded"
     }
 
     # ========================================================================
@@ -148,6 +250,14 @@ try {
         Write-Result $true "$fullName exists"
         Write-Result ($policy.State -eq 'enabledForReportingButNotEnforced') "$fullName is report-only (not enforcing)"
         Write-Result ($noMfaGroup -and (@($policy.Conditions.Users.ExcludeGroups) -contains $noMfaGroup.Id)) "$fullName excludes the E2E NoMFA group"
+        Write-Result (@($policy.Conditions.Users.ExcludeUsers) -contains $EmergencyUserId) "$fullName lists the emergency access account directly"
+    }
+
+    # The NoMFA Exclusion Group started empty: the script must have added the
+    # configured emergency access account to it
+    if ($noMfaGroup) {
+        $noMfaMembers = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/groups/$($noMfaGroup.Id)/members?`$select=id" -ErrorAction Stop
+        Write-Result (@(@($noMfaMembers['value']) | ForEach-Object { $_['id'] }) -contains $EmergencyUserId) "Emergency access account was added to the E2E NoMFA group"
     }
 
     # The UK named location must have been auto-created (prefix-aware), and
@@ -160,16 +270,41 @@ try {
         Write-Result (@($ukLocation.countriesAndRegions) -contains 'GB') "${E2EPrefix}UK named location covers GB"
     }
 
-    $geoUkGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-GEO-UK'" -ErrorAction SilentlyContinue
+    $geoIntlGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-GEO-International'" -ErrorAction SilentlyContinue
     $travelGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}CA-UK-Travel-Exclusion'" -ErrorAction SilentlyContinue
-    $c007 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C007 - Block Sign-In Outside UK (UK Users)'" -ErrorAction SilentlyContinue
-    if ($c007 -and $ukLocation -and $geoUkGroup) {
-        Write-Result (@($c007.Conditions.Users.IncludeGroups) -contains $geoUkGroup.Id) "C007 targets the E2E CA-GEO-UK group"
-        Write-Result (@($c007.Conditions.Locations.ExcludeLocations) -contains $ukLocation.id) "C007 excludes the ${E2EPrefix}UK named location"
+    $c007 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C007 - Block Sign-In Outside UK'" -ErrorAction SilentlyContinue
+    if ($c007 -and $ukLocation) {
+        # All users (guests included) — not a hand-maintained group
+        Write-Result (@($c007.Conditions.Users.IncludeUsers) -contains 'All') "C007 applies to all users"
+        Write-Result (@($c007.Conditions.Users.IncludeGroups | Where-Object { $_ }).Count -eq 0) "C007 is not scoped to a group"
+        # The UK location must be the ONLY excluded location: the portal can't
+        # display a named location alongside "AllTrusted", and a portal save
+        # then silently drops the UK exclusion (which blocked every UK sign-in).
+        Write-Result ((@($c007.Conditions.Locations.ExcludeLocations) -join ',') -eq $ukLocation.id) "C007 excludes the ${E2EPrefix}UK named location, and only that"
+
+        $c007Raw = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c007.Id)" -ErrorAction Stop
+        Write-Result (@(Get-ServiceProviderExclusionTenants -RawPolicy $c007Raw) -contains $PartnerTenantId) "C007 excludes service provider (GDAP) users from the partner tenant"
+    }
+    Write-Result ([bool]$geoIntlGroup) "${E2EPrefix}CA-GEO-International group exists (created by Security-Groups.ps1)"
+    if ($c007 -and $geoIntlGroup) {
+        Write-Result (@($c007.Conditions.Users.ExcludeGroups) -contains $geoIntlGroup.Id) "C007 excludes the E2E CA-GEO-International group"
     }
     Write-Result ([bool]$travelGroup) "${E2EPrefix}CA-UK-Travel-Exclusion group was auto-created"
     if ($c007 -and $travelGroup) {
         Write-Result (@($c007.Conditions.Users.ExcludeGroups) -contains $travelGroup.Id) "C007 excludes the E2E UK travel exclusion group"
+    }
+
+    # C003: admin accounts and partner (GDAP) sign-ins can never hold a
+    # compliant device in this tenant, so both are excluded
+    $adminGroup = Get-MgGroup -Filter "displayName eq '${E2EPrefix}BITS Admin Users'" -ErrorAction SilentlyContinue
+    $c003 = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '${E2EPrefix}C003 - Block Non Corporate Devices'" -ErrorAction SilentlyContinue
+    Write-Result ([bool]$adminGroup) "${E2EPrefix}BITS Admin Users group exists (created by Security-Groups.ps1)"
+    if ($c003 -and $adminGroup) {
+        Write-Result (@($c003.Conditions.Users.ExcludeGroups) -contains $adminGroup.Id) "C003 excludes the E2E BITS Admin Users group"
+    }
+    if ($c003) {
+        $c003Raw = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c003.Id)" -ErrorAction Stop
+        Write-Result (@(Get-ServiceProviderExclusionTenants -RawPolicy $c003Raw) -contains $PartnerTenantId) "C003 excludes service provider (GDAP) users from the partner tenant"
     }
 
     # C008's authenticationFlows condition isn't surfaced by every SDK model
@@ -216,11 +351,63 @@ try {
     # ========================================================================
     Write-Host "`n== Verifying idempotency (second run skips all) ==" -ForegroundColor Cyan
     & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
-        -NonInteractive -ConfigFile $CAConfigPath -ResultPath $CAResultPath
+        -NonInteractive -ConfigFile $RunConfigPath -ResultPath $CAResultPath
 
     $second = Get-Content $CAResultPath -Raw | ConvertFrom-Json
     Write-Result ([bool]$second.Success -and @($second.Created).Count -eq 0 -and @($second.Skipped).Count -eq $ExpectedPolicyNames.Count) `
         "Second run created nothing and skipped all $($ExpectedPolicyNames.Count) policies"
+    Write-Result (@($second.ExclusionsAdded).Count -eq 0 -and @($second.ExclusionsMissing).Count -eq 0) `
+        "Second run found the exclusions already on every policy and changed none"
+
+    # ========================================================================
+    # Failsafe: an existing policy that lacks the standard exclusions gets
+    # them added, and nothing else on it changes. C007 is the test subject
+    # because it has the most to lose (its own groups, the partner exclusion
+    # and the UK location).
+    # ========================================================================
+    Write-Host "`n== Verifying exclusions are added to an existing policy ==" -ForegroundColor Cyan
+    if ($c007 -and $noMfaGroup) {
+        $c007Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies/$($c007.Id)"
+        $stripRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $stripUsers = $stripRaw['conditions']['users']
+        $stripUsers['excludeUsers'] = @()
+        $stripUsers['excludeGroups'] = @(@($stripUsers['excludeGroups']) | Where-Object { $_ -ne $noMfaGroup.Id })
+        $null = Invoke-MgGraphRequest -Method PATCH -Uri $c007Uri -ContentType 'application/json' `
+            -Body (@{ conditions = @{ users = $stripUsers } } | ConvertTo-Json -Depth 10) -ErrorAction Stop
+        Write-Host "  Removed the NoMFA group and emergency access account from $($c007.DisplayName)" -ForegroundColor Gray
+        Start-Sleep -Seconds 20
+
+        $repairConfigPath = "$RunConfigPath.repair.json"
+        $repairConfig = Get-Content $RunConfigPath -Raw | ConvertFrom-Json -AsHashtable
+        $repairConfig['UpdateExistingExclusions'] = $true
+        $repairConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $repairConfigPath -Encoding UTF8
+
+        & (Join-Path $RepoRoot 'entra/CA-Policies.ps1') `
+            -NonInteractive -ConfigFile $repairConfigPath -ResultPath $CAResultPath
+        Remove-Item $repairConfigPath -Force -ErrorAction SilentlyContinue
+
+        $third = Get-Content $CAResultPath -Raw | ConvertFrom-Json
+        Write-Result ((@($third.ExclusionsAdded) -join ',') -eq $c007.DisplayName) "Third run added the exclusions to C007 and to no other policy"
+        Write-Result (@($third.Created).Count -eq 0) "Third run created nothing"
+
+        Start-Sleep -Seconds 20
+        $fixedRaw = Invoke-MgGraphRequest -Method GET -Uri $c007Uri -ErrorAction Stop
+        $fixedUsers = $fixedRaw['conditions']['users']
+        Write-Result (@($fixedUsers['excludeGroups']) -contains $noMfaGroup.Id) "C007 excludes the E2E NoMFA group again"
+        Write-Result (@($fixedUsers['excludeUsers']) -contains $EmergencyUserId) "C007 lists the emergency access account directly again"
+        Write-Result (@($fixedUsers['includeUsers']) -contains 'All') "C007 still applies to all users"
+        if ($geoIntlGroup) {
+            Write-Result (@($fixedUsers['excludeGroups']) -contains $geoIntlGroup.Id) "C007 still excludes the E2E CA-GEO-International group"
+        }
+        Write-Result (@(Get-ServiceProviderExclusionTenants -RawPolicy $fixedRaw) -contains $PartnerTenantId) "C007 still excludes the partner tenant"
+        if ($ukLocation) {
+            Write-Result ((@($fixedRaw['conditions']['locations']['excludeLocations']) -join ',') -eq $ukLocation.id) "C007 still excludes the UK named location, and only that"
+        }
+        Write-Result ($fixedRaw['state'] -eq 'enabledForReportingButNotEnforced') "C007 is still report-only"
+    }
+    else {
+        Write-Result $false "C007 and the NoMFA group exist for the existing-policy exclusion test"
+    }
 }
 finally {
     # ========================================================================
@@ -250,12 +437,25 @@ finally {
     try {
         $locations = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" -ErrorAction Stop
         foreach ($loc in @($locations.value | Where-Object { $_.displayName -like "$E2EPrefix*" })) {
-            try {
-                Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations/$($loc.id)" -ErrorAction Stop
+            # A location still referenced by a policy can't be deleted, and the
+            # policy deletions above take a moment to register — retry briefly
+            $deleted = $false
+            $lastError = $null
+            for ($attempt = 1; $attempt -le 4 -and !$deleted; $attempt++) {
+                try {
+                    Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations/$($loc.id)" -ErrorAction Stop
+                    $deleted = $true
+                }
+                catch {
+                    $lastError = $_.Exception.Message
+                    if ($attempt -lt 4) { Start-Sleep -Seconds 10 }
+                }
+            }
+            if ($deleted) {
                 Write-Host "  Deleted named location $($loc.displayName)" -ForegroundColor Gray
             }
-            catch {
-                Write-Host "  WARNING: could not delete named location $($loc.displayName): $($_.Exception.Message)" -ForegroundColor Yellow
+            else {
+                Write-Host "  WARNING: could not delete named location $($loc.displayName): $lastError" -ForegroundColor Yellow
             }
         }
     }
@@ -282,7 +482,23 @@ finally {
         Write-Host "  Manually delete groups prefixed '$E2EPrefix' in the test tenant" -ForegroundColor Yellow
     }
 
-    Remove-Item $GroupResultPath, $CAResultPath -ErrorAction SilentlyContinue
+    Write-Host "`n== Cleaning up throwaway emergency access account ==" -ForegroundColor Cyan
+    if ($EmergencyUpn) {
+        try {
+            # Looked up by UPN rather than trusting $EmergencyUserId, so a run
+            # that failed between creating the user and recording its ID still
+            # cleans up
+            $toDelete = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($EmergencyUpn))?`$select=id" -ErrorAction Stop
+            Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/users/$($toDelete['id'])" -ErrorAction Stop
+            Write-Host "  Deleted user $EmergencyUpn" -ForegroundColor Gray
+        }
+        catch {
+            Write-Host "  WARNING: could not delete user ${EmergencyUpn}: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  Manually delete it in the test tenant if it exists" -ForegroundColor Yellow
+        }
+    }
+
+    Remove-Item $GroupResultPath, $CAResultPath, $RunConfigPath -ErrorAction SilentlyContinue
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
 }
 
