@@ -9,6 +9,28 @@
 .AUTHOR
     BITS
 .VERSION
+    2.7 - Lockout safeguards, after C007 locked a whole tenant out:
+          * C007 (Block Sign-In Outside UK) now applies to ALL users, guests
+            included, instead of the hand-maintained CA-GEO-UK group. People
+            are taken out by exception: CA-GEO-International, CA-UK-Travel-
+            Exclusion, and partner (GDAP) sign-ins. Renamed to drop
+            "(UK Users)"; a tenant holding it under the old name is skipped,
+            not duplicated. The UK named location is always created.
+          * Emergency access accounts: the user members of the NoMFA
+            Exclusion Group are now also listed directly on every policy
+            (excludeUsers), and an EMPTY group is no longer silently
+            accepted - the script asks for the account (or reads
+            EmergencyAccessUpns) and adds it.
+          * C003 (compliant device) excludes the BITS Admin Users group and
+            partner (GDAP) sign-ins, neither of which can hold a compliant
+            device in the customer's tenant.
+          * Policies that can block a sign-in (block, compliant device,
+            protected app: C001, C003, C006, C007, C008, C009, C011) are
+            ALWAYS created Report-only. There is no prompt for them and a
+            config asking for Enabled is ignored.
+          * Policies are listed in code order (C007 before C008), and an
+            existing policy whose excluded locations the portal would
+            silently drop is flagged when it is found.
     2.6 - C007 (Block Sign-In Outside UK) now excludes only the UK named
           location, instead of the UK location plus "AllTrusted". The portal
           can't display a named location and "All trusted" together, so a
@@ -53,18 +75,32 @@
       NamePrefix                  (string) prefixed to every policy displayName
       GroupNamePrefix             (string) prefixed to the group names this
                                    script looks up (NoMFA Exclusion Group,
-                                   CA-GEO-UK, CA-GEO-International)
+                                   BITS Admin Users, CA-GEO-International)
       PolicyMode                  ("ReportOnly"|"Enabled") default ReportOnly —
                                    the fallback used for any policy not given
                                    its own entry in PolicyModes below. E2E
                                    tests must never use Enabled: most policies
                                    target "All" users in a shared tenant, so
-                                   Enabled would actually enforce block/MFA
-                                   rules for real traffic
+                                   Enabled would actually enforce MFA rules
+                                   for real traffic
       PolicyModes                 (object) optional per-policy override, keyed
                                    by policy code, e.g.
-                                   { "C001": "Enabled", "C004": "ReportOnly" }.
+                                   { "C002": "Enabled", "C004": "ReportOnly" }.
                                    Policies not listed here use PolicyMode.
+                                   NOTE: neither setting can enable a policy
+                                   that can block a sign-in (C001, C003, C006,
+                                   C007, C008, C009, C011). Those are always
+                                   Report-only; "Enabled" is ignored for them.
+      PartnerTenantIds            (string[]) tenant IDs of the partner(s) with
+                                   delegated admin (GDAP) access. Their
+                                   service-provider sign-ins are excluded from
+                                   C003 and C007. Defaults to the BITS tenant;
+                                   set [] to exclude none.
+      EmergencyAccessUpns         (string[]) UPN(s) of the emergency access
+                                   (break-glass) account to add to the NoMFA
+                                   Exclusion Group when that group is empty.
+                                   Only read in non-interactive runs; an
+                                   interactive run asks instead.
       AutoDisableSecurityDefaults (bool) default true — required to make any
                                    progress, since CA policies cannot be
                                    created while Security Defaults is enabled
@@ -73,9 +109,10 @@
                                    BYOD group (C010/C011) and the UK travel
                                    exclusion group (C007). Unlike the NoMFA
                                    group these are optional: if creation is
-                                   declined/disabled/fails, the policies that
-                                   depend on them are skipped rather than
-                                   blocking the whole run.
+                                   declined/disabled/fails, C010/C011 are
+                                   skipped and C007 is created without the
+                                   travel exemption, rather than blocking the
+                                   whole run.
 .PARAMETER ResultPath
     Optional path to write a JSON results summary (created/skipped/failed),
     so a CI runner can assert on the outcome.
@@ -102,6 +139,11 @@ $script:RunConfig = @{
     AutoDisableSecurityDefaults = $true
     AutoCreateNoMfaGroup        = $true
     AutoCreateBYODGroups        = $true
+    # Partner (service provider / GDAP) tenants whose delegated-admin sign-ins
+    # are excluded from C003 and C007. 23212a04-... is the BITS tenant.
+    PartnerTenantIds            = @('23212a04-40b3-4ade-8101-f6804f754ab6')
+    # Non-interactive only: account(s) to add to an EMPTY NoMFA Exclusion Group
+    EmergencyAccessUpns         = @()
 }
 
 if ($ConfigFile) {
@@ -243,6 +285,28 @@ function Test-Prerequisites {
         return @{ Success = $false }
     }
 
+    # Emergency access (break-glass) accounts: the user members of the NoMFA
+    # Exclusion Group. Every policy excludes the group AND lists these
+    # accounts directly, so one of them can always sign in to undo a bad
+    # policy. An empty group is the state that turns a policy mistake into a
+    # tenant-wide lockout, so it is checked (and can be fixed) here rather
+    # than left as an "add them afterwards" reminder.
+    Write-Host "   Checking emergency access accounts (NoMFA Exclusion Group members)..." -ForegroundColor Gray
+    $emergencyAccess = Resolve-EmergencyAccessAccounts -NoMfaGroupId $noMfaGroupResult.GroupId
+
+    # Admin group (optional — excluded from C003 only)
+    Write-Host "   Checking for BITS Admin Users group (optional)..." -ForegroundColor Gray
+    $adminGroupResult = Resolve-AdminGroup
+
+    # Partner (service provider / GDAP) tenants excluded from C003 and C007
+    $partnerTenantIds = @(Get-PartnerTenantIds -CurrentTenantId $context.TenantId)
+    if ($partnerTenantIds.Count -gt 0) {
+        Write-Host "   Partner (GDAP) tenants excluded from C003/C007: $($partnerTenantIds -join ', ')" -ForegroundColor Green
+    }
+    else {
+        Write-Host "   No partner (GDAP) tenants configured - delegated admin sign-ins are not excluded from C003/C007" -ForegroundColor Yellow
+    }
+
     # Check for the Windows BYOD group (optional — C010/C011 skipped if missing)
     Write-Host "   Checking for CA-BYOD-Windows group (optional)..." -ForegroundColor Gray
     $byodWindowsResult = Test-BYODWindowsGroup
@@ -251,24 +315,23 @@ function Test-Prerequisites {
         Write-Host "   CA-BYOD-Windows unavailable - C010/C011 (Windows BYOD) will be skipped" -ForegroundColor Yellow
     }
 
-    # Check for geo-based CA groups (optional — C007 skipped if missing)
-    Write-Host "   Checking for geo-based CA groups (optional)..." -ForegroundColor Gray
+    # CA-GEO-International (optional) — an EXCLUSION from C007, not its scope.
+    # C007 applies to all users; this group holds the users (or guests) who
+    # are based outside the UK. C007 is still created without it.
+    Write-Host "   Checking for CA-GEO-International group (optional)..." -ForegroundColor Gray
     $groupPrefix = $script:RunConfig.GroupNamePrefix
-    $geoUkGroup = Get-MgGroup -Filter "displayName eq '${groupPrefix}CA-GEO-UK'" -ErrorAction SilentlyContinue
-    $geoIntlGroup = Get-MgGroup -Filter "displayName eq '${groupPrefix}CA-GEO-International'" -ErrorAction SilentlyContinue
+    $geoIntlGroup = Get-MgGroup -Filter "displayName eq '${groupPrefix}CA-GEO-International'" -ErrorAction SilentlyContinue | Select-Object -First 1
 
-    if ($geoUkGroup -and $geoIntlGroup) {
-        Write-Host "   CA-GEO-UK found (ID: $($geoUkGroup.Id))" -ForegroundColor Green
+    if ($geoIntlGroup) {
         Write-Host "   CA-GEO-International found (ID: $($geoIntlGroup.Id))" -ForegroundColor Green
     }
     else {
-        Write-Host "   Geo groups not found - C007 (Block Outside UK) will be skipped" -ForegroundColor Yellow
+        Write-Host "   CA-GEO-International not found - C007 will be created without it (Security Groups creates it)" -ForegroundColor Yellow
     }
 
-    # Check for UK named location — created automatically when the geo groups
-    # exist but the location doesn't, so C007 no longer silently depends on a
-    # manual prerequisite. Prefix-aware so E2E runs create/clean "E2E-UK"
-    # while production (empty prefix) gets "UK".
+    # Check for UK named location — C007 excludes it, so it is created
+    # automatically when missing. Prefix-aware so E2E runs create/clean
+    # "E2E-UK" while production (empty prefix) gets "UK".
     Write-Host "   Checking for UK named location..." -ForegroundColor Gray
     $locationName = "$($script:RunConfig.NamePrefix)UK"
     $ukLocation = $null
@@ -283,7 +346,7 @@ function Test-Prerequisites {
     if ($ukLocation) {
         Write-Host "   UK named location found (ID: $($ukLocation.id))" -ForegroundColor Green
     }
-    elseif ($geoUkGroup -and $geoIntlGroup) {
+    else {
         Write-Host "   Creating named location '$locationName' (United Kingdom)..." -ForegroundColor Gray
         try {
             $ukLocation = Invoke-MgGraphRequest -Method POST `
@@ -303,16 +366,12 @@ function Test-Prerequisites {
             $ukLocation = $null
         }
     }
-    else {
-        Write-Host "   Geo groups absent - named location not needed, C007 will be skipped" -ForegroundColor Yellow
-    }
 
     # Check for the UK travel exclusion group — only relevant if C007 itself
-    # is actually going to be created (no point creating an unused group in
-    # tenants that don't use GEO-blocking at all). Optional: if it can't be
-    # resolved, C007 is still created, just without the travel exemption.
+    # is going to be created. Optional: if it can't be resolved, C007 is
+    # still created, just without the travel exemption.
     $ukTravelExclusionGroupId = $null
-    if ($geoUkGroup -and $geoIntlGroup -and $ukLocation) {
+    if ($ukLocation) {
         Write-Host "   Checking for CA-UK-Travel-Exclusion group (optional)..." -ForegroundColor Gray
         $travelExclusionResult = Test-UkTravelExclusionGroup
         if ($travelExclusionResult.Success) {
@@ -325,17 +384,21 @@ function Test-Prerequisites {
 
     Write-Host ""
     # Explicit if/else rather than ?. — under Set-StrictMode (as the E2E test
-    # harness enables), $geoUkGroup?.Id is parsed as a variable literally named
-    # "geoUkGroup?", which was never set, and throws instead of returning $null
+    # harness enables), $geoIntlGroup?.Id is parsed as a variable literally named
+    # "geoIntlGroup?", which was never set, and throws instead of returning $null
     return @{
         Success                  = $true
         NoMfaGroupId             = $noMfaGroupResult.GroupId
         SecurityDefaultsDisabled = $securityDefaultsResult.IsDisabled
-        GeoUkGroupId             = if ($geoUkGroup) { $geoUkGroup.Id } else { $null }
         GeoIntlGroupId           = if ($geoIntlGroup) { $geoIntlGroup.Id } else { $null }
         UkLocationId             = if ($ukLocation) { $ukLocation.id } else { $null }
         ByodWindowsGroupId       = $byodWindowsGroupId
         UkTravelExclusionGroupId = $ukTravelExclusionGroupId
+        EmergencyAccessUserIds   = @($emergencyAccess.UserIds)
+        EmergencyAccessUpns      = @($emergencyAccess.Upns)
+        AdminGroupId             = $adminGroupResult.GroupId
+        AdminGroupHasMembers     = [bool]$adminGroupResult.HasMembers
+        PartnerTenantIds         = @($partnerTenantIds)
     }
 }
 
@@ -499,6 +562,216 @@ function Test-NoMfaGroup {
         -AutoCreate $script:RunConfig.AutoCreateNoMfaGroup
 }
 
+function Get-GroupUserMembers {
+    <#
+    .SYNOPSIS
+        Returns the direct USER members of a group as hashtables (id,
+        userPrincipalName, displayName). Other member types (devices, nested
+        groups, service principals) are ignored.
+    #>
+    param([Parameter(Mandatory)][string]$GroupId)
+
+    $members = @()
+    $uri = "https://graph.microsoft.com/v1.0/groups/$GroupId/members?`$select=id,userPrincipalName,displayName&`$top=100"
+    while ($uri) {
+        $page = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+        foreach ($member in @($page['value'])) {
+            if ($member -and $member['@odata.type'] -eq '#microsoft.graph.user') { $members += $member }
+        }
+        $uri = if ($page.ContainsKey('@odata.nextLink')) { $page['@odata.nextLink'] } else { $null }
+    }
+    return $members
+}
+
+function Find-UserByUpn {
+    <#
+    .SYNOPSIS
+        Looks a user up by UPN. Returns a hashtable (id, userPrincipalName,
+        displayName) or $null when there is no such user.
+    #>
+    param([Parameter(Mandatory)][string]$Upn)
+
+    try {
+        $encoded = [uri]::EscapeDataString($Upn)
+        $user = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/users/${encoded}?`$select=id,userPrincipalName,displayName" `
+            -ErrorAction Stop
+        if ($user -and $user['id']) { return $user }
+    }
+    catch { }
+    return $null
+}
+
+function Resolve-EmergencyAccessAccounts {
+    <#
+    .SYNOPSIS
+        Works out which accounts are the tenant's emergency access
+        (break-glass) accounts, and makes sure there is at least one.
+    .DESCRIPTION
+        The emergency access accounts are the user members of the NoMFA
+        Exclusion Group ("USE FOR BREAK-GLASS ACCOUNTS ONLY"). In a tenant
+        built by Admin-Creation.ps1 that is BITS-Admin-BG02. In an older
+        tenant the accounts have other names and nothing put them in the
+        group, which leaves every policy with an exclusion that protects
+        nobody. So when the group is empty this asks for the account
+        (interactive) or reads EmergencyAccessUpns from the config
+        (non-interactive) and adds it to the group.
+
+        Returns the accounts' object IDs so each policy can also list them
+        directly (see Add-StandardExclusions). An empty result is allowed —
+        the run continues with a clear warning — because every policy that
+        can block a sign-in is created Report-only regardless.
+    #>
+    param([Parameter(Mandatory)][string]$NoMfaGroupId)
+
+    $groupName = "$($script:RunConfig.GroupNamePrefix)NoMFA Exclusion Group"
+    $accounts = @()
+    try {
+        $accounts = @(Get-GroupUserMembers -GroupId $NoMfaGroupId)
+    }
+    catch {
+        Write-Host "   Could not read $groupName members: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    if ($accounts.Count -eq 0) {
+        Write-Host "   $groupName has NO members" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "   Every policy excludes this group so that one emergency access (break-glass)" -ForegroundColor Yellow
+        Write-Host "   account can always sign in and undo a bad policy. While the group is empty," -ForegroundColor Yellow
+        Write-Host "   no account is protected from a lockout." -ForegroundColor Yellow
+        Write-Host ""
+
+        $upnsToAdd = @()
+        if ($script:NonInteractive) {
+            $upnsToAdd = @($script:RunConfig.EmergencyAccessUpns | Where-Object { $_ })
+            if ($upnsToAdd.Count -eq 0) {
+                Write-Host "   Non-interactive mode: no EmergencyAccessUpns configured - continuing without one" -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "   Enter the account kept for emergencies only (long random password, no MFA)," -ForegroundColor Gray
+            Write-Host "   for example BITS-Admin-BG02@yourdomain. It will be added to $groupName." -ForegroundColor Gray
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                $entered = Read-Host "   Emergency access account UPN (blank to skip)"
+                $entered = if ($entered) { $entered.Trim() } else { '' }
+                if (!$entered) { break }
+                if (Find-UserByUpn -Upn $entered) { $upnsToAdd = @($entered); break }
+                Write-Host "   No user found with UPN '$entered'" -ForegroundColor Yellow
+            }
+        }
+
+        foreach ($upn in $upnsToAdd) {
+            $user = Find-UserByUpn -Upn ([string]$upn)
+            if (!$user) {
+                Write-Host "   Emergency access account not found: $upn" -ForegroundColor Yellow
+                continue
+            }
+            try {
+                $null = Invoke-MgGraphRequest -Method POST `
+                    -Uri "https://graph.microsoft.com/v1.0/groups/$NoMfaGroupId/members/`$ref" `
+                    -ContentType 'application/json' `
+                    -Body (@{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$($user['id'])" } | ConvertTo-Json) `
+                    -ErrorAction Stop
+                Write-Host "   Added $($user['userPrincipalName']) to $groupName" -ForegroundColor Green
+                $accounts += $user
+            }
+            catch {
+                if ($_.Exception.Message -match 'already exist') {
+                    $accounts += $user
+                }
+                else {
+                    Write-Host "   Could not add $upn to ${groupName}: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
+    }
+
+    if ($accounts.Count -gt 0) {
+        foreach ($account in $accounts) {
+            Write-Host "   Emergency access account: $($account['userPrincipalName'])" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "   WARNING: no emergency access account will be excluded from the policies" -ForegroundColor Red
+    }
+
+    return @{
+        UserIds = @($accounts | ForEach-Object { $_['id'] })
+        Upns    = @($accounts | ForEach-Object { $_['userPrincipalName'] })
+    }
+}
+
+function Resolve-AdminGroup {
+    <#
+    .SYNOPSIS
+        Looks up the BITS Admin Users group, which C003 (compliant device)
+        excludes: admin accounts sign in from the partner's own devices,
+        which can never be compliant in the customer's tenant. Optional — if
+        the group is missing, C003 is created without it.
+    .DESCRIPTION
+        The group is dynamic and matches names containing "BITS-Admin". In a
+        tenant whose admin accounts use a different naming convention it
+        stays empty and excludes nobody, so an empty group is called out
+        here instead of being discovered when C003 is enabled.
+    #>
+    $groupName = "$($script:RunConfig.GroupNamePrefix)BITS Admin Users"
+    $group = $null
+    try {
+        $group = Get-MgGroup -Filter "displayName eq '$groupName'" -ErrorAction Stop | Select-Object -First 1
+    }
+    catch { }
+
+    if (!$group) {
+        Write-Host "   $groupName not found - admin accounts will NOT be excluded from C003" -ForegroundColor Yellow
+        Write-Host "   (Security Groups creates it; otherwise exclude your admin accounts from C003 before enabling it)" -ForegroundColor Yellow
+        return @{ GroupId = $null; HasMembers = $false }
+    }
+
+    $hasMembers = $false
+    try {
+        $page = Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/v1.0/groups/$($group.Id)/members?`$select=id&`$top=1" `
+            -ErrorAction Stop
+        $hasMembers = @($page['value']).Count -gt 0
+    }
+    catch { }
+
+    Write-Host "   $groupName found (ID: $($group.Id)) - excluded from C003" -ForegroundColor Green
+    if (!$hasMembers) {
+        Write-Host "   WARNING: $groupName has no members." -ForegroundColor Yellow
+        Write-Host "   It is a dynamic group matching names that contain 'BITS-Admin'. A new group can take a" -ForegroundColor Yellow
+        Write-Host "   few minutes to fill. If it stays empty, this tenant's admin accounts use different names" -ForegroundColor Yellow
+        Write-Host "   and C003 would block them once enabled. Check its members before enabling C003." -ForegroundColor Yellow
+    }
+
+    return @{ GroupId = $group.Id; HasMembers = $hasMembers }
+}
+
+function Get-PartnerTenantIds {
+    <#
+    .SYNOPSIS
+        Returns the configured partner (service provider / GDAP) tenant IDs,
+        validated as GUIDs and de-duplicated. The tenant being configured is
+        dropped from the list: a tenant is never an external partner of
+        itself.
+    #>
+    param([string]$CurrentTenantId)
+
+    $ids = @()
+    foreach ($candidate in @($script:RunConfig.PartnerTenantIds)) {
+        if (!$candidate) { continue }
+        $parsed = [guid]::Empty
+        if (![guid]::TryParse([string]$candidate, [ref]$parsed)) {
+            Write-Host "   Ignoring PartnerTenantIds entry that is not a tenant ID (GUID): $candidate" -ForegroundColor Yellow
+            continue
+        }
+        $id = $parsed.ToString()
+        if ($CurrentTenantId -and $id -eq ([string]$CurrentTenantId).ToLowerInvariant()) { continue }
+        if ($ids -notcontains $id) { $ids += $id }
+    }
+    return $ids
+}
+
 function Test-BYODWindowsGroup {
     <#
     .SYNOPSIS
@@ -553,18 +826,87 @@ function Get-TenantInfo {
     }
 }
 
+function New-ServiceProviderExclusion {
+    <#
+    .SYNOPSIS
+        Builds the "Guest or external users" exclusion that exempts partner
+        (service provider / GDAP) sign-ins from a policy, limited to the
+        given partner tenant IDs. Returns $null when no tenant IDs are given,
+        so callers can simply skip the key.
+    .DESCRIPTION
+        Partner staff signing in through GDAP have no account in the customer
+        tenant, so they cannot be exempted through a group — the service
+        provider user type scoped to the partner's tenant ID is the method
+        Microsoft documents for this. A fresh hashtable is returned on every
+        call so two policies never share one object.
+    #>
+    param([string[]]$TenantIds)
+
+    $ids = @($TenantIds | Where-Object { $_ })
+    if ($ids.Count -eq 0) { return $null }
+
+    return @{
+        guestOrExternalUserTypes = 'serviceProvider'
+        externalTenants          = @{
+            '@odata.type'  = '#microsoft.graph.conditionalAccessEnumeratedExternalTenants'
+            membershipKind = 'enumerated'
+            members        = @($ids)
+        }
+    }
+}
+
 function Get-PolicyDefinitions {
     param(
         [string]$NoMfaGroupId,
-        [string]$PolicyState = "enabled",
-        [string]$GeoUkGroupId,
+        [string]$PolicyState = "enabledForReportingButNotEnforced",
         [string]$GeoIntlGroupId,
         [string]$UkLocationId,
         [string]$ByodWindowsGroupId,
-        [string]$UkTravelExclusionGroupId
+        [string]$UkTravelExclusionGroupId,
+        [string]$AdminGroupId,
+        [string[]]$PartnerTenantIds
     )
 
     $namePrefix = $script:RunConfig.NamePrefix
+
+    # ---- C003 users: everyone, minus the accounts that can never hold a
+    # compliant device in THIS tenant ---------------------------------------
+    # - Admin group (BITS Admin Users): admin accounts are used from the
+    #   partner's own devices, which are not enrolled in the customer's Intune.
+    # - Partner (GDAP) sign-ins: same reason, and they have no account here to
+    #   put in a group.
+    # - excludeRoles d29b2b05-... is the built-in "Directory Synchronization
+    #   Accounts" role (the Entra Connect sync account) — it is NOT Global
+    #   Administrator. Administrators are covered by the admin group above.
+    $c003ExcludeGroups = @($NoMfaGroupId)
+    if ($AdminGroupId) { $c003ExcludeGroups += $AdminGroupId }
+    $c003Users = @{
+        includeUsers  = @("All")
+        excludeGroups = @($c003ExcludeGroups)
+        excludeRoles  = @("d29b2b05-8046-44ba-8758-1e26182fcf32")
+    }
+    $c003PartnerExclusion = New-ServiceProviderExclusion -TenantIds $PartnerTenantIds
+    if ($c003PartnerExclusion) { $c003Users['excludeGuestsOrExternalUsers'] = $c003PartnerExclusion }
+
+    # ---- C007 users: ALL users (guests included), not a hand-maintained
+    # group ------------------------------------------------------------------
+    # Scoping this to a manual "UK users" group meant a user was only
+    # protected if someone remembered to add them. It now applies to everyone
+    # and people are taken OUT by exception instead:
+    # - CA-GEO-International: users (or guests) based outside the UK
+    # - CA-UK-Travel-Exclusion: temporary travel
+    # - Partner (GDAP) sign-ins: no account here to put in a group, and
+    #   delegated admin access is a way back in if this policy misbehaves.
+    # Both groups are optional: the policy is still created without them.
+    $c007ExcludeGroups = @($NoMfaGroupId)
+    if ($GeoIntlGroupId) { $c007ExcludeGroups += $GeoIntlGroupId }
+    if ($UkTravelExclusionGroupId) { $c007ExcludeGroups += $UkTravelExclusionGroupId }
+    $c007Users = @{
+        includeUsers  = @("All")
+        excludeGroups = @($c007ExcludeGroups)
+    }
+    $c007PartnerExclusion = New-ServiceProviderExclusion -TenantIds $PartnerTenantIds
+    if ($c007PartnerExclusion) { $c007Users['excludeGuestsOrExternalUsers'] = $c007PartnerExclusion }
 
     $policies = @(
         @{
@@ -606,11 +948,7 @@ function Get-PolicyDefinitions {
             conditions = @{
                 applications = @{ includeApplications = @("All") }
                 clientAppTypes = @("all")
-                users = @{
-                    includeUsers = @("All")
-                    excludeGroups = @($NoMfaGroupId)
-                    excludeRoles = @("d29b2b05-8046-44ba-8758-1e26182fcf32")
-                }
+                users = $c003Users
             }
             grantControls = @{
                 builtInControls = @("compliantDevice", "domainJoinedDevice")
@@ -672,7 +1010,42 @@ function Get-PolicyDefinitions {
                 builtInControls = @("block")
                 operator = "OR"
             }
-        },
+        }
+    ) + $(
+        # C007: needs only the UK named location (auto-created in
+        # Test-Prerequisites). Applies to ALL users, guests included — see the
+        # $c007Users block above for who is taken out by exception.
+        if ($UkLocationId) {
+            @(
+                @{
+                    displayName = "C007 - Block Sign-In Outside UK"
+                    state       = $PolicyState
+                    conditions  = @{
+                        applications   = @{ includeApplications = @("All") }
+                        clientAppTypes = @("all")
+                        users          = $c007Users
+                        # Exclude the UK named location ONLY ("Selected networks and
+                        # locations" in the portal). Do NOT also add "AllTrusted":
+                        # the portal's Network blade can't show a named location and
+                        # "All trusted" together, so it displays only "All trusted",
+                        # and the next portal save of this policy (e.g. widening its
+                        # users) silently drops the UK exclusion — which turns this
+                        # into a block on every UK sign-in. A named-location-only
+                        # exclusion is displayed and preserved by the portal.
+                        locations      = @{
+                            includeLocations = @("All")
+                            excludeLocations = @($UkLocationId)
+                        }
+                    }
+                    grantControls = @{
+                        builtInControls = @("block")
+                        operator        = "OR"
+                    }
+                }
+            )
+        }
+        else { @() }
+    ) + @(
         @{
             displayName = "C008 - Block Device Code Flow"
             state = $PolicyState
@@ -696,46 +1069,6 @@ function Get-PolicyDefinitions {
                 operator = "OR"
             }
         }
-    ) + $(
-        # C007 only added if geo groups and UK named location exist in this tenant
-        if ($GeoUkGroupId -and $GeoIntlGroupId -and $UkLocationId) {
-            # Travel exclusion group is itself optional (see Test-Prerequisites)
-            # — C007 still gets created without it, just with no way to
-            # exempt travelling staff until the group is created/populated.
-            $c007ExcludeGroups = @($NoMfaGroupId, $GeoIntlGroupId)
-            if ($UkTravelExclusionGroupId) { $c007ExcludeGroups += $UkTravelExclusionGroupId }
-            @(
-                @{
-                    displayName = "C007 - Block Sign-In Outside UK (UK Users)"
-                    state       = $PolicyState
-                    conditions  = @{
-                        applications   = @{ includeApplications = @("All") }
-                        clientAppTypes = @("all")
-                        users          = @{
-                            includeGroups = @($GeoUkGroupId)
-                            excludeGroups = @($c007ExcludeGroups)
-                        }
-                        # Exclude the UK named location ONLY ("Selected networks and
-                        # locations" in the portal). Do NOT also add "AllTrusted":
-                        # the portal's Network blade can't show a named location and
-                        # "All trusted" together, so it displays only "All trusted",
-                        # and the next portal save of this policy (e.g. widening its
-                        # users) silently drops the UK exclusion — which turns this
-                        # into a block on every UK sign-in. A named-location-only
-                        # exclusion is displayed and preserved by the portal.
-                        locations      = @{
-                            includeLocations = @("All")
-                            excludeLocations = @($UkLocationId)
-                        }
-                    }
-                    grantControls = @{
-                        builtInControls = @("block")
-                        operator        = "OR"
-                    }
-                }
-            )
-        }
-        else { @() }
     ) + $(
         # C009: BYOD Android/iOS — unconditional (no group prerequisite; reuses
         # the NoMFA group for break-glass, same as every other policy, rather
@@ -877,6 +1210,32 @@ function Get-PolicyCode {
     return $DisplayName
 }
 
+function Test-PolicyCanBlockSignIn {
+    <#
+    .SYNOPSIS
+        True when a policy can stop a sign-in outright with nothing the user
+        can do about it at the prompt: it blocks, or it demands a compliant /
+        domain-joined device or a protected app.
+    .DESCRIPTION
+        These are the policies that lock people out when their conditions or
+        exclusions are wrong, so the script never creates them Enabled (see
+        Set-PolicyStates). MFA and password-change policies are not included:
+        a user who meets them is let straight through, and one who doesn't is
+        walked through fixing it there and then.
+
+        Derived from the grant controls rather than a list of policy codes,
+        so a policy added later is covered without anyone remembering to
+        register it.
+    #>
+    param([hashtable]$Policy)
+
+    $controls = @($Policy.grantControls.builtInControls)
+    foreach ($control in @('block', 'compliantDevice', 'domainJoinedDevice', 'compliantApplication', 'approvedApplication')) {
+        if ($controls -contains $control) { return $true }
+    }
+    return $false
+}
+
 function Set-PolicyStates {
     <#
     .SYNOPSIS
@@ -884,6 +1243,13 @@ function Set-PolicyStates {
         individually, mutating each policy's .state in place — Report-only
         vs Enabled is no longer one global choice for the whole run.
     .DESCRIPTION
+        Policies that can block a sign-in (Test-PolicyCanBlockSignIn) are
+        ALWAYS Report-only: there is no prompt for them, and a config that
+        asks for Enabled is ignored with a warning. They are meant to be
+        reviewed in Report-only for about a week and then enabled, one at a
+        time, in the Entra admin center.
+
+        For every other policy —
         Interactive: prompts once per policy.
         Non-interactive: reads $script:RunConfig.PolicyModes[<code>] for a
         per-policy override, falling back to the global
@@ -892,15 +1258,31 @@ function Set-PolicyStates {
     param([array]$Policies)
 
     foreach ($policy in $Policies) {
-        if ($script:NonInteractive) {
-            $code = Get-PolicyCode -DisplayName $policy.displayName
-            $mode = if ($script:RunConfig.PolicyModes.ContainsKey($code)) {
-                $script:RunConfig.PolicyModes[$code]
+        $code = Get-PolicyCode -DisplayName $policy.displayName
+        $requestedMode = if ($script:RunConfig.PolicyModes.ContainsKey($code)) {
+            $script:RunConfig.PolicyModes[$code]
+        }
+        else {
+            $script:RunConfig.PolicyMode
+        }
+
+        if (Test-PolicyCanBlockSignIn -Policy $policy) {
+            $policy.state = 'enabledForReportingButNotEnforced'
+            if ($script:NonInteractive) {
+                if ($requestedMode -eq 'Enabled') {
+                    Write-Host "   ${code}: config asked for Enabled - ignored. This policy can block sign-ins, so it is always created Report-only." -ForegroundColor Yellow
+                }
             }
             else {
-                $script:RunConfig.PolicyMode
+                Write-Host ""
+                Write-Host "   $($policy.displayName)" -ForegroundColor White
+                Write-Host "     -> Report-only (fixed: this policy can block sign-ins)" -ForegroundColor Cyan
             }
-            $policy.state = if ($mode -eq 'Enabled') { 'enabled' } else { 'enabledForReportingButNotEnforced' }
+            continue
+        }
+
+        if ($script:NonInteractive) {
+            $policy.state = if ($requestedMode -eq 'Enabled') { 'enabled' } else { 'enabledForReportingButNotEnforced' }
         }
         else {
             Write-Host ""
@@ -930,7 +1312,11 @@ function Set-PolicyStates {
 function Show-PolicyPreview {
     param(
         [array]$Policies,
-        [string]$NoMfaGroupId
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUpns,
+        [string[]]$PartnerTenantIds,
+        [bool]$AdminGroupFound,
+        [bool]$AdminGroupHasMembers
     )
 
     Write-Host ""
@@ -958,56 +1344,177 @@ function Show-PolicyPreview {
         $index++
     }
 
-    Write-Host ""
-    Write-Host "  All policies will:" -ForegroundColor Yellow
-    Write-Host "    - Exclude NoMFA Exclusion Group (break-glass accounts)" -ForegroundColor Gray
-    Write-Host "    - Be created immediately, in the mode shown above (per policy)" -ForegroundColor Gray
-    Write-Host ""
+    $fixedCodes = @($Policies | Where-Object { Test-PolicyCanBlockSignIn -Policy $_ } | ForEach-Object { Get-PolicyCode -DisplayName $_.displayName })
+    $emergencyUpns = @($EmergencyAccessUpns | Where-Object { $_ })
+    $partnerIds = @($PartnerTenantIds | Where-Object { $_ })
 
-    Write-Host "  NoMFA Exclusion Group ID: $NoMfaGroupId" -ForegroundColor Gray
     Write-Host ""
+    Write-Host "  Every policy excludes:" -ForegroundColor Yellow
+    Write-Host "    - NoMFA Exclusion Group (ID: $NoMfaGroupId)" -ForegroundColor Gray
+    if ($emergencyUpns.Count -gt 0) {
+        Write-Host "    - Emergency access accounts, also listed directly: $($emergencyUpns -join ', ')" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "    - NO emergency access account: the NoMFA Exclusion Group is empty" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "  C003 (compliant device) also excludes:" -ForegroundColor Yellow
+    if ($AdminGroupFound) {
+        $adminNote = if ($AdminGroupHasMembers) { '' } else { ' - currently EMPTY, check before enabling C003' }
+        Write-Host "    - BITS Admin Users group$adminNote" -ForegroundColor $(if ($AdminGroupHasMembers) { 'Gray' } else { 'Yellow' })
+    }
+    else {
+        Write-Host "    - (BITS Admin Users group not found - admin accounts are NOT excluded)" -ForegroundColor Yellow
+    }
+    if ($partnerIds.Count -gt 0) {
+        Write-Host "    - Partner (GDAP) sign-ins from: $($partnerIds -join ', ')" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "  C007 (outside UK) applies to ALL users, including guests, and also excludes:" -ForegroundColor Yellow
+    Write-Host "    - CA-GEO-International and CA-UK-Travel-Exclusion groups (where they exist)" -ForegroundColor Gray
+    if ($partnerIds.Count -gt 0) {
+        Write-Host "    - Partner (GDAP) sign-ins from: $($partnerIds -join ', ')" -ForegroundColor Gray
+    }
+    Write-Host ""
+    if ($fixedCodes.Count -gt 0) {
+        Write-Host "  Always Report-only (can block sign-ins): $($fixedCodes -join ', ')" -ForegroundColor Yellow
+        Write-Host "    Review their results for about a week, then enable them one at a time in the portal." -ForegroundColor Gray
+        Write-Host ""
+    }
 }
 
 # ============================================================================
 # POLICY CREATION
 # ============================================================================
 
+# Display names earlier versions of this script gave a policy. A tenant that
+# already holds a policy under one of these names is treated as already having
+# it (skipped, not duplicated under the new name).
+$script:LegacyPolicyNames = @{
+    'C007' = @('C007 - Block Sign-In Outside UK (UK Users)')
+}
+
+function Add-StandardExclusions {
+    <#
+    .SYNOPSIS
+        Applies the two exclusions EVERY policy carries, mutating the policy's
+        users block in place:
+          1. the NoMFA Exclusion Group (excludeGroups), and
+          2. each emergency access account by its own object ID
+             (excludeUsers) — a "direct" exclusion.
+    .DESCRIPTION
+        Both are applied on purpose. The group is what an operator maintains;
+        the direct entry is what still protects the account if the group is
+        emptied, renamed, deleted or (as happened) never populated.
+
+        Appends rather than overwrites, so policies with their own exclusions
+        (C003's admin group, C007's travel groups) keep them. Bracket /
+        ContainsKey access throughout: some policies (C010, C011, C012) don't
+        define an excludeGroups key at all (they scope via includeGroups or
+        includeGuestsOrExternalUsers instead), and dot access on a missing
+        hashtable key throws under Set-StrictMode.
+    #>
+    param(
+        [hashtable]$PolicyConfig,
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUserIds
+    )
+
+    $usersBlock = $PolicyConfig.conditions.users
+
+    $currentGroups = if ($usersBlock.ContainsKey('excludeGroups')) {
+        @($usersBlock['excludeGroups']) | Where-Object { $_ }
+    } else { @() }
+    if ($NoMfaGroupId -and $currentGroups -notcontains $NoMfaGroupId) {
+        $usersBlock['excludeGroups'] = @($currentGroups) + $NoMfaGroupId
+    }
+
+    $emergencyIds = @($EmergencyAccessUserIds | Where-Object { $_ })
+    if ($emergencyIds.Count -gt 0) {
+        $currentUsers = if ($usersBlock.ContainsKey('excludeUsers')) {
+            @($usersBlock['excludeUsers']) | Where-Object { $_ }
+        } else { @() }
+        $usersBlock['excludeUsers'] = @(@($currentUsers) + $emergencyIds | Select-Object -Unique)
+    }
+
+    return $PolicyConfig
+}
+
+function Test-LocationExclusionHiddenByPortal {
+    <#
+    .SYNOPSIS
+        True when a policy's excluded locations hold "AllTrusted" TOGETHER
+        with a named location — the combination older versions of this script
+        gave C007.
+    .DESCRIPTION
+        The Entra portal cannot show both: it displays only "All trusted
+        networks and locations", and saving the policy from the portal keeps
+        only that, silently dropping the named location. For C007 that
+        removes the UK exclusion and blocks every UK sign-in.
+    #>
+    param([string[]]$ExcludeLocations)
+
+    $locations = @($ExcludeLocations | Where-Object { $_ })
+    return ($locations -contains 'AllTrusted') -and (@($locations | Where-Object { $_ -ne 'AllTrusted' }).Count -gt 0)
+}
+
 function New-ConditionalAccessPolicy {
     param(
         [hashtable]$PolicyConfig,
-        [string]$NoMfaGroupId
+        [string]$NoMfaGroupId,
+        [string[]]$EmergencyAccessUserIds
     )
 
     $policyName = $PolicyConfig.displayName
 
     try {
-        # Check if policy already exists
-        $existingPolicy = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '$policyName'" -ErrorAction SilentlyContinue
+        # Check if policy already exists — under its current name, or under a
+        # name an earlier version of this script used for the same policy
+        $existingPolicy = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '$policyName'" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+        if (!$existingPolicy) {
+            $code = Get-PolicyCode -DisplayName $policyName
+            if ($script:LegacyPolicyNames.ContainsKey($code)) {
+                foreach ($legacyName in $script:LegacyPolicyNames[$code]) {
+                    $fullLegacyName = "$($script:RunConfig.NamePrefix)$legacyName"
+                    $existingPolicy = Get-MgIdentityConditionalAccessPolicy -Filter "displayName eq '$fullLegacyName'" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($existingPolicy) {
+                        Write-Host "     Found under its previous name: $fullLegacyName" -ForegroundColor Yellow
+                        break
+                    }
+                }
+            }
+        }
 
         if ($existingPolicy) {
             Write-Host "     Already exists (skipped)" -ForegroundColor Yellow
-            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true }
+
+            # Existing policies are never modified, but one known-dangerous
+            # state is worth saying out loud every time it is seen.
+            $existingLocations = @()
+            if ($existingPolicy.Conditions -and $existingPolicy.Conditions.Locations) {
+                $existingLocations = @($existingPolicy.Conditions.Locations.ExcludeLocations)
+            }
+            $warning = $null
+            if (Test-LocationExclusionHiddenByPortal -ExcludeLocations $existingLocations) {
+                $warning = "$($existingPolicy.DisplayName) excludes a named location together with 'All trusted'. The portal shows only 'All trusted', and saving the policy from the portal drops the named location (for C007, that blocks every UK sign-in). Do NOT save it from the portal; set its excluded locations to the named location only."
+                Write-Host "     WARNING: this policy excludes a named location together with 'All trusted'." -ForegroundColor Red
+                Write-Host "     The portal shows only 'All trusted', and saving the policy from the portal drops" -ForegroundColor Red
+                Write-Host "     the named location - for C007 that blocks every UK sign-in. Do NOT save it from" -ForegroundColor Red
+                Write-Host "     the portal. Set its excluded locations to the named location only." -ForegroundColor Red
+            }
+            return @{ Success = $true; Policy = $existingPolicy; Skipped = $true; Warning = $warning }
         }
 
-        # Ensure NoMFA group is in exclusions — append rather than overwrite so
-        # policies with additional exclude groups (e.g. C007's geo group) keep
-        # them. Bracket/ContainsKey access throughout: some policies (C010,
-        # C011, C012) don't define an excludeGroups key at all (they scope via
-        # includeGroups or includeGuestsOrExternalUsers instead), and dot
-        # access on a missing hashtable key throws under Set-StrictMode.
-        $usersBlock = $PolicyConfig.conditions.users
-        $currentExcludes = if ($usersBlock.ContainsKey('excludeGroups')) {
-            @($usersBlock['excludeGroups']) | Where-Object { $_ }
-        } else { @() }
-        if ($NoMfaGroupId -and $currentExcludes -notcontains $NoMfaGroupId) {
-            $usersBlock['excludeGroups'] = @($currentExcludes) + $NoMfaGroupId
-        }
+        # NoMFA group + emergency access accounts, on every policy
+        $null = Add-StandardExclusions -PolicyConfig $PolicyConfig -NoMfaGroupId $NoMfaGroupId `
+            -EmergencyAccessUserIds $EmergencyAccessUserIds
 
         # Create policy
         $newPolicy = New-MgIdentityConditionalAccessPolicy -BodyParameter $PolicyConfig -ErrorAction Stop
 
         Write-Host "     Created successfully (ID: $($newPolicy.Id))" -ForegroundColor Green
-        return @{ Success = $true; Policy = $newPolicy; Skipped = $false }
+        return @{ Success = $true; Policy = $newPolicy; Skipped = $false; Warning = $null }
     }
     catch {
         Write-Host "     Failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -1047,11 +1554,15 @@ function Start-CAPolicyCreation {
     }
 
     $noMfaGroupId    = $prereqResult.NoMfaGroupId
-    $geoUkGroupId    = $prereqResult.GeoUkGroupId
     $geoIntlGroupId  = $prereqResult.GeoIntlGroupId
     $ukLocationId    = $prereqResult.UkLocationId
     $byodWindowsGroupId       = $prereqResult.ByodWindowsGroupId
     $ukTravelExclusionGroupId = $prereqResult.UkTravelExclusionGroupId
+    $emergencyAccessUserIds   = @($prereqResult.EmergencyAccessUserIds)
+    $emergencyAccessUpns      = @($prereqResult.EmergencyAccessUpns)
+    $adminGroupId             = $prereqResult.AdminGroupId
+    $adminGroupHasMembers     = [bool]$prereqResult.AdminGroupHasMembers
+    $partnerTenantIds         = @($prereqResult.PartnerTenantIds)
 
     # Step 2: Load data
     Write-Host "  STEP 2: Loading Data" -ForegroundColor Yellow
@@ -1067,8 +1578,9 @@ function Start-CAPolicyCreation {
     # -PolicyState here is just a placeholder seed — Set-PolicyStates (Step 3)
     # overwrites every policy's actual state individually right after this.
     $policies = Get-PolicyDefinitions -NoMfaGroupId $noMfaGroupId -PolicyState "enabledForReportingButNotEnforced" `
-        -GeoUkGroupId $geoUkGroupId -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId `
-        -ByodWindowsGroupId $byodWindowsGroupId -UkTravelExclusionGroupId $ukTravelExclusionGroupId
+        -GeoIntlGroupId $geoIntlGroupId -UkLocationId $ukLocationId `
+        -ByodWindowsGroupId $byodWindowsGroupId -UkTravelExclusionGroupId $ukTravelExclusionGroupId `
+        -AdminGroupId $adminGroupId -PartnerTenantIds $partnerTenantIds
     Write-Host "   Loaded $($policies.Count) policy definitions" -ForegroundColor Green
 
     # Step 3: Choose enforcement mode, per policy
@@ -1081,13 +1593,16 @@ function Start-CAPolicyCreation {
     else {
         Write-Host "   Report-only logs but does NOT enforce (recommended for new tenants)." -ForegroundColor Cyan
         Write-Host "   Enabled enforces immediately. Choose independently for each policy below." -ForegroundColor Yellow
+        Write-Host "   Policies that can block sign-ins are always Report-only and are not asked about." -ForegroundColor Cyan
     }
     Set-PolicyStates -Policies $policies
 
     # Step 4: Preview
     Write-Host ""
     Write-Host "  STEP 4: Preview" -ForegroundColor Yellow
-    Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId
+    Show-PolicyPreview -Policies $policies -NoMfaGroupId $noMfaGroupId `
+        -EmergencyAccessUpns $emergencyAccessUpns -PartnerTenantIds $partnerTenantIds `
+        -AdminGroupFound ([bool]$adminGroupId) -AdminGroupHasMembers $adminGroupHasMembers
 
     # Confirmation (skipped in unattended mode)
     if ($script:NonInteractive) {
@@ -1117,14 +1632,17 @@ function Start-CAPolicyCreation {
         Created = @()
         Skipped = @()
         Failed = @()
+        Warnings = @()
     }
 
     foreach ($policy in $policies) {
         Write-Host "   $($policy.DisplayName)..." -ForegroundColor White
 
-        $result = New-ConditionalAccessPolicy -PolicyConfig $policy -NoMfaGroupId $noMfaGroupId
+        $result = New-ConditionalAccessPolicy -PolicyConfig $policy -NoMfaGroupId $noMfaGroupId `
+            -EmergencyAccessUserIds $emergencyAccessUserIds
 
         if ($result.Success) {
+            if ($result.Warning) { $results.Warnings += $result.Warning }
             if ($result.Skipped) {
                 $results.Skipped += $policy.DisplayName
             }
@@ -1176,15 +1694,30 @@ function Start-CAPolicyCreation {
     else {
         Write-Host "    - All policies were created in Report-only mode (no enforcement yet)" -ForegroundColor Yellow
     }
-    Write-Host "    - Add break-glass accounts to NoMFA Exclusion Group NOW" -ForegroundColor Yellow
-    Write-Host "    - Test with pilot users before full deployment" -ForegroundColor Yellow
+    if ($emergencyAccessUpns.Count -gt 0) {
+        Write-Host "    - Emergency access account(s) excluded from every new policy: $($emergencyAccessUpns -join ', ')" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "    - NO emergency access account is excluded: the NoMFA Exclusion Group is empty." -ForegroundColor Red
+        Write-Host "      Do NOT enable any policy until an emergency access account is in that group" -ForegroundColor Red
+        Write-Host "      and you have tested that it can sign in." -ForegroundColor Red
+    }
+    if ($adminGroupId -and !$adminGroupHasMembers) {
+        Write-Host "    - BITS Admin Users is empty: check its members before enabling C003" -ForegroundColor Yellow
+    }
+    foreach ($warning in $results.Warnings) {
+        Write-Host "    - $warning" -ForegroundColor Red
+    }
+    Write-Host "    - Policies that can block sign-ins are Report-only. Review their results for about a" -ForegroundColor Yellow
+    Write-Host "      week before enabling them, one at a time." -ForegroundColor Yellow
     Write-Host ""
 
     Write-Host "  Next Steps:" -ForegroundColor Yellow
-    Write-Host "    1. Add break-glass accounts to NoMFA Exclusion Group" -ForegroundColor Gray
-    Write-Host "    2. Verify policies in Entra admin center" -ForegroundColor Gray
-    Write-Host "    3. Monitor sign-in logs for policy impact" -ForegroundColor Gray
-    Write-Host "    4. Test with pilot users" -ForegroundColor Gray
+    Write-Host "    1. Test that an emergency access account can sign in" -ForegroundColor Gray
+    Write-Host "    2. Review Report-only results: Entra admin center > Conditional Access > Insights and" -ForegroundColor Gray
+    Write-Host "       reporting, or the Report-only tab of a sign-in in the sign-in logs" -ForegroundColor Gray
+    Write-Host "    3. After about a week, enable the Report-only policies one at a time" -ForegroundColor Gray
+    Write-Host "    4. After any portal change, check the policy's excluded users, groups and locations" -ForegroundColor Gray
     Write-Host ""
 
     # Machine-readable results for CI runners
@@ -1194,6 +1727,8 @@ function Start-CAPolicyCreation {
             Created = @($results.Created)
             Skipped = @($results.Skipped)
             Failed  = @($results.Failed)
+            Warnings = @($results.Warnings)
+            EmergencyAccessUserIds = @($emergencyAccessUserIds)
         } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultPath -Encoding UTF8
         Write-Host "  Results written to $ResultPath" -ForegroundColor Gray
     }
